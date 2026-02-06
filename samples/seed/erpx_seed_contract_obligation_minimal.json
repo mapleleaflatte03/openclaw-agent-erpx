@@ -1,0 +1,37 @@
+{
+  "partners": [
+    {
+      "partner_id": "PARTNER-0001",
+      "name": "ACME Supplies LLC",
+      "tax_id": "0312345678",
+      "email": "ap@acme.example.local",
+      "updated_at": "2026-02-01T00:00:00Z"
+    }
+  ],
+  "contracts": [
+    {
+      "contract_id": "CONTRACT-0001",
+      "contract_code": "HD-ACME-2026-0001",
+      "partner_id": "PARTNER-0001",
+      "start_date": "2026-01-01",
+      "end_date": "2026-12-31",
+      "currency": "VND",
+      "total_amount": 120000000.0,
+      "status": "active",
+      "updated_at": "2026-02-01T00:00:00Z"
+    }
+  ],
+  "payments": [
+    {
+      "payment_id": "PAY-0001",
+      "contract_id": "CONTRACT-0001",
+      "date": "2026-01-15",
+      "amount": 20000000.0,
+      "currency": "VND",
+      "method": "bank_transfer",
+      "note": "Advance payment",
+      "updated_at": "2026-02-01T00:00:00Z"
+    }
+  ]
+}
+

@@ -21,6 +21,37 @@ def init_schema(conn: sqlite3.Connection) -> None:
     c = conn.cursor()
     c.executescript(
         """
+        CREATE TABLE IF NOT EXISTS partners (
+          partner_id TEXT PRIMARY KEY,
+          name TEXT NOT NULL,
+          tax_id TEXT,
+          email TEXT,
+          updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS contracts (
+          contract_id TEXT PRIMARY KEY,
+          contract_code TEXT NOT NULL,
+          partner_id TEXT NOT NULL,
+          start_date TEXT,
+          end_date TEXT,
+          currency TEXT NOT NULL,
+          total_amount REAL,
+          status TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS payments (
+          payment_id TEXT PRIMARY KEY,
+          contract_id TEXT NOT NULL,
+          date TEXT NOT NULL,
+          amount REAL NOT NULL,
+          currency TEXT NOT NULL,
+          method TEXT,
+          note TEXT,
+          updated_at TEXT NOT NULL
+        );
+
         CREATE TABLE IF NOT EXISTS invoices (
           invoice_id TEXT PRIMARY KEY,
           invoice_no TEXT NOT NULL,
@@ -91,6 +122,50 @@ def seed_if_empty(conn: sqlite3.Connection, seed_path: str | None = None) -> Non
     today = date.today()
     period_first = today.replace(day=1)
     updated_at = datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+
+    partners = [
+        {
+            "partner_id": "PARTNER-0001",
+            "name": "ACME Supplies LLC",
+            "tax_id": "0312345678",
+            "email": "ap@acme.example.local",
+            "updated_at": updated_at,
+        },
+        {
+            "partner_id": "PARTNER-0002",
+            "name": "Sunrise Services Co",
+            "tax_id": "0109876543",
+            "email": "billing@sunrise.example.local",
+            "updated_at": updated_at,
+        },
+    ]
+
+    contracts = [
+        {
+            "contract_id": "CONTRACT-0001",
+            "contract_code": "HD-ACME-2026-0001",
+            "partner_id": "PARTNER-0001",
+            "start_date": (today - timedelta(days=30)).isoformat(),
+            "end_date": (today + timedelta(days=330)).isoformat(),
+            "currency": "VND",
+            "total_amount": 120_000_000.0,
+            "status": "active",
+            "updated_at": updated_at,
+        }
+    ]
+
+    payments = [
+        {
+            "payment_id": "PAY-0001",
+            "contract_id": "CONTRACT-0001",
+            "date": (today - timedelta(days=5)).isoformat(),
+            "amount": 20_000_000.0,
+            "currency": "VND",
+            "method": "bank_transfer",
+            "note": "Advance payment",
+            "updated_at": updated_at,
+        }
+    ]
 
     invoices = []
     for i in range(1, 21):
@@ -175,11 +250,69 @@ def seed_if_empty(conn: sqlite3.Connection, seed_path: str | None = None) -> Non
             }
         )
 
-    _seed_from_json(conn, {"invoices": invoices, "vouchers": vouchers, "journals": journals, "assets": assets, "close_calendar": close_calendar})
+    _seed_from_json(
+        conn,
+        {
+            "partners": partners,
+            "contracts": contracts,
+            "payments": payments,
+            "invoices": invoices,
+            "vouchers": vouchers,
+            "journals": journals,
+            "assets": assets,
+            "close_calendar": close_calendar,
+        },
+    )
 
 
 def _seed_from_json(conn: sqlite3.Connection, seed: dict[str, Any]) -> None:
     c = conn.cursor()
+
+    for p in seed.get("partners", []):
+        c.execute(
+            """
+            INSERT INTO partners (partner_id, name, tax_id, email, updated_at)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (p["partner_id"], p["name"], p.get("tax_id"), p.get("email"), p["updated_at"]),
+        )
+
+    for ct in seed.get("contracts", []):
+        c.execute(
+            """
+            INSERT INTO contracts (contract_id, contract_code, partner_id, start_date, end_date, currency, total_amount, status, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                ct["contract_id"],
+                ct["contract_code"],
+                ct["partner_id"],
+                ct.get("start_date"),
+                ct.get("end_date"),
+                ct.get("currency", "VND"),
+                ct.get("total_amount"),
+                ct.get("status", "active"),
+                ct["updated_at"],
+            ),
+        )
+
+    for pay in seed.get("payments", []):
+        c.execute(
+            """
+            INSERT INTO payments (payment_id, contract_id, date, amount, currency, method, note, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                pay["payment_id"],
+                pay["contract_id"],
+                pay["date"],
+                pay["amount"],
+                pay.get("currency", "VND"),
+                pay.get("method"),
+                pay.get("note"),
+                pay["updated_at"],
+            ),
+        )
 
     for inv in seed.get("invoices", []):
         c.execute(
@@ -242,4 +375,3 @@ def _seed_from_json(conn: sqlite3.Connection, seed: dict[str, Any]) -> None:
 
 def rows_to_dicts(rows: Iterable[sqlite3.Row]) -> list[dict[str, Any]]:
     return [dict(r) for r in rows]
-

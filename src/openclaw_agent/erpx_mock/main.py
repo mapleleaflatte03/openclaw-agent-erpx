@@ -53,6 +53,55 @@ def auth_dep(authorization: str | None = Header(default=None)) -> None:
     _require_token(authorization, os.getenv("ERPX_MOCK_TOKEN", os.getenv("ERPX_TOKEN", "")))
 
 
+@app.get("/erp/v1/partners", dependencies=[Depends(auth_dep)])
+def get_partners(updated_after: str | None = None, conn=Depends(get_conn)) -> list[dict[str, Any]]:
+    q = "SELECT * FROM partners"
+    params: tuple[Any, ...] = ()
+    if updated_after:
+        q += " WHERE updated_at > ?"
+        params = (updated_after,)
+    q += " ORDER BY name ASC"
+    return rows_to_dicts(conn.execute(q, params).fetchall())
+
+
+@app.get("/erp/v1/contracts", dependencies=[Depends(auth_dep)])
+def get_contracts(
+    updated_after: str | None = None, partner_id: str | None = None, conn=Depends(get_conn)
+) -> list[dict[str, Any]]:
+    q = "SELECT * FROM contracts"
+    clauses: list[str] = []
+    params_list: list[Any] = []
+    if updated_after:
+        clauses.append("updated_at > ?")
+        params_list.append(updated_after)
+    if partner_id:
+        clauses.append("partner_id = ?")
+        params_list.append(partner_id)
+    if clauses:
+        q += " WHERE " + " AND ".join(clauses)
+    q += " ORDER BY start_date DESC"
+    return rows_to_dicts(conn.execute(q, tuple(params_list)).fetchall())
+
+
+@app.get("/erp/v1/payments", dependencies=[Depends(auth_dep)])
+def get_payments(
+    contract_id: str | None = None, updated_after: str | None = None, conn=Depends(get_conn)
+) -> list[dict[str, Any]]:
+    q = "SELECT * FROM payments"
+    clauses: list[str] = []
+    params_list: list[Any] = []
+    if contract_id:
+        clauses.append("contract_id = ?")
+        params_list.append(contract_id)
+    if updated_after:
+        clauses.append("updated_at > ?")
+        params_list.append(updated_after)
+    if clauses:
+        q += " WHERE " + " AND ".join(clauses)
+    q += " ORDER BY date DESC"
+    return rows_to_dicts(conn.execute(q, tuple(params_list)).fetchall())
+
+
 @app.get("/erp/v1/journals", dependencies=[Depends(auth_dep)])
 def get_journals(updated_after: str | None = None, conn=Depends(get_conn)) -> list[dict[str, Any]]:
     q = "SELECT * FROM journals"
@@ -129,4 +178,3 @@ def get_assets(updated_after: str | None = None, conn=Depends(get_conn)) -> list
 def get_close_calendar(period: str, conn=Depends(get_conn)) -> list[dict[str, Any]]:
     q = "SELECT * FROM close_calendar WHERE period = ? ORDER BY due_date ASC"
     return rows_to_dicts(conn.execute(q, (period,)).fetchall())
-
