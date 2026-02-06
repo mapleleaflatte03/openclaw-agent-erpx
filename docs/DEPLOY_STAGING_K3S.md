@@ -95,3 +95,5 @@ Runtime secrets (used to create `agent-secrets` in-cluster):
 Notes:
 - No secrets are committed to git.
 - No PAT is used; publishing uses `GITHUB_TOKEN` permissions in Actions.
+- GHCR packages are **private by default**. The deploy workflow creates an in-cluster pull secret `ghcr-pull`
+  and the staging overlay configures the namespace `default` ServiceAccount to use it.
