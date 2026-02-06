@@ -350,6 +350,7 @@ class AgentObligation(Base):
     due_date: Mapped[sa.Date | None] = mapped_column(sa.Date, nullable=True, index=True)
     condition_text: Mapped[str] = mapped_column(sa.Text)
     confidence: Mapped[float] = mapped_column(sa.Float, nullable=False, default=0.0, index=True)
+    risk_level: Mapped[str] = mapped_column(sa.String(8), nullable=False, default="medium", index=True)
 
     signature: Mapped[str] = mapped_column(sa.String(64), unique=True, index=True)
     meta: Mapped[dict | None] = mapped_column(sa.JSON, nullable=True)
@@ -416,9 +417,13 @@ class AgentProposal(Base):
     title: Mapped[str] = mapped_column(sa.String(512))
     summary: Mapped[str] = mapped_column(sa.Text)
     details: Mapped[dict | None] = mapped_column(sa.JSON, nullable=True)
-    risk_level: Mapped[str] = mapped_column(sa.String(8), nullable=False, default="med", index=True)
+    risk_level: Mapped[str] = mapped_column(sa.String(8), nullable=False, default="medium", index=True)
     confidence: Mapped[float] = mapped_column(sa.Float, nullable=False, default=0.0, index=True)
     status: Mapped[str] = mapped_column(sa.String(16), nullable=False, default="pending", index=True)
+
+    created_by: Mapped[str] = mapped_column(sa.String(64), nullable=False, default="system", index=True)
+    tier: Mapped[int] = mapped_column(sa.Integer, nullable=False, default=3, index=True)
+    evidence_summary_hash: Mapped[str | None] = mapped_column(sa.String(64), nullable=True, index=True)
 
     proposal_key: Mapped[str] = mapped_column(sa.String(128), unique=True, index=True)
     run_id: Mapped[str | None] = mapped_column(sa.String(36), nullable=True, index=True)
@@ -438,6 +443,12 @@ class AgentApproval(Base):
 
     decision: Mapped[str] = mapped_column(sa.String(16), index=True)  # approve|reject
     actor_user_id: Mapped[str | None] = mapped_column(sa.String(64), nullable=True, index=True)
+    approver_id: Mapped[str | None] = mapped_column(sa.String(64), nullable=True, index=True)
+    evidence_ack: Mapped[bool] = mapped_column(sa.Boolean, nullable=False, default=False)
+    decided_at: Mapped[sa.DateTime] = mapped_column(
+        sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False, index=True
+    )
+    idempotency_key: Mapped[str | None] = mapped_column(sa.String(64), nullable=True, unique=True, index=True)
     note: Mapped[str | None] = mapped_column(sa.Text, nullable=True)
     created_at: Mapped[sa.DateTime] = mapped_column(
         sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False, index=True
