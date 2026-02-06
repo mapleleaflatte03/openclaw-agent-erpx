@@ -24,13 +24,13 @@ jobs:
           api="https://api.github.com/repos/${REPO}"
 
           # Check existing open PR for this head (URL-encoded).
-          head_q="$(python3 -c 'import os,urllib.parse; print(urllib.parse.quote(f\"{os.environ[\"REPO\"].split(\"/\")[0]}:{os.environ[\"BRANCH\"]}\", safe=\"\"))')"
+          head_q="$(python3 -c 'import os,urllib.parse; repo=os.environ["REPO"]; branch=os.environ["BRANCH"]; owner=repo.split("/")[0]; print(urllib.parse.quote(f"{owner}:{branch}", safe=""))')"
           existing="$(curl -fsSL \
             -H "Authorization: Bearer ${GH_TOKEN}" \
             -H "Accept: application/vnd.github+json" \
             "${api}/pulls?state=open&head=${head_q}")"
 
-          pr_url="$(python3 -c 'import json,sys; prs=json.load(sys.stdin); print(prs[0][\"html_url\"] if prs else \"\")' <<<"$existing")"
+          pr_url="$(python3 -c 'import json,sys; prs=json.load(sys.stdin); print(prs[0]["html_url"] if prs else "")' <<<"$existing")"
           if [ -n "${pr_url}" ]; then
             echo "PR already exists: ${pr_url}"
             exit 0
@@ -73,7 +73,7 @@ Optional:
 MD
 )"
 
-          payload="$(python3 -c 'import json,os; print(json.dumps({\"title\": os.environ[\"TITLE\"], \"head\": os.environ[\"BRANCH\"], \"base\": \"main\", \"body\": os.environ[\"BODY\"]}))' \
+          payload="$(python3 -c 'import json,os; print(json.dumps({"title": os.environ["TITLE"], "head": os.environ["BRANCH"], "base": "main", "body": os.environ["BODY"]}))' \
             TITLE="$title" BODY="$body")"
 
           pr="$(curl -fsSL -X POST \
@@ -83,6 +83,5 @@ MD
             -d "${payload}" \
             "${api}/pulls")"
 
-          pr_url="$(python3 -c 'import json,sys; print(json.load(sys.stdin).get(\"html_url\", \"\"))' <<<"$pr")"
+          pr_url="$(python3 -c 'import json,sys; print(json.load(sys.stdin).get("html_url", ""))' <<<"$pr")"
           echo "Created PR: ${pr_url}"
-
