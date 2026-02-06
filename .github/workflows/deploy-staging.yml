@@ -130,7 +130,7 @@ jobs:
 
       - name: Create/Update k8s secrets (agent-secrets)
         env:
-          NS: openclaw-agent-staging
+          NS: ${{ secrets.STAGING_NAMESPACE }}
           POSTGRES_PASSWORD: ${{ secrets.STAGING_POSTGRES_PASSWORD }}
           ERPX_TOKEN: ${{ secrets.STAGING_ERPX_TOKEN }}
           AGENT_API_KEY: ${{ secrets.STAGING_AGENT_API_KEY }}
@@ -141,6 +141,7 @@ jobs:
           SMTP_PASSWORD: ${{ secrets.STAGING_SMTP_PASSWORD }}
         run: |
           set -euo pipefail
+          NS="${NS:-openclaw-agent-staging}"
 
           if [ -z "${POSTGRES_PASSWORD:-}" ]; then echo "Missing secret: STAGING_POSTGRES_PASSWORD" >&2; exit 1; fi
           if [ -z "${AGENT_API_KEY:-}" ]; then echo "Missing secret: STAGING_AGENT_API_KEY" >&2; exit 1; fi
@@ -170,9 +171,10 @@ jobs:
 
       - name: Deploy to k3s staging (rollout + wait)
         env:
-          NS: openclaw-agent-staging
+          NS: ${{ secrets.STAGING_NAMESPACE }}
         run: |
           set -euo pipefail
+          NS="${NS:-openclaw-agent-staging}"
 
           pushd deploy/k8s/overlays/staging >/dev/null
           kustomize edit set image openclaw-agent-erpx/agent-service=ghcr.io/${GITHUB_REPOSITORY}/agent-service:${GITHUB_SHA}
@@ -205,12 +207,13 @@ jobs:
 
       - name: Smoke (contract_obligation 5C, no UI click)
         env:
-          NS: openclaw-agent-staging
+          NS: ${{ secrets.STAGING_NAMESPACE }}
           AGENT_API_KEY: ${{ secrets.STAGING_AGENT_API_KEY }}
           MINIO_ACCESS_KEY: ${{ secrets.STAGING_MINIO_ACCESS_KEY }}
           MINIO_SECRET_KEY: ${{ secrets.STAGING_MINIO_SECRET_KEY }}
         run: |
           set -euo pipefail
+          NS="${NS:-openclaw-agent-staging}"
 
           kubectl -n "$NS" port-forward svc/agent-service 8000:8000 >/tmp/pf-agent.log 2>&1 &
           PF_AGENT=$!
@@ -234,4 +237,3 @@ jobs:
           export MINIO_SECRET_KEY="$MINIO_SECRET_KEY"
 
           python scripts/smoke_contract_obligation_demo.py --timeout 180
-
