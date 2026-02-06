@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import os
-from typing import Any
+from datetime import date, datetime
+from typing import Any, Literal
 
 import redis
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import PlainTextResponse
 from prometheus_client import CONTENT_TYPE_LATEST, CollectorRegistry, Gauge, generate_latest
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
@@ -504,13 +506,186 @@ def post_kb_doc(body: dict[str, Any], session: Session = Depends(get_session)) -
     return {"id": out.id}
 
 
-@app.get("/agent/v1/contract/cases", dependencies=[Depends(require_api_key)])
+def _normalize_risk_level(v: str | None) -> str:
+    if not v:
+        return "medium"
+    vv = str(v).strip().lower()
+    if vv == "med":
+        return "medium"
+    return vv
+
+
+def _approvals_required(v: str | None) -> int:
+    risk = _normalize_risk_level(v)
+    return 2 if risk == "high" else 1
+
+
+def _approved_approver_ids(session: Session, proposal_ids: list[str]) -> dict[str, set[str]]:
+    if not proposal_ids:
+        return {}
+    rows = session.execute(
+        select(AgentApproval).where(
+            (AgentApproval.proposal_id.in_(proposal_ids))
+            & (AgentApproval.decision == "approve")
+            & (AgentApproval.evidence_ack.is_(True))
+        )
+    ).scalars().all()
+    out: dict[str, set[str]] = {pid: set() for pid in proposal_ids}
+    for a in rows:
+        pid = a.proposal_id
+        approver = (a.approver_id or a.actor_user_id or "").strip()
+        if not approver:
+            continue
+        out.setdefault(pid, set()).add(approver)
+    return out
+
+
+class ContractCaseOut(BaseModel):
+    case_id: str
+    case_key: str
+    partner_name: str | None = None
+    partner_tax_id: str | None = None
+    contract_code: str | None = None
+    status: str
+    meta: dict[str, Any] | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class ContractCaseListResponse(BaseModel):
+    items: list[ContractCaseOut]
+
+
+class ContractSourceOut(BaseModel):
+    source_id: str
+    case_id: str | None = None
+    source_type: str
+    source_uri: str
+    stored_uri: str | None = None
+    file_hash: str
+    size_bytes: int | None = None
+    content_type: str | None = None
+    meta: dict[str, Any] | None = None
+    created_at: datetime
+
+
+class ContractSourceListResponse(BaseModel):
+    items: list[ContractSourceOut]
+
+
+class ContractObligationOut(BaseModel):
+    obligation_id: str
+    case_id: str
+    obligation_type: str
+    currency: str
+    amount_value: float | None = None
+    amount_percent: float | None = None
+    due_date: date | None = None
+    condition_text: str
+    confidence: float
+    risk_level: str
+    signature: str
+    meta: dict[str, Any] | None = None
+    created_at: datetime
+
+
+class ContractObligationListResponse(BaseModel):
+    items: list[ContractObligationOut]
+
+
+class ContractProposalOut(BaseModel):
+    proposal_id: str
+    case_id: str
+    obligation_id: str | None = None
+    proposal_type: str
+    title: str
+    summary: str
+    details: dict[str, Any] | None = None
+    risk_level: str
+    confidence: float
+    status: str
+    created_by: str
+    tier: int
+    evidence_summary_hash: str | None = None
+    proposal_key: str
+    run_id: str | None = None
+    approvals_required: int
+    approvals_approved: int
+    created_at: datetime
+
+
+class ContractProposalListResponse(BaseModel):
+    items: list[ContractProposalOut]
+
+
+class ContractProposalCreateRequest(BaseModel):
+    case_id: str
+    obligation_id: str | None = None
+    proposal_type: str
+    title: str
+    summary: str
+    details: dict[str, Any] | None = None
+    risk_level: str = "medium"
+    confidence: float = 0.0
+    status: str = "draft"
+    created_by: str | None = None
+    tier: int = 3
+    evidence_summary_hash: str | None = None
+    run_id: str | None = None
+    proposal_key: str | None = None
+    actor_user_id: str | None = Field(default=None, description="Deprecated alias for created_by")
+
+
+class ContractProposalCreateResponse(BaseModel):
+    proposal_id: str
+    status: str
+    proposal_key: str
+
+
+class ContractApprovalOut(BaseModel):
+    approval_id: str
+    proposal_id: str
+    decision: Literal["approve", "reject"]
+    approver_id: str
+    evidence_ack: bool
+    decided_at: datetime
+    note: str | None = None
+    created_at: datetime
+
+
+class ContractApprovalListResponse(BaseModel):
+    items: list[ContractApprovalOut]
+
+
+class ContractApprovalCreateRequest(BaseModel):
+    decision: Literal["approve", "reject"]
+    approver_id: str | None = None
+    actor_user_id: str | None = Field(default=None, description="Deprecated alias for approver_id")
+    evidence_ack: bool = False
+    note: str | None = None
+    run_id: str | None = None
+
+
+class ContractApprovalCreateResponse(BaseModel):
+    approval_id: str
+    proposal_id: str
+    decision: Literal["approve", "reject"]
+    proposal_status: str
+    approvals_required: int
+    approvals_approved: int
+
+
+@app.get(
+    "/agent/v1/contract/cases",
+    dependencies=[Depends(require_api_key)],
+    response_model=ContractCaseListResponse,
+)
 def list_contract_cases(
     limit: int = 50,
     offset: int = 0,
     status: str | None = None,
     session: Session = Depends(get_session),
-) -> dict[str, Any]:
+) -> ContractCaseListResponse:
     q = (
         select(AgentContractCase)
         .order_by(AgentContractCase.created_at.desc())
@@ -520,8 +695,8 @@ def list_contract_cases(
     if status:
         q = q.where(AgentContractCase.status == status)
     rows = session.execute(q).scalars().all()
-    return {
-        "items": [
+    return ContractCaseListResponse(
+        items=[
             {
                 "case_id": r.case_id,
                 "case_key": r.case_key,
@@ -535,11 +710,15 @@ def list_contract_cases(
             }
             for r in rows
         ]
-    }
+    )
 
 
-@app.get("/agent/v1/contract/cases/{case_id}", dependencies=[Depends(require_api_key)])
-def get_contract_case(case_id: str, session: Session = Depends(get_session)) -> dict[str, Any]:
+@app.get(
+    "/agent/v1/contract/cases/{case_id}",
+    dependencies=[Depends(require_api_key)],
+    response_model=ContractCaseOut,
+)
+def get_contract_case(case_id: str, session: Session = Depends(get_session)) -> ContractCaseOut:
     r = session.get(AgentContractCase, case_id)
     if not r:
         raise HTTPException(status_code=404, detail="not found")
@@ -556,13 +735,17 @@ def get_contract_case(case_id: str, session: Session = Depends(get_session)) -> 
     }
 
 
-@app.get("/agent/v1/contract/cases/{case_id}/sources", dependencies=[Depends(require_api_key)])
-def list_contract_case_sources(case_id: str, session: Session = Depends(get_session)) -> dict[str, Any]:
+@app.get(
+    "/agent/v1/contract/cases/{case_id}/sources",
+    dependencies=[Depends(require_api_key)],
+    response_model=ContractSourceListResponse,
+)
+def list_contract_case_sources(case_id: str, session: Session = Depends(get_session)) -> ContractSourceListResponse:
     rows = session.execute(
         select(AgentSourceFile).where(AgentSourceFile.case_id == case_id).order_by(AgentSourceFile.created_at.desc())
     ).scalars().all()
-    return {
-        "items": [
+    return ContractSourceListResponse(
+        items=[
             {
                 "source_id": r.source_id,
                 "case_id": r.case_id,
@@ -577,16 +760,20 @@ def list_contract_case_sources(case_id: str, session: Session = Depends(get_sess
             }
             for r in rows
         ]
-    }
+    )
 
 
-@app.get("/agent/v1/contract/cases/{case_id}/obligations", dependencies=[Depends(require_api_key)])
-def list_case_obligations(case_id: str, session: Session = Depends(get_session)) -> dict[str, Any]:
+@app.get(
+    "/agent/v1/contract/cases/{case_id}/obligations",
+    dependencies=[Depends(require_api_key)],
+    response_model=ContractObligationListResponse,
+)
+def list_case_obligations(case_id: str, session: Session = Depends(get_session)) -> ContractObligationListResponse:
     rows = session.execute(
         select(AgentObligation).where(AgentObligation.case_id == case_id).order_by(AgentObligation.created_at.desc())
     ).scalars().all()
-    return {
-        "items": [
+    return ContractObligationListResponse(
+        items=[
             {
                 "obligation_id": r.obligation_id,
                 "case_id": r.case_id,
@@ -597,22 +784,28 @@ def list_case_obligations(case_id: str, session: Session = Depends(get_session))
                 "due_date": r.due_date,
                 "condition_text": r.condition_text,
                 "confidence": r.confidence,
+                "risk_level": _normalize_risk_level(r.risk_level),
                 "signature": r.signature,
                 "meta": r.meta,
                 "created_at": r.created_at,
             }
             for r in rows
         ]
-    }
+    )
 
 
-@app.get("/agent/v1/contract/cases/{case_id}/proposals", dependencies=[Depends(require_api_key)])
-def list_case_proposals(case_id: str, session: Session = Depends(get_session)) -> dict[str, Any]:
+@app.get(
+    "/agent/v1/contract/cases/{case_id}/proposals",
+    dependencies=[Depends(require_api_key)],
+    response_model=ContractProposalListResponse,
+)
+def list_case_proposals(case_id: str, session: Session = Depends(get_session)) -> ContractProposalListResponse:
     rows = session.execute(
         select(AgentProposal).where(AgentProposal.case_id == case_id).order_by(AgentProposal.created_at.desc())
     ).scalars().all()
-    return {
-        "items": [
+    approved = _approved_approver_ids(session, [r.proposal_id for r in rows])
+    return ContractProposalListResponse(
+        items=[
             {
                 "proposal_id": r.proposal_id,
                 "case_id": r.case_id,
@@ -621,47 +814,61 @@ def list_case_proposals(case_id: str, session: Session = Depends(get_session)) -
                 "title": r.title,
                 "summary": r.summary,
                 "details": r.details,
-                "risk_level": r.risk_level,
+                "risk_level": _normalize_risk_level(r.risk_level),
                 "confidence": r.confidence,
                 "status": r.status,
+                "created_by": r.created_by,
+                "tier": int(r.tier),
+                "evidence_summary_hash": r.evidence_summary_hash,
                 "proposal_key": r.proposal_key,
                 "run_id": r.run_id,
+                "approvals_required": _approvals_required(r.risk_level),
+                "approvals_approved": len(approved.get(r.proposal_id, set())),
                 "created_at": r.created_at,
             }
             for r in rows
         ]
-    }
+    )
 
 
-@app.post("/agent/v1/contract/proposals", dependencies=[Depends(require_api_key)])
+@app.post(
+    "/agent/v1/contract/proposals",
+    dependencies=[Depends(require_api_key)],
+    response_model=ContractProposalCreateResponse,
+)
 def post_contract_proposal(
-    body: dict[str, Any],
+    body: ContractProposalCreateRequest,
     request: Request,
     session: Session = Depends(get_session),
-) -> dict[str, Any]:
-    proposal_key = body.get("proposal_key") or request.headers.get("Idempotency-Key")
+) -> ContractProposalCreateResponse:
+    proposal_key = body.proposal_key or request.headers.get("Idempotency-Key")
     if not proposal_key:
         proposal_key = make_idempotency_key(
             "proposal",
-            body.get("case_id"),
-            body.get("obligation_id"),
-            body.get("proposal_type"),
-            body.get("title"),
+            body.case_id,
+            body.obligation_id,
+            body.proposal_type,
+            body.title,
         )
+
+    created_by = (body.created_by or body.actor_user_id or "system").strip() or "system"
 
     item = AgentProposal(
         proposal_id=new_uuid(),
-        case_id=body["case_id"],
-        obligation_id=body.get("obligation_id"),
-        proposal_type=body["proposal_type"],
-        title=body["title"],
-        summary=body["summary"],
-        details=body.get("details"),
-        risk_level=body.get("risk_level", "med"),
-        confidence=float(body.get("confidence", 0.0)),
-        status=body.get("status", "pending"),
+        case_id=body.case_id,
+        obligation_id=body.obligation_id,
+        proposal_type=body.proposal_type,
+        title=body.title,
+        summary=body.summary,
+        details=body.details,
+        risk_level=_normalize_risk_level(body.risk_level),
+        confidence=float(body.confidence or 0.0),
+        status=body.status,
+        created_by=created_by,
+        tier=int(body.tier),
+        evidence_summary_hash=body.evidence_summary_hash,
         proposal_key=proposal_key,
-        run_id=body.get("run_id"),
+        run_id=body.run_id,
     )
 
     out = _insert_or_get_unique(session, AgentProposal, (AgentProposal.proposal_key == item.proposal_key), item)
@@ -669,7 +876,7 @@ def post_contract_proposal(
     session.add(
         AgentAuditLog(
             audit_id=new_uuid(),
-            actor_user_id=body.get("actor_user_id"),
+            actor_user_id=created_by,
             action="proposal.create",
             object_type="proposal",
             object_id=out.proposal_id,
@@ -683,6 +890,8 @@ def post_contract_proposal(
                 "risk_level": out.risk_level,
                 "confidence": out.confidence,
                 "status": out.status,
+                "created_by": out.created_by,
+                "tier": int(out.tier),
                 "proposal_key": out.proposal_key,
             },
             run_id=out.run_id,
@@ -692,62 +901,150 @@ def post_contract_proposal(
     return {"proposal_id": out.proposal_id, "status": out.status, "proposal_key": out.proposal_key}
 
 
-@app.post("/agent/v1/contract/proposals/{proposal_id}/approvals", dependencies=[Depends(require_api_key)])
+@app.get(
+    "/agent/v1/contract/proposals/{proposal_id}/approvals",
+    dependencies=[Depends(require_api_key)],
+    response_model=ContractApprovalListResponse,
+)
+def list_contract_proposal_approvals(
+    proposal_id: str, session: Session = Depends(get_session)
+) -> ContractApprovalListResponse:
+    rows = session.execute(
+        select(AgentApproval)
+        .where(AgentApproval.proposal_id == proposal_id)
+        .order_by(AgentApproval.created_at.asc())
+    ).scalars().all()
+    return ContractApprovalListResponse(
+        items=[
+            {
+                "approval_id": r.approval_id,
+                "proposal_id": r.proposal_id,
+                "decision": r.decision,
+                "approver_id": (r.approver_id or r.actor_user_id or "").strip(),
+                "evidence_ack": bool(r.evidence_ack),
+                "decided_at": r.decided_at,
+                "note": r.note,
+                "created_at": r.created_at,
+            }
+            for r in rows
+        ]
+    )
+
+
+@app.post(
+    "/agent/v1/contract/proposals/{proposal_id}/approvals",
+    dependencies=[Depends(require_api_key)],
+    response_model=ContractApprovalCreateResponse,
+)
 def post_contract_approval(
     proposal_id: str,
-    body: dict[str, Any],
+    body: ContractApprovalCreateRequest,
+    request: Request,
     session: Session = Depends(get_session),
-) -> dict[str, Any]:
+) -> ContractApprovalCreateResponse:
     proposal = session.get(AgentProposal, proposal_id)
     if not proposal:
         raise HTTPException(status_code=404, detail="not found")
 
-    decision = body.get("decision")
-    if decision not in {"approve", "reject"}:
-        raise HTTPException(status_code=400, detail="invalid decision")
+    decision = body.decision
+    approver_id = (body.approver_id or body.actor_user_id or "").strip()
+    if not approver_id:
+        raise HTTPException(status_code=400, detail="approver_id is required")
+    if approver_id == "system":
+        raise HTTPException(status_code=400, detail="approver_id cannot be 'system'")
 
-    actor_user_id = body.get("actor_user_id")
-    note = body.get("note")
+    maker = (proposal.created_by or "").strip()
+    if maker and maker == approver_id:
+        raise HTTPException(status_code=409, detail="maker-checker violation: creator cannot approve")
 
+    if body.evidence_ack is not True:
+        raise HTTPException(status_code=400, detail="evidence_ack=true is required")
+
+    approvals_required = _approvals_required(proposal.risk_level)
+
+    idem = request.headers.get("Idempotency-Key") or make_idempotency_key(
+        "approval", proposal_id, approver_id, decision
+    )
     existing = session.execute(
-        select(AgentApproval).where(
-            (AgentApproval.proposal_id == proposal_id)
-            & (AgentApproval.decision == decision)
-            & (AgentApproval.actor_user_id == actor_user_id)
-            & (AgentApproval.note == note)
-        )
+        select(AgentApproval).where(AgentApproval.idempotency_key == idem)
     ).scalar_one_or_none()
     if existing:
-        return {"approval_id": existing.approval_id, "proposal_id": proposal_id, "decision": existing.decision}
+        approved = _approved_approver_ids(session, [proposal_id]).get(proposal_id, set())
+        return {
+            "approval_id": existing.approval_id,
+            "proposal_id": proposal_id,
+            "decision": existing.decision,
+            "proposal_status": proposal.status,
+            "approvals_required": approvals_required,
+            "approvals_approved": len(approved),
+        }
+
+    if proposal.status in {"approved", "rejected"}:
+        raise HTTPException(status_code=409, detail=f"proposal already finalized: {proposal.status}")
+
+    # Enforce single decision per approver per proposal.
+    prior = session.execute(
+        select(AgentApproval).where(
+            (AgentApproval.proposal_id == proposal_id) & (AgentApproval.approver_id == approver_id)
+        )
+    ).scalar_one_or_none()
+    if prior:
+        raise HTTPException(status_code=409, detail="duplicate approver: approver already decided")
 
     before_status = proposal.status
-    if proposal.status == "pending":
-        proposal.status = "approved" if decision == "approve" else "rejected"
 
     approval = AgentApproval(
         approval_id=new_uuid(),
         proposal_id=proposal_id,
         decision=decision,
-        actor_user_id=actor_user_id,
-        note=note,
+        actor_user_id=approver_id,
+        approver_id=approver_id,
+        evidence_ack=bool(body.evidence_ack),
+        decided_at=utcnow(),
+        idempotency_key=idem,
+        note=body.note,
     )
     session.add(approval)
     session.flush()
 
+    action = "proposal.reject" if decision == "reject" else "proposal.approve"
+    if decision == "reject":
+        proposal.status = "rejected"
+    else:
+        approved = _approved_approver_ids(session, [proposal_id]).get(proposal_id, set())
+        if len(approved) >= approvals_required:
+            proposal.status = "approved"
+        else:
+            proposal.status = "pending_l2" if approvals_required > 1 else "approved"
+
     session.add(
         AgentAuditLog(
             audit_id=new_uuid(),
-            actor_user_id=actor_user_id,
-            action="proposal.approve" if decision == "approve" else "proposal.reject",
+            actor_user_id=approver_id,
+            action=action,
             object_type="proposal",
             object_id=proposal_id,
             before={"status": before_status},
-            after={"status": proposal.status, "approval_id": approval.approval_id, "note": note},
-            run_id=body.get("run_id") or proposal.run_id,
+            after={
+                "status": proposal.status,
+                "approval_id": approval.approval_id,
+                "approver_id": approver_id,
+                "evidence_ack": bool(body.evidence_ack),
+                "note": body.note,
+            },
+            run_id=body.run_id or proposal.run_id,
         )
     )
 
-    return {"approval_id": approval.approval_id, "proposal_id": proposal_id, "decision": decision}
+    approved = _approved_approver_ids(session, [proposal_id]).get(proposal_id, set())
+    return {
+        "approval_id": approval.approval_id,
+        "proposal_id": proposal_id,
+        "decision": decision,
+        "proposal_status": proposal.status,
+        "approvals_required": approvals_required,
+        "approvals_approved": len(approved),
+    }
 
 
 @app.get("/agent/v1/contract/audit", dependencies=[Depends(require_api_key)])
