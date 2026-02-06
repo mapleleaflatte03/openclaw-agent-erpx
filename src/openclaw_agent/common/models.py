@@ -220,3 +220,243 @@ class AgentFeedback(Base):
     created_at: Mapped[sa.DateTime] = mapped_column(
         sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False, index=True
     )
+
+
+class AgentContractCase(Base):
+    __tablename__ = "agent_contract_cases"
+
+    case_id: Mapped[str] = mapped_column(sa.String(36), primary_key=True)
+    case_key: Mapped[str] = mapped_column(sa.String(128), unique=True, index=True)
+
+    partner_name: Mapped[str | None] = mapped_column(sa.String(256), nullable=True, index=True)
+    partner_tax_id: Mapped[str | None] = mapped_column(sa.String(32), nullable=True, index=True)
+    contract_code: Mapped[str | None] = mapped_column(sa.String(128), nullable=True, index=True)
+
+    status: Mapped[str] = mapped_column(sa.String(16), nullable=False, default="open", index=True)
+    meta: Mapped[dict | None] = mapped_column(sa.JSON, nullable=True)
+
+    created_at: Mapped[sa.DateTime] = mapped_column(
+        sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False, index=True
+    )
+    updated_at: Mapped[sa.DateTime] = mapped_column(
+        sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False, index=True
+    )
+
+    sources: Mapped[list[AgentSourceFile]] = relationship("AgentSourceFile", back_populates="case")
+    obligations: Mapped[list[AgentObligation]] = relationship("AgentObligation", back_populates="case")
+    proposals: Mapped[list[AgentProposal]] = relationship("AgentProposal", back_populates="case")
+
+
+class AgentSourceFile(Base):
+    __tablename__ = "agent_source_files"
+
+    source_id: Mapped[str] = mapped_column(sa.String(36), primary_key=True)
+    case_id: Mapped[str | None] = mapped_column(
+        sa.String(36), sa.ForeignKey("agent_contract_cases.case_id"), nullable=True, index=True
+    )
+
+    source_type: Mapped[str] = mapped_column(sa.String(32), index=True)  # contract|email|audio
+    source_uri: Mapped[str] = mapped_column(sa.String(512))
+    stored_uri: Mapped[str | None] = mapped_column(sa.String(512), nullable=True)
+    file_hash: Mapped[str] = mapped_column(sa.String(64), index=True)
+    size_bytes: Mapped[int | None] = mapped_column(sa.Integer, nullable=True)
+    content_type: Mapped[str | None] = mapped_column(sa.String(64), nullable=True)
+    meta: Mapped[dict | None] = mapped_column(sa.JSON, nullable=True)
+
+    created_at: Mapped[sa.DateTime] = mapped_column(
+        sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False, index=True
+    )
+
+    __table_args__ = (
+        sa.UniqueConstraint("file_hash", "source_type", name="uq_source_hash_type"),
+    )
+
+    case: Mapped[AgentContractCase | None] = relationship("AgentContractCase", back_populates="sources")
+    extracted_text: Mapped[AgentExtractedText | None] = relationship(
+        "AgentExtractedText", back_populates="source"
+    )
+    email_thread: Mapped[AgentEmailThread | None] = relationship("AgentEmailThread", back_populates="source")
+    audio_transcript: Mapped[AgentAudioTranscript | None] = relationship(
+        "AgentAudioTranscript", back_populates="source"
+    )
+
+
+class AgentExtractedText(Base):
+    __tablename__ = "agent_extracted_text"
+
+    text_id: Mapped[str] = mapped_column(sa.String(36), primary_key=True)
+    source_id: Mapped[str] = mapped_column(
+        sa.String(36), sa.ForeignKey("agent_source_files.source_id"), unique=True, index=True
+    )
+
+    engine: Mapped[str] = mapped_column(sa.String(32))  # pdfplumber|tesseract|whisper|email
+    text: Mapped[str] = mapped_column(sa.Text)
+    page_confidence: Mapped[dict | None] = mapped_column(sa.JSON, nullable=True)
+    extracted_at: Mapped[sa.DateTime] = mapped_column(
+        sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False, index=True
+    )
+
+    source: Mapped[AgentSourceFile] = relationship("AgentSourceFile", back_populates="extracted_text")
+
+
+class AgentAudioTranscript(Base):
+    __tablename__ = "agent_audio_transcripts"
+
+    transcript_id: Mapped[str] = mapped_column(sa.String(36), primary_key=True)
+    source_id: Mapped[str] = mapped_column(
+        sa.String(36), sa.ForeignKey("agent_source_files.source_id"), unique=True, index=True
+    )
+
+    engine: Mapped[str] = mapped_column(sa.String(32))
+    transcript: Mapped[str] = mapped_column(sa.Text)
+    segments_json: Mapped[dict | None] = mapped_column(sa.JSON, nullable=True)
+    created_at: Mapped[sa.DateTime] = mapped_column(
+        sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False, index=True
+    )
+
+    source: Mapped[AgentSourceFile] = relationship("AgentSourceFile", back_populates="audio_transcript")
+
+
+class AgentEmailThread(Base):
+    __tablename__ = "agent_email_threads"
+
+    thread_id: Mapped[str] = mapped_column(sa.String(36), primary_key=True)
+    source_id: Mapped[str] = mapped_column(
+        sa.String(36), sa.ForeignKey("agent_source_files.source_id"), unique=True, index=True
+    )
+
+    subject: Mapped[str | None] = mapped_column(sa.String(512), nullable=True, index=True)
+    from_addr: Mapped[str | None] = mapped_column(sa.String(256), nullable=True, index=True)
+    to_addrs: Mapped[list[str] | None] = mapped_column(sa.JSON, nullable=True)
+    clean_text: Mapped[str] = mapped_column(sa.Text)
+    highlights: Mapped[list[dict] | None] = mapped_column(sa.JSON, nullable=True)
+    created_at: Mapped[sa.DateTime] = mapped_column(
+        sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False, index=True
+    )
+
+    source: Mapped[AgentSourceFile] = relationship("AgentSourceFile", back_populates="email_thread")
+
+
+class AgentObligation(Base):
+    __tablename__ = "agent_obligations"
+
+    obligation_id: Mapped[str] = mapped_column(sa.String(36), primary_key=True)
+    case_id: Mapped[str] = mapped_column(sa.String(36), sa.ForeignKey("agent_contract_cases.case_id"), index=True)
+
+    obligation_type: Mapped[str] = mapped_column(sa.String(64), index=True)
+    currency: Mapped[str] = mapped_column(sa.String(8), nullable=False, default="VND")
+    amount_value: Mapped[float | None] = mapped_column(sa.Float, nullable=True)
+    amount_percent: Mapped[float | None] = mapped_column(sa.Float, nullable=True)
+    due_date: Mapped[sa.Date | None] = mapped_column(sa.Date, nullable=True, index=True)
+    condition_text: Mapped[str] = mapped_column(sa.Text)
+    confidence: Mapped[float] = mapped_column(sa.Float, nullable=False, default=0.0, index=True)
+
+    signature: Mapped[str] = mapped_column(sa.String(64), unique=True, index=True)
+    meta: Mapped[dict | None] = mapped_column(sa.JSON, nullable=True)
+    created_at: Mapped[sa.DateTime] = mapped_column(
+        sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False, index=True
+    )
+
+    case: Mapped[AgentContractCase] = relationship("AgentContractCase", back_populates="obligations")
+    evidence: Mapped[list[AgentObligationEvidence]] = relationship(
+        "AgentObligationEvidence", back_populates="obligation"
+    )
+
+
+class AgentObligationEvidence(Base):
+    __tablename__ = "agent_obligation_evidence"
+
+    evidence_id: Mapped[str] = mapped_column(sa.String(36), primary_key=True)
+    obligation_id: Mapped[str] = mapped_column(
+        sa.String(36), sa.ForeignKey("agent_obligations.obligation_id"), index=True
+    )
+    source_id: Mapped[str] = mapped_column(
+        sa.String(36), sa.ForeignKey("agent_source_files.source_id"), index=True
+    )
+
+    evidence_type: Mapped[str] = mapped_column(sa.String(32), index=True)  # quote|email|audio
+    snippet: Mapped[str] = mapped_column(sa.Text)
+    meta: Mapped[dict | None] = mapped_column(sa.JSON, nullable=True)
+    created_at: Mapped[sa.DateTime] = mapped_column(
+        sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False, index=True
+    )
+
+    obligation: Mapped[AgentObligation] = relationship("AgentObligation", back_populates="evidence")
+
+
+class AgentErpXLink(Base):
+    __tablename__ = "agent_erpx_links"
+
+    link_id: Mapped[str] = mapped_column(sa.String(36), primary_key=True)
+    case_id: Mapped[str | None] = mapped_column(
+        sa.String(36), sa.ForeignKey("agent_contract_cases.case_id"), nullable=True, index=True
+    )
+    obligation_id: Mapped[str | None] = mapped_column(
+        sa.String(36), sa.ForeignKey("agent_obligations.obligation_id"), nullable=True, index=True
+    )
+    erpx_object_type: Mapped[str] = mapped_column(sa.String(32), index=True)
+    erpx_object_id: Mapped[str] = mapped_column(sa.String(64), index=True)
+    match_confidence: Mapped[float] = mapped_column(sa.Float, nullable=False, default=0.0)
+    meta: Mapped[dict | None] = mapped_column(sa.JSON, nullable=True)
+    created_at: Mapped[sa.DateTime] = mapped_column(
+        sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False, index=True
+    )
+
+
+class AgentProposal(Base):
+    __tablename__ = "agent_proposals"
+
+    proposal_id: Mapped[str] = mapped_column(sa.String(36), primary_key=True)
+    case_id: Mapped[str] = mapped_column(sa.String(36), sa.ForeignKey("agent_contract_cases.case_id"), index=True)
+    obligation_id: Mapped[str | None] = mapped_column(
+        sa.String(36), sa.ForeignKey("agent_obligations.obligation_id"), nullable=True, index=True
+    )
+
+    proposal_type: Mapped[str] = mapped_column(sa.String(64), index=True)
+    title: Mapped[str] = mapped_column(sa.String(512))
+    summary: Mapped[str] = mapped_column(sa.Text)
+    details: Mapped[dict | None] = mapped_column(sa.JSON, nullable=True)
+    risk_level: Mapped[str] = mapped_column(sa.String(8), nullable=False, default="med", index=True)
+    confidence: Mapped[float] = mapped_column(sa.Float, nullable=False, default=0.0, index=True)
+    status: Mapped[str] = mapped_column(sa.String(16), nullable=False, default="pending", index=True)
+
+    proposal_key: Mapped[str] = mapped_column(sa.String(128), unique=True, index=True)
+    run_id: Mapped[str | None] = mapped_column(sa.String(36), nullable=True, index=True)
+    created_at: Mapped[sa.DateTime] = mapped_column(
+        sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False, index=True
+    )
+
+    case: Mapped[AgentContractCase] = relationship("AgentContractCase", back_populates="proposals")
+    approvals: Mapped[list[AgentApproval]] = relationship("AgentApproval", back_populates="proposal")
+
+
+class AgentApproval(Base):
+    __tablename__ = "agent_approvals"
+
+    approval_id: Mapped[str] = mapped_column(sa.String(36), primary_key=True)
+    proposal_id: Mapped[str] = mapped_column(sa.String(36), sa.ForeignKey("agent_proposals.proposal_id"), index=True)
+
+    decision: Mapped[str] = mapped_column(sa.String(16), index=True)  # approve|reject
+    actor_user_id: Mapped[str | None] = mapped_column(sa.String(64), nullable=True, index=True)
+    note: Mapped[str | None] = mapped_column(sa.Text, nullable=True)
+    created_at: Mapped[sa.DateTime] = mapped_column(
+        sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False, index=True
+    )
+
+    proposal: Mapped[AgentProposal] = relationship("AgentProposal", back_populates="approvals")
+
+
+class AgentAuditLog(Base):
+    __tablename__ = "agent_audit_log"
+
+    audit_id: Mapped[str] = mapped_column(sa.String(36), primary_key=True)
+    actor_user_id: Mapped[str | None] = mapped_column(sa.String(64), nullable=True, index=True)
+    action: Mapped[str] = mapped_column(sa.String(64), index=True)
+    object_type: Mapped[str] = mapped_column(sa.String(64), index=True)
+    object_id: Mapped[str] = mapped_column(sa.String(64), index=True)
+    before: Mapped[dict | None] = mapped_column(sa.JSON, nullable=True)
+    after: Mapped[dict | None] = mapped_column(sa.JSON, nullable=True)
+    run_id: Mapped[str | None] = mapped_column(sa.String(36), nullable=True, index=True)
+    ts: Mapped[sa.DateTime] = mapped_column(
+        sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False, index=True
+    )
