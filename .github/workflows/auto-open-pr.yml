@@ -1,6 +1,7 @@
 name: auto-open-pr
 
 on:
+  workflow_dispatch:
   push:
     branches:
       - "chore/*"
