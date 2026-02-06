@@ -10,7 +10,7 @@ Run an **auxiliary accounting agent** side-by-side with ERPX. The agent is **rea
   - REST API for operations/UI: `/agent/v1/*`
   - Creates runs/tasks, enqueues work, exposes metrics
 - **Workers** (`agent-worker`)
-  - Celery workers consuming Redis queues, executing 8 workflows (OCR/ETL/I-O/export/index)
+  - Celery workers consuming Redis queues, executing workflows (OCR/ETL/I-O/export/index + contract obligation)
 - **Scheduler** (`agent-scheduler`)
   - Cron-style triggers + polling MinIO drop buckets (event triggers)
 - **Data**
@@ -30,6 +30,14 @@ Run an **auxiliary accounting agent** side-by-side with ERPX. The agent is **rea
    - MinIO objects (files) with checksums
 4. Status/logs written to `agent_tasks` + `agent_logs`
 5. UI queries `/agent/v1/*` to show history and outputs
+
+## Contract Obligation Agent (5C)
+- **Scope**: ERPX **read-only**; agent chỉ tạo **draft ngoài luồng** (proposals/approvals/audit/evidence packs).
+- **3-tier gating (Tier1/Tier2/Tier3)** dựa trên required fields + evidence strength + conflict handling:
+  - Tier 1: draft `reminder` (+ `accrual_template` chỉ cho milestone), có evidence pack
+  - Tier 2: `review_confirm` (summary + confirm quick), không tạo template bút toán
+  - Tier 3: `missing_data`, không suy diễn
+- **Maker-checker 2 lớp** cho `risk_level=high`: người tạo không được duyệt; cần 2 approver khác nhau; bắt buộc tick `evidence_ack=true`.
 
 ## 6-node Layout (leviathan-data x6)
 Each node: 4 vCPU / 16GB / 200GB, Ubuntu 22.04, SGP1.
