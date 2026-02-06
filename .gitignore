@@ -13,6 +13,7 @@ venv/
 
 .env
 .env.*
+!.env.example
 
 data/
 tmp/
@@ -20,4 +21,3 @@ tmp/
 *.db
 
 .DS_Store
-

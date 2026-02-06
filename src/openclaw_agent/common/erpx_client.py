@@ -72,6 +72,25 @@ class ErpXClient:
     def get_journals(self, updated_after: str | None = None) -> list[dict]:
         return list(self._get("/erp/v1/journals", params={"updated_after": updated_after} if updated_after else None))
 
+    def get_partners(self, updated_after: str | None = None) -> list[dict]:
+        return list(self._get("/erp/v1/partners", params={"updated_after": updated_after} if updated_after else None))
+
+    def get_contracts(self, updated_after: str | None = None, partner_id: str | None = None) -> list[dict]:
+        params: dict[str, Any] = {}
+        if updated_after:
+            params["updated_after"] = updated_after
+        if partner_id:
+            params["partner_id"] = partner_id
+        return list(self._get("/erp/v1/contracts", params=params or None))
+
+    def get_payments(self, contract_id: str | None = None, updated_after: str | None = None) -> list[dict]:
+        params: dict[str, Any] = {}
+        if contract_id:
+            params["contract_id"] = contract_id
+        if updated_after:
+            params["updated_after"] = updated_after
+        return list(self._get("/erp/v1/payments", params=params or None))
+
     def get_vouchers(self, updated_after: str | None = None) -> list[dict]:
         return list(self._get("/erp/v1/vouchers", params={"updated_after": updated_after} if updated_after else None))
 

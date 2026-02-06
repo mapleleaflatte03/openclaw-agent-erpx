@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import csv
+import mimetypes
 import re
 import shutil
 import tempfile
 import zipfile
 from datetime import date, datetime, timedelta, timezone
+from email import policy
+from email.parser import BytesParser
 from pathlib import Path
 from typing import Any
 
@@ -25,14 +28,22 @@ from openclaw_agent.common.erpx_client import ErpXClient
 from openclaw_agent.common.logging import configure_logging, get_logger
 from openclaw_agent.common.models import (
     AgentAttachment,
+    AgentAuditLog,
     AgentCloseTask,
+    AgentContractCase,
+    AgentEmailThread,
     AgentEvidencePack,
     AgentException,
     AgentExport,
+    AgentExtractedText,
     AgentKbDoc,
     AgentLog,
+    AgentObligation,
+    AgentObligationEvidence,
+    AgentProposal,
     AgentReminderLog,
     AgentRun,
+    AgentSourceFile,
     AgentTask,
 )
 from openclaw_agent.common.settings import get_settings
@@ -345,6 +356,8 @@ def dispatch_run(self: Task, run_id: str) -> dict[str, Any]:
             stats = _wf_evidence_pack(run_id)
         elif run_type == "kb_index":
             stats = _wf_kb_index(run_id)
+        elif run_type == "contract_obligation":
+            stats = _wf_contract_obligation(run_id)
         else:
             raise RuntimeError(f"unsupported run_type: {run_type}")
 
@@ -1094,5 +1107,702 @@ def _wf_kb_index(run_id: str) -> dict[str, Any]:
         _task_finish(run_id, "register", "success", {"text_uri": obj.uri()})
         _update_run(run_id, cursor_out={"file_hash": file_hash, "text_uri": obj.uri()})
         return {"indexed": 1}
+    finally:
+        shutil.rmtree(workdir, ignore_errors=True)
+
+
+def _clean_email_text(text: str) -> str:
+    # Keep deterministic and conservative: remove quoted replies and common separators.
+    out_lines: list[str] = []
+    for line in text.splitlines():
+        s = line.rstrip()
+        if s.strip().startswith(">"):
+            continue
+        if s.strip().lower().startswith("-----original message-----"):
+            break
+        out_lines.append(s)
+    return "\n".join(out_lines).strip()
+
+
+def _parse_email_file(path: str) -> tuple[str | None, str | None, list[str] | None, str]:
+    ext = Path(path).suffix.lower()
+    if ext == ".eml":
+        msg = BytesParser(policy=policy.default).parsebytes(Path(path).read_bytes())
+        subject = str(msg.get("subject") or "") or None
+        from_addr = str(msg.get("from") or "") or None
+        to_addrs = [str(v) for v in (msg.get_all("to") or [])] or None
+
+        body = ""
+        if msg.is_multipart():
+            for part in msg.walk():
+                if part.get_content_type() == "text/plain":
+                    try:
+                        body = part.get_content() or ""
+                    except Exception:
+                        body = ""
+                    break
+        else:
+            try:
+                body = msg.get_content() or ""
+            except Exception:
+                body = ""
+
+        return subject, from_addr, to_addrs, _clean_email_text(body)
+
+    raw = Path(path).read_text(encoding="utf-8", errors="ignore")
+    return None, None, None, _clean_email_text(raw)
+
+
+def _try_parse_date_any(s: str) -> date | None:
+    s = s.strip()
+    try:
+        return date.fromisoformat(s)
+    except Exception:
+        pass
+    for fmt in ("%d/%m/%Y", "%d-%m-%Y"):
+        try:
+            return datetime.strptime(s, fmt).date()
+        except Exception:
+            continue
+    return None
+
+
+def _extract_contract_meta(text: str) -> dict[str, str]:
+    norm = " ".join(text.split())
+    out: dict[str, str] = {}
+
+    m = re.search(r"(?:MST|Tax\\s*ID)\\s*[:#]?\\s*([0-9]{10,13})", norm, re.I)
+    if m:
+        out["partner_tax_id"] = m.group(1).strip()
+
+    m = re.search(
+        r"(?:H[oơ]p\\s*đ[oồ]ng\\s*s[oố]|S[oố]\\s*HĐ|Contract\\s*(?:No|Code))\\s*[:#]?\\s*([A-Z0-9\\-/]+)",
+        norm,
+        re.I,
+    )
+    if m:
+        out["contract_code"] = m.group(1).strip()
+
+    return out
+
+
+def _parse_percent(s: str) -> float | None:
+    m = re.search(r"(\\d+(?:\\.\\d+)?)\\s*%", s)
+    if not m:
+        return None
+    try:
+        return float(m.group(1))
+    except Exception:
+        return None
+
+
+def _extract_obligation_candidates(text: str) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for raw_line in text.splitlines():
+        line = " ".join(raw_line.strip().split())
+        if not line:
+            continue
+        lower = line.lower()
+
+        currency = None
+        m_cur = re.search(r"\\b(VND|USD|EUR)\\b", line)
+        if m_cur:
+            currency = m_cur.group(1).upper()
+
+        m_due = re.search(r"(\\d{4}-\\d{2}-\\d{2}|\\d{1,2}[/-]\\d{1,2}[/-]\\d{4})", line)
+        due_date = _try_parse_date_any(m_due.group(1)) if m_due else None
+        m_within = re.search(r"(?:within|trong\\s*v[oò]ng)\\s*(\\d{1,3})\\s*(?:days|ng[aà]y)", line, re.I)
+        within_days = int(m_within.group(1)) if m_within else None
+
+        # 1) Milestone payment
+        if re.search(r"\\b(milestone|đ[oợ]t|thanh\\s*to[aá]n|payment|pay)\\b", line, re.I):
+            pct = _parse_percent(line)
+            conf = 0.4
+            if pct is not None:
+                conf += 0.3
+            if due_date or within_days is not None:
+                conf += 0.2
+            conf = min(conf + 0.1, 1.0)
+            out.append(
+                {
+                    "obligation_type": "milestone_payment",
+                    "currency": currency or "VND",
+                    "amount_value": None,
+                    "amount_percent": pct,
+                    "due_date": due_date,
+                    "condition_text": line,
+                    "confidence": conf,
+                    "meta": {"within_days": within_days} if within_days is not None else None,
+                }
+            )
+
+        # 2) Early payment discount
+        if "discount" in lower or "chiết khấu" in lower or "chiet khau" in lower:
+            pct = _parse_percent(line)
+            conf = 0.4
+            if pct is not None:
+                conf += 0.3
+            if due_date or within_days is not None:
+                conf += 0.2
+            if "early" in lower or "sớm" in lower or "som" in lower:
+                conf += 0.1
+            conf = min(conf, 1.0)
+            out.append(
+                {
+                    "obligation_type": "early_payment_discount",
+                    "currency": currency or "VND",
+                    "amount_value": None,
+                    "amount_percent": pct,
+                    "due_date": due_date,
+                    "condition_text": line,
+                    "confidence": conf,
+                    "meta": {"within_days": within_days} if within_days is not None else None,
+                }
+            )
+
+        # 3) Late payment penalty
+        if "penalty" in lower or "phạt" in lower or "phat" in lower:
+            pct = _parse_percent(line)
+            conf = 0.4
+            if pct is not None:
+                conf += 0.3
+            if "per day" in lower or "/ngày" in lower or "/ngay" in lower:
+                conf += 0.2
+            if "late" in lower or "chậm" in lower or "cham" in lower:
+                conf += 0.1
+            conf = min(conf, 1.0)
+            out.append(
+                {
+                    "obligation_type": "late_payment_penalty",
+                    "currency": currency or "VND",
+                    "amount_value": None,
+                    "amount_percent": pct,
+                    "due_date": due_date,
+                    "condition_text": line,
+                    "confidence": conf,
+                    "meta": {"within_days": within_days} if within_days is not None else None,
+                }
+            )
+
+    return out
+
+
+def _wf_contract_obligation(run_id: str) -> dict[str, Any]:
+    payload = _run_payload(run_id)
+    contract_files = list(payload.get("contract_files") or [])
+    email_files = list(payload.get("email_files") or [])
+
+    # Convenience for one-file demos (backward-ish compatible with attachment payloads).
+    if not contract_files and payload.get("file_uri"):
+        contract_files = [payload["file_uri"]]
+
+    if not contract_files and not email_files:
+        raise RuntimeError("payload.contract_files or payload.email_files is required")
+
+    workdir = Path(tempfile.mkdtemp(prefix=f"agent-{run_id}-"))
+    try:
+        t_id = _task_start(
+            run_id,
+            "ingest_sources",
+            {"contract_files": len(contract_files), "email_files": len(email_files)},
+        )
+
+        staged: list[dict[str, Any]] = []
+
+        def _stage_uri(uri: str, source_type: str, idx: int) -> dict[str, Any]:
+            if str(uri).startswith("s3://"):
+                ref = parse_s3_uri(uri)
+                suffix = Path(ref.key).suffix or ".bin"
+                local_path = str(workdir / f"{source_type}-{idx}{suffix}")
+                download_file(settings, ref, local_path)
+            else:
+                suffix = Path(str(uri)).suffix or ".bin"
+                local_path = str(workdir / f"{source_type}-{idx}{suffix}")
+                shutil.copyfile(uri, local_path)
+
+            file_hash = sha256_file(local_path)
+            content_type, _ = mimetypes.guess_type(local_path)
+            return {
+                "source_type": source_type,
+                "source_uri": uri,
+                "local_path": local_path,
+                "ext": Path(local_path).suffix.lower(),
+                "file_hash": file_hash,
+                "size_bytes": int(Path(local_path).stat().st_size),
+                "content_type": content_type,
+                "stored_uri": uri if str(uri).startswith("s3://") else None,
+            }
+
+        for i, uri in enumerate(contract_files):
+            staged.append(_stage_uri(str(uri), "contract", i))
+        for i, uri in enumerate(email_files):
+            staged.append(_stage_uri(str(uri), "email", i))
+
+        contract_hashes = sorted([x["file_hash"] for x in staged if x["source_type"] == "contract"])
+        email_hashes = sorted([x["file_hash"] for x in staged if x["source_type"] == "email"])
+        case_key = payload.get("case_key") or make_idempotency_key("contract_case", contract_hashes, email_hashes)
+
+        # Upload to drop bucket (stable key by hash) for local-file inputs.
+        for item in staged:
+            if item.get("stored_uri"):
+                continue
+            key = f"contract_cases/{case_key}/{item['source_type']}/{item['file_hash']}{item['ext']}"
+            obj = upload_file(
+                settings,
+                settings.minio_bucket_drop,
+                key,
+                item["local_path"],
+                content_type=item.get("content_type"),
+            )
+            item["stored_uri"] = obj.uri()
+
+        _task_finish(run_id, "ingest_sources", "success", {"case_key": case_key, "sources": len(staged)})
+        _db_log(run_id, t_id, "info", "contract_ingested", {"case_key": case_key, "sources": len(staged)})
+
+        # Phase 1: upsert case + source rows
+        with db_session(engine) as s:
+            existing_case = s.execute(
+                select(AgentContractCase).where(AgentContractCase.case_key == case_key)
+            ).scalar_one_or_none()
+
+            case_from_source_id: str | None = None
+            for item in staged:
+                src = s.execute(
+                    select(AgentSourceFile).where(
+                        (AgentSourceFile.file_hash == item["file_hash"])
+                        & (AgentSourceFile.source_type == item["source_type"])
+                    )
+                ).scalar_one_or_none()
+                if src and src.case_id:
+                    case_from_source_id = src.case_id
+                    break
+
+            case = existing_case
+            if not case and case_from_source_id:
+                case = s.get(AgentContractCase, case_from_source_id)
+
+            if not case:
+                case = AgentContractCase(
+                    case_id=new_uuid(),
+                    case_key=case_key,
+                    partner_name=payload.get("partner_name"),
+                    partner_tax_id=payload.get("partner_tax_id"),
+                    contract_code=payload.get("contract_code"),
+                    status="open",
+                    meta=payload.get("meta"),
+                )
+                s.add(case)
+                s.flush()
+
+            # Backfill from payload if present
+            if payload.get("partner_name") and not case.partner_name:
+                case.partner_name = payload["partner_name"]
+            if payload.get("partner_tax_id") and not case.partner_tax_id:
+                case.partner_tax_id = payload["partner_tax_id"]
+            if payload.get("contract_code") and not case.contract_code:
+                case.contract_code = payload["contract_code"]
+
+            source_ids: list[str] = []
+            for item in staged:
+                src = s.execute(
+                    select(AgentSourceFile).where(
+                        (AgentSourceFile.file_hash == item["file_hash"])
+                        & (AgentSourceFile.source_type == item["source_type"])
+                    )
+                ).scalar_one_or_none()
+                if src:
+                    if not src.case_id:
+                        src.case_id = case.case_id
+                    if not src.stored_uri and item.get("stored_uri"):
+                        src.stored_uri = item["stored_uri"]
+                    source_ids.append(src.source_id)
+                    continue
+
+                src = AgentSourceFile(
+                    source_id=new_uuid(),
+                    case_id=case.case_id,
+                    source_type=item["source_type"],
+                    source_uri=item["source_uri"],
+                    stored_uri=item.get("stored_uri"),
+                    file_hash=item["file_hash"],
+                    size_bytes=item.get("size_bytes"),
+                    content_type=item.get("content_type"),
+                    meta=None,
+                )
+                s.add(src)
+                s.flush()
+                source_ids.append(src.source_id)
+
+            case_id = case.case_id
+
+        # Phase 2: extract contract text + parse emails (idempotent per source_id)
+        contract_texts: list[tuple[str, str]] = []
+        email_texts: list[tuple[str, str]] = []
+
+        t_id = _task_start(run_id, "extract_contract_text", {"contracts": len(contract_files)})
+        try:
+            for item in staged:
+                if item["source_type"] != "contract":
+                    continue
+                with db_session(engine) as s:
+                    src = s.execute(
+                        select(AgentSourceFile).where(
+                            (AgentSourceFile.file_hash == item["file_hash"])
+                            & (AgentSourceFile.source_type == item["source_type"])
+                        )
+                    ).scalar_one_or_none()
+                    if not src:
+                        continue
+
+                    existing = s.execute(
+                        select(AgentExtractedText).where(AgentExtractedText.source_id == src.source_id)
+                    ).scalar_one_or_none()
+                    if existing:
+                        contract_texts.append((src.source_id, existing.text))
+                        continue
+
+                    ext = Path(item["local_path"]).suffix.lower()
+                    engine_name = "unknown"
+                    if ext == ".pdf":
+                        engine_name = "pdfplumber"
+                        text = _extract_pdf_text(item["local_path"])
+                        if not text.strip():
+                            engine_name = "tesseract"
+                            text = _ocr_pdf(item["local_path"], max_pages=settings.ocr_pdf_max_pages)
+                    elif ext in {".png", ".jpg", ".jpeg", ".tif", ".tiff"}:
+                        engine_name = "tesseract"
+                        text = _ocr_image(item["local_path"])
+                    else:
+                        engine_name = "raw"
+                        text = Path(item["local_path"]).read_text(encoding="utf-8", errors="ignore")
+
+                    s.add(
+                        AgentExtractedText(
+                            text_id=new_uuid(),
+                            source_id=src.source_id,
+                            engine=engine_name,
+                            text=text,
+                            page_confidence=None,
+                        )
+                    )
+                    contract_texts.append((src.source_id, text))
+        finally:
+            _task_finish(run_id, "extract_contract_text", "success", {"sources": len(contract_texts)})
+
+        t_id = _task_start(run_id, "parse_emails", {"emails": len(email_files)})
+        try:
+            for item in staged:
+                if item["source_type"] != "email":
+                    continue
+                with db_session(engine) as s:
+                    src = s.execute(
+                        select(AgentSourceFile).where(
+                            (AgentSourceFile.file_hash == item["file_hash"])
+                            & (AgentSourceFile.source_type == item["source_type"])
+                        )
+                    ).scalar_one_or_none()
+                    if not src:
+                        continue
+
+                    existing = s.execute(
+                        select(AgentEmailThread).where(AgentEmailThread.source_id == src.source_id)
+                    ).scalar_one_or_none()
+                    if existing:
+                        email_texts.append((src.source_id, existing.clean_text))
+                        continue
+
+                    subject, from_addr, to_addrs, clean_text = _parse_email_file(item["local_path"])
+                    s.add(
+                        AgentEmailThread(
+                            thread_id=new_uuid(),
+                            source_id=src.source_id,
+                            subject=subject,
+                            from_addr=from_addr,
+                            to_addrs=to_addrs,
+                            clean_text=clean_text or "",
+                            highlights=None,
+                        )
+                    )
+                    email_texts.append((src.source_id, clean_text or ""))
+        finally:
+            _task_finish(run_id, "parse_emails", "success", {"sources": len(email_texts)})
+
+        combined_text = "\n".join([t for _, t in contract_texts] + [t for _, t in email_texts])
+
+        # Phase 3: extract obligations + evidence
+        t_id = _task_start(run_id, "extract_obligations", {"text_len": len(combined_text)})
+        try:
+            sig_to_item: dict[str, dict[str, Any]] = {}
+            for source_id, text in contract_texts + email_texts:
+                for cand in _extract_obligation_candidates(text):
+                    sig_payload = [
+                        case_key,
+                        cand["obligation_type"],
+                        cand.get("currency"),
+                        cand.get("amount_value"),
+                        cand.get("amount_percent"),
+                        str(cand.get("due_date") or ""),
+                        " ".join(str(cand.get("condition_text") or "").split()),
+                    ]
+                    signature = sha256_text(json_dumps_canonical(sig_payload))
+                    existing = sig_to_item.get(signature)
+                    ev = {
+                        "source_id": source_id,
+                        "evidence_type": "email" if (source_id, text) in email_texts else "quote",
+                        "snippet": str(cand.get("condition_text") or "")[:2000],
+                        "meta": None,
+                    }
+                    if not existing:
+                        sig_to_item[signature] = {
+                            **cand,
+                            "signature": signature,
+                            "evidence": [ev],
+                        }
+                    else:
+                        existing["confidence"] = max(float(existing.get("confidence") or 0.0), float(cand["confidence"]))
+                        existing["evidence"].append(ev)
+
+            obligations_created = 0
+            evidence_created = 0
+
+            with db_session(engine) as s:
+                for signature, item in sig_to_item.items():
+                    ob = s.execute(
+                        select(AgentObligation).where(AgentObligation.signature == signature)
+                    ).scalar_one_or_none()
+                    if not ob:
+                        ob = AgentObligation(
+                            obligation_id=new_uuid(),
+                            case_id=case_id,
+                            obligation_type=item["obligation_type"],
+                            currency=item.get("currency") or "VND",
+                            amount_value=item.get("amount_value"),
+                            amount_percent=item.get("amount_percent"),
+                            due_date=item.get("due_date"),
+                            condition_text=item.get("condition_text") or "",
+                            confidence=float(item.get("confidence") or 0.0),
+                            signature=signature,
+                            meta=item.get("meta"),
+                        )
+                        s.add(ob)
+                        s.flush()
+                        obligations_created += 1
+                    else:
+                        # keep best known confidence
+                        ob.confidence = max(float(ob.confidence or 0.0), float(item.get("confidence") or 0.0))
+
+                    for ev in item["evidence"]:
+                        evidence_id = make_idempotency_key(
+                            "obligation_evidence",
+                            signature,
+                            ev["source_id"],
+                            ev["evidence_type"],
+                            ev["snippet"],
+                        )[:36]
+                        if s.get(AgentObligationEvidence, evidence_id):
+                            continue
+                        s.add(
+                            AgentObligationEvidence(
+                                evidence_id=evidence_id,
+                                obligation_id=ob.obligation_id,
+                                source_id=ev["source_id"],
+                                evidence_type=ev["evidence_type"],
+                                snippet=ev["snippet"],
+                                meta=ev.get("meta"),
+                            )
+                        )
+                        evidence_created += 1
+        finally:
+            _task_finish(
+                run_id,
+                "extract_obligations",
+                "success",
+                {"obligations": obligations_created, "evidence": evidence_created},
+            )
+
+        # Phase 4: reconcile ERPX (read-only)
+        t_id = _task_start(run_id, "reconcile_erpx")
+        try:
+            contract_meta = _extract_contract_meta(combined_text)
+            with db_session(engine) as s:
+                case = s.get(AgentContractCase, case_id)
+                if case:
+                    if contract_meta.get("partner_tax_id") and not case.partner_tax_id:
+                        case.partner_tax_id = contract_meta["partner_tax_id"]
+                    if contract_meta.get("contract_code") and not case.contract_code:
+                        case.contract_code = contract_meta["contract_code"]
+
+            client = ErpXClient(settings)
+            try:
+                # Just verify connectivity for MVP; full linking is handled in later iterations.
+                _ = client.get_contracts()
+            finally:
+                client.close()
+        finally:
+            _task_finish(run_id, "reconcile_erpx", "success")
+
+        # Phase 5: create proposals (idempotent via proposal_key)
+        t_id = _task_start(run_id, "create_proposals")
+        try:
+            proposals_created = 0
+            with db_session(engine) as s:
+                threshold = float(getattr(settings, "obligation_confidence_threshold", 0.8))
+                obs = s.execute(select(AgentObligation).where(AgentObligation.case_id == case_id)).scalars().all()
+                for ob in obs:
+                    if float(ob.confidence or 0.0) < threshold:
+                        p_key = make_idempotency_key("review_needed", ob.signature)
+                        existing = s.execute(
+                            select(AgentProposal).where(AgentProposal.proposal_key == p_key)
+                        ).scalar_one_or_none()
+                        if existing:
+                            continue
+                        p = AgentProposal(
+                            proposal_id=new_uuid(),
+                            case_id=case_id,
+                            obligation_id=ob.obligation_id,
+                            proposal_type="review_needed",
+                            title=f"Review needed: {ob.obligation_type}",
+                            summary=ob.condition_text[:2000],
+                            details={"reason": "low_confidence", "confidence": float(ob.confidence or 0.0)},
+                            risk_level="high",
+                            confidence=float(ob.confidence or 0.0),
+                            status="pending",
+                            proposal_key=p_key,
+                            run_id=run_id,
+                        )
+                        s.add(p)
+                        s.flush()
+                        s.add(
+                            AgentAuditLog(
+                                audit_id=new_uuid(),
+                                actor_user_id=None,
+                                action="proposal.create",
+                                object_type="proposal",
+                                object_id=p.proposal_id,
+                                before=None,
+                                after={
+                                    "proposal_id": p.proposal_id,
+                                    "case_id": p.case_id,
+                                    "obligation_id": p.obligation_id,
+                                    "proposal_type": p.proposal_type,
+                                    "proposal_key": p.proposal_key,
+                                },
+                                run_id=run_id,
+                            )
+                        )
+                        proposals_created += 1
+                        continue
+
+                    # High confidence: reminder + (milestone-only) accrual template
+                    reminder_key = make_idempotency_key("reminder", ob.signature)
+                    existing = s.execute(
+                        select(AgentProposal).where(AgentProposal.proposal_key == reminder_key)
+                    ).scalar_one_or_none()
+                    if not existing:
+                        p = AgentProposal(
+                            proposal_id=new_uuid(),
+                            case_id=case_id,
+                            obligation_id=ob.obligation_id,
+                            proposal_type="reminder",
+                            title=f"Reminder: {ob.obligation_type}",
+                            summary=ob.condition_text[:2000],
+                            details={"due_date": str(ob.due_date) if ob.due_date else None},
+                            risk_level="low",
+                            confidence=float(ob.confidence or 0.0),
+                            status="pending",
+                            proposal_key=reminder_key,
+                            run_id=run_id,
+                        )
+                        s.add(p)
+                        s.flush()
+                        s.add(
+                            AgentAuditLog(
+                                audit_id=new_uuid(),
+                                actor_user_id=None,
+                                action="proposal.create",
+                                object_type="proposal",
+                                object_id=p.proposal_id,
+                                before=None,
+                                after={
+                                    "proposal_id": p.proposal_id,
+                                    "case_id": p.case_id,
+                                    "obligation_id": p.obligation_id,
+                                    "proposal_type": p.proposal_type,
+                                    "proposal_key": p.proposal_key,
+                                },
+                                run_id=run_id,
+                            )
+                        )
+                        proposals_created += 1
+
+                    if ob.obligation_type != "milestone_payment":
+                        continue
+
+                    accrual_key = make_idempotency_key("accrual_template", ob.signature)
+                    existing = s.execute(
+                        select(AgentProposal).where(AgentProposal.proposal_key == accrual_key)
+                    ).scalar_one_or_none()
+                    if existing:
+                        continue
+
+                    p = AgentProposal(
+                        proposal_id=new_uuid(),
+                        case_id=case_id,
+                        obligation_id=ob.obligation_id,
+                        proposal_type="accrual_template",
+                        title="Accrual/deferral template (review & approve)",
+                        summary=ob.condition_text[:2000],
+                        details={
+                            "note": "Template only. Must be reviewed/approved. Agent does not post to ERPX.",
+                            "currency": ob.currency,
+                            "amount_percent": ob.amount_percent,
+                            "amount_value": ob.amount_value,
+                        },
+                        risk_level="med",
+                        confidence=float(ob.confidence or 0.0),
+                        status="pending",
+                        proposal_key=accrual_key,
+                        run_id=run_id,
+                    )
+                    s.add(p)
+                    s.flush()
+                    s.add(
+                        AgentAuditLog(
+                            audit_id=new_uuid(),
+                            actor_user_id=None,
+                            action="proposal.create",
+                            object_type="proposal",
+                            object_id=p.proposal_id,
+                            before=None,
+                            after={
+                                "proposal_id": p.proposal_id,
+                                "case_id": p.case_id,
+                                "obligation_id": p.obligation_id,
+                                "proposal_type": p.proposal_type,
+                                "proposal_key": p.proposal_key,
+                            },
+                            run_id=run_id,
+                        )
+                    )
+                    proposals_created += 1
+
+            _update_run(
+                run_id,
+                cursor_out={
+                    "case_id": case_id,
+                    "case_key": case_key,
+                    "obligations": len(sig_to_item),
+                    "proposals_created": proposals_created,
+                },
+            )
+        finally:
+            _task_finish(run_id, "create_proposals", "success")
+
+        return {
+            "case_id": case_id,
+            "case_key": case_key,
+            "sources": len(staged),
+            "obligations": len(sig_to_item),
+        }
     finally:
         shutil.rmtree(workdir, ignore_errors=True)

@@ -48,6 +48,8 @@ class Settings(BaseSettings):
     ocr_timeout_seconds: int = Field(default=40, alias="OCR_TIMEOUT_SECONDS")
     ocr_pdf_max_pages: int = Field(default=3, alias="OCR_PDF_MAX_PAGES")
 
+    obligation_confidence_threshold: float = Field(default=0.8, alias="OBLIGATION_CONFIDENCE_THRESHOLD")
+
     smtp_host: str = Field(default="", alias="SMTP_HOST")
     smtp_port: int = Field(default=587, alias="SMTP_PORT")
     smtp_user: str = Field(default="", alias="SMTP_USER")

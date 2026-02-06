@@ -153,3 +153,28 @@ workflows:
         skill: register_kb_doc
         queue: io
 
+  contract_obligation:
+    run_type: contract_obligation
+    idempotency:
+      run_key_template: "contract_obligation:{case_key}"
+      output_unique: ["proposal_key"]
+    steps:
+      - name: ingest_sources
+        skill: ingest_contract_sources
+        queue: io
+      - name: extract_contract_text
+        skill: pdf_text_or_ocr
+        queue: ocr
+        soft_timeout_seconds: 120
+      - name: parse_emails
+        skill: parse_email_thread
+        queue: default
+      - name: extract_obligations
+        skill: obligation_extract_rules
+        queue: default
+      - name: reconcile_erpx
+        skill: erpx_reconcile_contract
+        queue: default
+      - name: create_proposals
+        skill: create_contract_proposals
+        queue: default
