@@ -5,6 +5,7 @@ namespace: openclaw-agent-staging
 
 resources:
   - namespace.yaml
+  - default-serviceaccount.yaml
   - ../../base
 
 patchesStrategicMerge:
