@@ -51,7 +51,13 @@ Expected staging URLs (Ingress on node-01):
 - Agent API: `http(s)://<node-01-public-ip>/agent/v1/...`
 - ERPX mock: `http(s)://<node-01-public-ip>/erp/v1/...`
 
-If Ingress is not used yet: use port-forward (the CI smoke uses port-forward).
+If Ingress is not used yet: use NodePort (staging overlay defaults) or port-forward.
+
+NodePort (staging overlay defaults):
+- UI: `http://<node-public-ip>:30851`
+- Agent API: `http://<node-public-ip>:30080/agent/v1/...`
+
+CI smoke uses `kubectl port-forward` (does not require Ingress/NodePort to be reachable from the Internet).
 
 ## C) Auto-Deploy (GitHub Actions -> k3s staging)
 
@@ -89,4 +95,3 @@ Runtime secrets (used to create `agent-secrets` in-cluster):
 Notes:
 - No secrets are committed to git.
 - No PAT is used; publishing uses `GITHUB_TOKEN` permissions in Actions.
-
