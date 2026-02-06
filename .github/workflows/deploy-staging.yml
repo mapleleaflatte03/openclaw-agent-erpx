@@ -1,0 +1,237 @@
+name: deploy-staging
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: openclaw-staging
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: staging
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install Python deps
+        run: |
+          python -m pip install -U pip
+          python -m pip install -e '.[dev,ui]'
+
+      - name: Gate (lint/test/openapi)
+        run: |
+          python -m compileall -q src scripts
+          ruff check .
+          pytest
+          python scripts/export_openapi.py
+          git diff --exit-code openapi/
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Build & push (agent-service)
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: services/agent-service/Dockerfile
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository }}/agent-service:${{ github.sha }}
+            ghcr.io/${{ github.repository }}/agent-service:staging-latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build & push (agent-worker)
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: services/agent-worker/Dockerfile
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository }}/agent-worker:${{ github.sha }}
+            ghcr.io/${{ github.repository }}/agent-worker:staging-latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build & push (agent-scheduler)
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: services/agent-scheduler/Dockerfile
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository }}/agent-scheduler:${{ github.sha }}
+            ghcr.io/${{ github.repository }}/agent-scheduler:staging-latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build & push (erpx-mock-api)
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: services/erpx-mock-api/Dockerfile
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository }}/erpx-mock-api:${{ github.sha }}
+            ghcr.io/${{ github.repository }}/erpx-mock-api:staging-latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build & push (ui)
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: services/ui/Dockerfile
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository }}/ui:${{ github.sha }}
+            ghcr.io/${{ github.repository }}/ui:staging-latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Setup kubectl
+        uses: azure/setup-kubectl@v4
+        with:
+          version: v1.29.0
+
+      - name: Setup kustomize
+        uses: imranismail/setup-kustomize@v2
+        with:
+          kustomize-version: v5.4.3
+
+      - name: Configure kubeconfig
+        env:
+          KUBECONFIG_B64: ${{ secrets.STAGING_KUBECONFIG_B64 }}
+        run: |
+          set -euo pipefail
+          if [ -z "${KUBECONFIG_B64:-}" ]; then
+            echo "Missing secret: STAGING_KUBECONFIG_B64" >&2
+            exit 1
+          fi
+          echo "${KUBECONFIG_B64}" | base64 -d > kubeconfig
+          echo "KUBECONFIG=$PWD/kubeconfig" >> "$GITHUB_ENV"
+
+      - name: Create/Update k8s secrets (agent-secrets)
+        env:
+          NS: openclaw-agent-staging
+          POSTGRES_PASSWORD: ${{ secrets.STAGING_POSTGRES_PASSWORD }}
+          ERPX_TOKEN: ${{ secrets.STAGING_ERPX_TOKEN }}
+          AGENT_API_KEY: ${{ secrets.STAGING_AGENT_API_KEY }}
+          MINIO_ACCESS_KEY: ${{ secrets.STAGING_MINIO_ACCESS_KEY }}
+          MINIO_SECRET_KEY: ${{ secrets.STAGING_MINIO_SECRET_KEY }}
+          SMTP_HOST: ${{ secrets.STAGING_SMTP_HOST }}
+          SMTP_USER: ${{ secrets.STAGING_SMTP_USER }}
+          SMTP_PASSWORD: ${{ secrets.STAGING_SMTP_PASSWORD }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${POSTGRES_PASSWORD:-}" ]; then echo "Missing secret: STAGING_POSTGRES_PASSWORD" >&2; exit 1; fi
+          if [ -z "${AGENT_API_KEY:-}" ]; then echo "Missing secret: STAGING_AGENT_API_KEY" >&2; exit 1; fi
+          if [ -z "${MINIO_ACCESS_KEY:-}" ]; then echo "Missing secret: STAGING_MINIO_ACCESS_KEY" >&2; exit 1; fi
+          if [ -z "${MINIO_SECRET_KEY:-}" ]; then echo "Missing secret: STAGING_MINIO_SECRET_KEY" >&2; exit 1; fi
+
+          kubectl apply -f deploy/k8s/overlays/staging/namespace.yaml
+
+          kubectl -n "$NS" create secret generic agent-secrets \
+            --from-literal=POSTGRES_DB="agent" \
+            --from-literal=POSTGRES_USER="agent" \
+            --from-literal=POSTGRES_PASSWORD="$POSTGRES_PASSWORD" \
+            --from-literal=AGENT_DB_DSN="postgresql+psycopg://agent:${POSTGRES_PASSWORD}@postgres:5432/agent" \
+            --from-literal=ERPX_TOKEN="${ERPX_TOKEN:-}" \
+            --from-literal=AGENT_API_KEY="$AGENT_API_KEY" \
+            --from-literal=MINIO_ACCESS_KEY="$MINIO_ACCESS_KEY" \
+            --from-literal=MINIO_SECRET_KEY="$MINIO_SECRET_KEY" \
+            --from-literal=MINIO_ROOT_USER="$MINIO_ACCESS_KEY" \
+            --from-literal=MINIO_ROOT_PASSWORD="$MINIO_SECRET_KEY" \
+            --from-literal=SMTP_HOST="${SMTP_HOST:-}" \
+            --from-literal=SMTP_PORT="587" \
+            --from-literal=SMTP_USER="${SMTP_USER:-}" \
+            --from-literal=SMTP_PASSWORD="${SMTP_PASSWORD:-}" \
+            --from-literal=SMTP_FROM="accounting@example.local" \
+            --from-literal=SMTP_TLS="true" \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+      - name: Deploy to k3s staging (rollout + wait)
+        env:
+          NS: openclaw-agent-staging
+        run: |
+          set -euo pipefail
+
+          pushd deploy/k8s/overlays/staging >/dev/null
+          kustomize edit set image openclaw-agent-erpx/agent-service=ghcr.io/${GITHUB_REPOSITORY}/agent-service:${GITHUB_SHA}
+          kustomize edit set image openclaw-agent-erpx/agent-worker=ghcr.io/${GITHUB_REPOSITORY}/agent-worker:${GITHUB_SHA}
+          kustomize edit set image openclaw-agent-erpx/agent-scheduler=ghcr.io/${GITHUB_REPOSITORY}/agent-scheduler:${GITHUB_SHA}
+          kustomize edit set image openclaw-agent-erpx/erpx-mock-api=ghcr.io/${GITHUB_REPOSITORY}/erpx-mock-api:${GITHUB_SHA}
+          kustomize edit set image openclaw-agent-erpx/ui=ghcr.io/${GITHUB_REPOSITORY}/ui:${GITHUB_SHA}
+          popd >/dev/null
+
+          # Ensure jobs rerun on each deploy (new images / migrations).
+          kubectl -n "$NS" delete job minio-init --ignore-not-found
+          kubectl -n "$NS" delete job agent-migrate --ignore-not-found
+
+          kubectl apply -k deploy/k8s/overlays/staging
+
+          kubectl -n "$NS" rollout status statefulset/postgres --timeout=300s
+          kubectl -n "$NS" rollout status statefulset/redis --timeout=300s
+          kubectl -n "$NS" rollout status statefulset/minio --timeout=300s
+
+          kubectl -n "$NS" wait --for=condition=complete job/minio-init --timeout=300s
+          kubectl -n "$NS" wait --for=condition=complete job/agent-migrate --timeout=300s
+
+          kubectl -n "$NS" rollout status deployment/erpx-mock-api --timeout=300s
+          kubectl -n "$NS" rollout status deployment/agent-service --timeout=300s
+          kubectl -n "$NS" rollout status deployment/agent-worker-io --timeout=300s
+          kubectl -n "$NS" rollout status deployment/agent-worker-ocr --timeout=300s
+          kubectl -n "$NS" rollout status deployment/agent-worker-export --timeout=300s
+          kubectl -n "$NS" rollout status deployment/agent-scheduler --timeout=300s
+          kubectl -n "$NS" rollout status deployment/ui --timeout=300s
+
+      - name: Smoke (contract_obligation 5C, no UI click)
+        env:
+          NS: openclaw-agent-staging
+          AGENT_API_KEY: ${{ secrets.STAGING_AGENT_API_KEY }}
+          MINIO_ACCESS_KEY: ${{ secrets.STAGING_MINIO_ACCESS_KEY }}
+          MINIO_SECRET_KEY: ${{ secrets.STAGING_MINIO_SECRET_KEY }}
+        run: |
+          set -euo pipefail
+
+          kubectl -n "$NS" port-forward svc/agent-service 8000:8000 >/tmp/pf-agent.log 2>&1 &
+          PF_AGENT=$!
+          kubectl -n "$NS" port-forward svc/ui 8501:8501 >/tmp/pf-ui.log 2>&1 &
+          PF_UI=$!
+          kubectl -n "$NS" port-forward svc/minio 9000:9000 >/tmp/pf-minio.log 2>&1 &
+          PF_MINIO=$!
+
+          cleanup() {
+            kill "$PF_AGENT" "$PF_UI" "$PF_MINIO" >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+
+          export SMOKE_AGENT_BASE_URL="http://127.0.0.1:8000"
+          export SMOKE_UI_BASE_URL="http://127.0.0.1:8501"
+          export SMOKE_MINIO_ENDPOINT="http://127.0.0.1:9000"
+
+          export AGENT_AUTH_MODE="api_key"
+          export AGENT_API_KEY="$AGENT_API_KEY"
+          export MINIO_ACCESS_KEY="$MINIO_ACCESS_KEY"
+          export MINIO_SECRET_KEY="$MINIO_SECRET_KEY"
+
+          python scripts/smoke_contract_obligation_demo.py --timeout 180
+
