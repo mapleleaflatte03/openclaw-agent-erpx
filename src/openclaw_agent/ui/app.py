@@ -58,6 +58,7 @@ st.caption(f"Agent API: {AGENT_BASE_URL}")
 col1, col2 = st.columns(2)
 with col1:
     st.subheader("Trigger Manual Run")
+    requested_by = st.text_input("requested_by (optional user id)", value="")
     run_type = st.selectbox(
         "run_type",
         [
@@ -68,6 +69,7 @@ with col1:
             "close_checklist",
             "evidence_pack",
             "kb_index",
+            "contract_obligation",
         ],
     )
     payload: dict[str, Any] = {}
@@ -86,10 +88,28 @@ with col1:
         payload["title"] = st.text_input("title (optional)", value="")
         payload["doc_type"] = st.selectbox("doc_type", ["process", "law", "template"])
         payload["version"] = st.text_input("version", value="v1")
+    if run_type == "contract_obligation":
+        payload["case_key"] = st.text_input("case_key (optional)", value="")
+        payload["partner_name"] = st.text_input("partner_name (optional)", value="")
+        payload["partner_tax_id"] = st.text_input("partner_tax_id (optional MST)", value="")
+        payload["contract_code"] = st.text_input("contract_code (optional)", value="")
+        payload["contract_files"] = [
+            x.strip()
+            for x in st.text_area("contract_files (one per line: s3://... or local path)").splitlines()
+            if x.strip()
+        ]
+        payload["email_files"] = [
+            x.strip()
+            for x in st.text_area("email_files (one per line: .eml or .txt path)").splitlines()
+            if x.strip()
+        ]
 
     idem = st.text_input("Idempotency-Key (optional)", value="")
     if st.button("Run"):
-        res = _post("/agent/v1/runs", {"run_type": run_type, "trigger_type": "manual", "payload": payload}, idem or None)
+        body = {"run_type": run_type, "trigger_type": "manual", "payload": payload}
+        if requested_by.strip():
+            body["requested_by"] = requested_by.strip()
+        res = _post("/agent/v1/runs", body, idem or None)
         st.success(res)
 
 with col2:
@@ -126,3 +146,126 @@ if runs:
 else:
     st.info("No runs yet. Trigger one above.")
 
+st.divider()
+st.subheader("Contract Obligation Cases / Proposals")
+
+current_user = st.text_input("current_user_id (for approvals)", value="checker-001")
+
+try:
+    cases = _get("/agent/v1/contract/cases", params={"limit": 50}).get("items", [])
+except Exception as e:
+    st.error(f"Failed to load contract cases: {e}")
+    cases = []
+
+if not cases:
+    st.info("No contract cases yet. Trigger a `contract_obligation` run above.")
+else:
+    case_labels = {c["case_id"]: f"{c['case_key']} ({c['status']})" for c in cases}
+    case_id = st.selectbox("case_id", list(case_labels.keys()), format_func=lambda cid: case_labels[cid])
+
+    colC, colD = st.columns(2)
+    with colC:
+        st.markdown("### Obligations")
+        try:
+            obligations = _get(f"/agent/v1/contract/cases/{case_id}/obligations").get("items", [])
+            if obligations:
+                df = pd.DataFrame(obligations)
+                st.dataframe(
+                    df[
+                        [
+                            "obligation_type",
+                            "risk_level",
+                            "confidence",
+                            "amount_value",
+                            "amount_percent",
+                            "due_date",
+                        ]
+                    ],
+                    use_container_width=True,
+                )
+            else:
+                st.info("No obligations yet.")
+        except Exception as e:
+            st.error(f"Failed to load obligations: {e}")
+
+    with colD:
+        st.markdown("### Proposals")
+        try:
+            proposals = _get(f"/agent/v1/contract/cases/{case_id}/proposals").get("items", [])
+            if proposals:
+                df = pd.DataFrame(proposals)
+                cols = [
+                    "proposal_id",
+                    "proposal_type",
+                    "tier",
+                    "risk_level",
+                    "status",
+                    "created_by",
+                    "approvals_approved",
+                    "approvals_required",
+                ]
+                st.dataframe(df[cols], use_container_width=True)
+                proposal_id = st.text_input("proposal_id to act on", value=df.iloc[0]["proposal_id"])
+            else:
+                st.info("No proposals yet.")
+                proposal_id = ""
+        except Exception as e:
+            st.error(f"Failed to load proposals: {e}")
+            proposals = []
+            proposal_id = ""
+
+        if proposal_id:
+            selected = next((p for p in proposals if p["proposal_id"] == proposal_id), None)
+            if selected:
+                st.markdown("#### Proposal Details")
+                st.json(selected)
+
+                try:
+                    approvals = _get(f"/agent/v1/contract/proposals/{proposal_id}/approvals").get("items", [])
+                except Exception:
+                    approvals = []
+                if approvals:
+                    st.markdown("#### Approvals")
+                    st.dataframe(pd.DataFrame(approvals), use_container_width=True)
+
+                evidence_ack = st.checkbox("I have reviewed evidence", value=False)
+                note = st.text_input("note (optional)", value="")
+
+                maker = (selected.get("created_by") or "").strip()
+                if maker and maker == current_user.strip():
+                    st.warning("Maker-checker: you cannot approve your own proposal.")
+                    can_act = False
+                else:
+                    can_act = True
+
+                colX, colY = st.columns(2)
+                with colX:
+                    if st.button("Approve", disabled=(not can_act) or (not evidence_ack)):
+                        try:
+                            res = _post(
+                                f"/agent/v1/contract/proposals/{proposal_id}/approvals",
+                                {
+                                    "decision": "approve",
+                                    "approver_id": current_user.strip(),
+                                    "evidence_ack": evidence_ack,
+                                    "note": note or None,
+                                },
+                            )
+                            st.success(res)
+                        except Exception as e:
+                            st.error(e)
+                with colY:
+                    if st.button("Reject", disabled=(not can_act) or (not evidence_ack)):
+                        try:
+                            res = _post(
+                                f"/agent/v1/contract/proposals/{proposal_id}/approvals",
+                                {
+                                    "decision": "reject",
+                                    "approver_id": current_user.strip(),
+                                    "evidence_ack": evidence_ack,
+                                    "note": note or None,
+                                },
+                            )
+                            st.success(res)
+                        except Exception as e:
+                            st.error(e)
