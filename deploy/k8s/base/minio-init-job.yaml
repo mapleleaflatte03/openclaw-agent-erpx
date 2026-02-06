@@ -1,0 +1,34 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: minio-init
+spec:
+  template:
+    spec:
+      restartPolicy: OnFailure
+      nodeSelector:
+        role: data-core
+      containers:
+        - name: mc
+          image: minio/mc:latest
+          envFrom:
+            - configMapRef:
+                name: agent-config
+            - secretRef:
+                name: agent-secrets
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -eu
+              for i in $(seq 1 60); do
+                if mc alias set local "http://minio:9000" "$MINIO_ROOT_USER" "$MINIO_ROOT_PASSWORD"; then
+                  break
+                fi
+                sleep 2
+              done
+              mc mb -p "local/${MINIO_BUCKET_ATTACHMENTS}" || true
+              mc mb -p "local/${MINIO_BUCKET_EXPORTS}" || true
+              mc mb -p "local/${MINIO_BUCKET_EVIDENCE}" || true
+              mc mb -p "local/${MINIO_BUCKET_KB}" || true
+              mc mb -p "local/${MINIO_BUCKET_DROP}" || true
+              echo "minio buckets ready"

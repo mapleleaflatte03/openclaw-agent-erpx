@@ -1,0 +1,183 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agent-worker-ocr
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: agent-worker-ocr
+  template:
+    metadata:
+      labels:
+        app: agent-worker-ocr
+    spec:
+      nodeSelector:
+        pool-ocr: "true"
+      containers:
+        - name: worker
+          image: openclaw-agent-erpx/agent-worker:0.1.0
+          imagePullPolicy: IfNotPresent
+          envFrom:
+            - configMapRef:
+                name: agent-config
+            - secretRef:
+                name: agent-secrets
+          command: ["celery"]
+          args:
+            [
+              "-A",
+              "openclaw_agent.agent_worker.celery_app.celery_app",
+              "worker",
+              "-l",
+              "INFO",
+              "-Q",
+              "ocr",
+              "-c",
+              "1",
+            ]
+          resources:
+            requests:
+              cpu: "2"
+              memory: "8Gi"
+            limits:
+              cpu: "2.5"
+              memory: "9Gi"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agent-worker-export
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: agent-worker-export
+  template:
+    metadata:
+      labels:
+        app: agent-worker-export
+    spec:
+      nodeSelector:
+        pool-export: "true"
+      containers:
+        - name: worker
+          image: openclaw-agent-erpx/agent-worker:0.1.0
+          imagePullPolicy: IfNotPresent
+          envFrom:
+            - configMapRef:
+                name: agent-config
+            - secretRef:
+                name: agent-secrets
+          command: ["celery"]
+          args:
+            [
+              "-A",
+              "openclaw_agent.agent_worker.celery_app.celery_app",
+              "worker",
+              "-l",
+              "INFO",
+              "-Q",
+              "export",
+              "-c",
+              "1",
+            ]
+          resources:
+            requests:
+              cpu: "1500m"
+              memory: "5Gi"
+            limits:
+              cpu: "2"
+              memory: "6Gi"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agent-worker-io
+spec:
+  replicas: 4
+  selector:
+    matchLabels:
+      app: agent-worker-io
+  template:
+    metadata:
+      labels:
+        app: agent-worker-io
+    spec:
+      nodeSelector:
+        pool-io: "true"
+      containers:
+        - name: worker
+          image: openclaw-agent-erpx/agent-worker:0.1.0
+          imagePullPolicy: IfNotPresent
+          envFrom:
+            - configMapRef:
+                name: agent-config
+            - secretRef:
+                name: agent-secrets
+          command: ["celery"]
+          args:
+            [
+              "-A",
+              "openclaw_agent.agent_worker.celery_app.celery_app",
+              "worker",
+              "-l",
+              "INFO",
+              "-Q",
+              "io,index,default",
+              "-c",
+              "2",
+            ]
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "1Gi"
+            limits:
+              cpu: "1"
+              memory: "2Gi"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agent-worker-standby
+spec:
+  replicas: 0
+  selector:
+    matchLabels:
+      app: agent-worker-standby
+  template:
+    metadata:
+      labels:
+        app: agent-worker-standby
+    spec:
+      nodeSelector:
+        pool-standby: "true"
+      containers:
+        - name: worker
+          image: openclaw-agent-erpx/agent-worker:0.1.0
+          imagePullPolicy: IfNotPresent
+          envFrom:
+            - configMapRef:
+                name: agent-config
+            - secretRef:
+                name: agent-secrets
+          command: ["celery"]
+          args:
+            [
+              "-A",
+              "openclaw_agent.agent_worker.celery_app.celery_app",
+              "worker",
+              "-l",
+              "INFO",
+              "-Q",
+              "default,io,export,ocr",
+              "-c",
+              "1",
+            ]
+          resources:
+            requests:
+              cpu: "1"
+              memory: "3Gi"
+            limits:
+              cpu: "2"
+              memory: "6Gi"

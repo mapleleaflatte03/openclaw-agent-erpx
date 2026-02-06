@@ -1,0 +1,155 @@
+version: 1
+
+# Workflow/skills mapping for 8 tasks in the design doc.
+# This file is read by agent-worker/agent-scheduler for defaults (timeouts/retry/queues).
+
+defaults:
+  erpx:
+    rate_limit_qps: 5
+    timeout_seconds: 15
+    retry:
+      max_attempts: 5
+      base_seconds: 0.5
+      max_seconds: 10
+  task:
+    retry:
+      max_attempts: 3
+      backoff_seconds: 2
+
+workflows:
+  attachment:
+    run_type: attachment
+    idempotency:
+      run_key_template: "attachment:{file_hash}"
+      output_unique: ["file_hash", "erp_object_type", "erp_object_id"]
+    steps:
+      - name: extract_text
+        skill: pdf_text_or_ocr
+        queue: ocr
+        soft_timeout_seconds: 40
+      - name: parse_keys
+        skill: parse_doc_keys
+        queue: default
+      - name: match
+        skill: match_erpx_object
+        queue: default
+      - name: attach
+        skill: store_attachment
+        queue: io
+
+  tax_export:
+    run_type: tax_export
+    idempotency:
+      run_key_template: "tax_export:{period}"
+      output_unique: ["export_type", "period"]
+    steps:
+      - name: pull_invoices
+        skill: erpx_pull_invoices
+        queue: export
+      - name: validate
+        skill: validate_invoices
+        queue: export
+      - name: export_xlsx
+        skill: export_vat_list_xlsx
+        queue: export
+
+  working_papers:
+    run_type: working_papers
+    idempotency:
+      run_key_template: "working_papers:{period}"
+      output_unique: ["export_type", "period"]
+    steps:
+      - name: pull_balances
+        skill: erpx_pull_balances
+        queue: export
+      - name: fill_templates
+        skill: fill_working_papers_template
+        queue: export
+      - name: export_bundle
+        skill: export_working_papers_xlsx
+        queue: export
+
+  soft_checks:
+    run_type: soft_checks
+    idempotency:
+      run_key_template: "soft_checks:{cursor}"
+      output_unique: ["signature"]
+    steps:
+      - name: pull_delta
+        skill: erpx_pull_updated_objects
+        queue: default
+      - name: checks
+        skill: soft_checks_rules
+        queue: default
+      - name: export_report
+        skill: export_soft_checks_report
+        queue: export
+
+  ar_dunning:
+    run_type: ar_dunning
+    idempotency:
+      run_key_template: "ar_dunning:{as_of}"
+      output_unique: ["policy_key"]
+    steps:
+      - name: pull_ar_aging
+        skill: erpx_pull_ar_aging
+        queue: default
+      - name: apply_policy
+        skill: ar_dunning_policy
+        queue: default
+      - name: notify
+        skill: send_reminders
+        queue: io
+
+  close_checklist:
+    run_type: close_checklist
+    idempotency:
+      run_key_template: "close_checklist:{period}"
+      output_unique: ["period", "task_name"]
+    steps:
+      - name: pull_close_calendar
+        skill: erpx_pull_close_calendar
+        queue: default
+      - name: upsert_close_tasks
+        skill: upsert_close_tasks
+        queue: default
+      - name: nudge
+        skill: nudge_close_tasks
+        queue: io
+
+  evidence_pack:
+    run_type: evidence_pack
+    idempotency:
+      run_key_template: "evidence_pack:{issue_key}"
+      output_unique: ["issue_key"]
+    steps:
+      - name: collect
+        skill: collect_evidence_refs
+        queue: io
+      - name: pack
+        skill: pack_evidence_zip
+        queue: io
+      - name: register
+        skill: register_evidence_pack
+        queue: io
+
+  kb_index:
+    run_type: kb_index
+    idempotency:
+      run_key_template: "kb_index:{file_hash}"
+      output_unique: ["file_hash", "version"]
+    steps:
+      - name: extract_text
+        skill: pdf_text_or_ocr
+        queue: ocr
+        soft_timeout_seconds: 40
+      - name: extract_meta
+        skill: extract_kb_metadata
+        queue: default
+      - name: index
+        skill: keyword_index
+        queue: default
+      - name: register
+        skill: register_kb_doc
+        queue: io
+

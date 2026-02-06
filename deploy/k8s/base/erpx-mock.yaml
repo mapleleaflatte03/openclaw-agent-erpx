@@ -1,0 +1,63 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: erpx-mock-api
+  labels:
+    app: erpx-mock-api
+spec:
+  selector:
+    app: erpx-mock-api
+  ports:
+    - name: http
+      port: 8001
+      targetPort: 8001
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: erpx-mock-api
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: erpx-mock-api
+  template:
+    metadata:
+      labels:
+        app: erpx-mock-api
+    spec:
+      nodeSelector:
+        role: control-ingress
+      containers:
+        - name: erpx-mock-api
+          image: openclaw-agent-erpx/erpx-mock-api:0.1.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8001
+          envFrom:
+            - configMapRef:
+                name: agent-config
+            - secretRef:
+                name: agent-secrets
+          env:
+            - name: ERPX_MOCK_DB_PATH
+              value: /data/erpx_mock.sqlite
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          resources:
+            requests:
+              cpu: "200m"
+              memory: "256Mi"
+            limits:
+              cpu: "1"
+              memory: "1Gi"
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8001
+            initialDelaySeconds: 5
+            periodSeconds: 5
+      volumes:
+        - name: data
+          emptyDir: {}

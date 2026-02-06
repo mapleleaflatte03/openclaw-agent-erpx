@@ -1,0 +1,146 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: agent
+      POSTGRES_USER: agent
+      POSTGRES_PASSWORD: agentpass
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U agent -d agent"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  minio:
+    image: minio/minio:latest
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:-minioadmin}
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - miniodata:/data
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:9000/minio/health/ready"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  minio-init:
+    image: minio/mc:latest
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "-c"]
+    command: |
+      set -eu
+      mc alias set local http://minio:9000 "$${MINIO_ROOT_USER}" "$${MINIO_ROOT_PASSWORD}"
+      mc mb -p local/${MINIO_BUCKET_ATTACHMENTS:-agent-attachments} || true
+      mc mb -p local/${MINIO_BUCKET_EXPORTS:-agent-exports} || true
+      mc mb -p local/${MINIO_BUCKET_EVIDENCE:-agent-evidence} || true
+      mc mb -p local/${MINIO_BUCKET_KB:-agent-kb} || true
+      mc mb -p local/${MINIO_BUCKET_DROP:-agent-drop} || true
+      exit 0
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:-minioadmin}
+      MINIO_BUCKET_ATTACHMENTS: ${MINIO_BUCKET_ATTACHMENTS:-agent-attachments}
+      MINIO_BUCKET_EXPORTS: ${MINIO_BUCKET_EXPORTS:-agent-exports}
+      MINIO_BUCKET_EVIDENCE: ${MINIO_BUCKET_EVIDENCE:-agent-evidence}
+      MINIO_BUCKET_KB: ${MINIO_BUCKET_KB:-agent-kb}
+      MINIO_BUCKET_DROP: ${MINIO_BUCKET_DROP:-agent-drop}
+
+  erpx-mock-api:
+    build:
+      context: .
+      dockerfile: services/erpx-mock-api/Dockerfile
+    env_file: .env
+    environment:
+      ERPX_MOCK_DB_PATH: /data/erpx_mock.sqlite
+    volumes:
+      - erpxmockdata:/data
+    ports:
+      - "8001:8001"
+    depends_on:
+      - minio-init
+
+  agent-service:
+    build:
+      context: .
+      dockerfile: services/agent-service/Dockerfile
+    env_file: .env
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+
+  agent-worker:
+    build:
+      context: .
+      dockerfile: services/agent-worker/Dockerfile
+    env_file: .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+
+  agent-scheduler:
+    build:
+      context: .
+      dockerfile: services/agent-scheduler/Dockerfile
+    env_file: .env
+    depends_on:
+      agent-service:
+        condition: service_started
+      minio-init:
+        condition: service_completed_successfully
+
+  ui:
+    build:
+      context: .
+      dockerfile: services/ui/Dockerfile
+    env_file: .env
+    environment:
+      UI_AGENT_BASE_URL: http://agent-service:8000
+      UI_MINIO_ENDPOINT: http://minio:9000
+      UI_MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-minioadmin}
+      UI_MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-minioadmin}
+      UI_MINIO_BUCKET_DROP: ${MINIO_BUCKET_DROP:-agent-drop}
+    ports:
+      - "8501:8501"
+    depends_on:
+      agent-service:
+        condition: service_started
+
+volumes:
+  pgdata:
+  redisdata:
+  miniodata:
+  erpxmockdata:

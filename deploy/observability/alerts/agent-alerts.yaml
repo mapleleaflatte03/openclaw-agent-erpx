@@ -1,0 +1,47 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: openclaw-agent-alerts
+  namespace: openclaw-agent
+  labels:
+    release: kube-prometheus-stack
+spec:
+  groups:
+    - name: openclaw-agent.rules
+      rules:
+        - alert: OpenClawAgentQueueBacklogHigh
+          expr: agent_queue_backlog{queue=~"ocr|export|io|default"} > 50
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Agent queue backlog high"
+            description: "Queue {{ $labels.queue }} backlog is {{ $value }} for >10m."
+
+        - alert: OpenClawAgentOCRTimeoutSpike
+          expr: agent_ocr_timeouts_last_5m > 5
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: "OCR timeout spike"
+            description: "OCR timeouts in last 5m: {{ $value }}."
+
+        - alert: OpenClawAgentMismatchSpike
+          expr: agent_attachment_mismatch_last_5m > 5
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Attachment mismatch spike"
+            description: "Low-confidence/mismatch events in last 5m: {{ $value }}."
+
+        - alert: NodeDiskUsageHigh
+          expr: (1 - (node_filesystem_avail_bytes{mountpoint=\"/\",fstype!~\"tmpfs|overlay\"} / node_filesystem_size_bytes{mountpoint=\"/\",fstype!~\"tmpfs|overlay\"})) > 0.80
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Node disk usage > 80%"
+            description: "Disk usage on {{ $labels.instance }} is >80% for >10m."
+

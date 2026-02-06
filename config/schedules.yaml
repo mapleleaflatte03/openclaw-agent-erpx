@@ -1,0 +1,54 @@
+version: 1
+
+agent_base_url: ${AGENT_BASE_URL}
+
+pollers:
+  attachments_drop:
+    enabled: true
+    interval_seconds: 30
+    bucket: ${MINIO_BUCKET_DROP}
+    prefix: "drop/attachments/"
+    run_type: "attachment"
+  kb_drop:
+    enabled: true
+    interval_seconds: 60
+    bucket: ${MINIO_BUCKET_DROP}
+    prefix: "drop/kb/"
+    run_type: "kb_index"
+
+schedules:
+  soft_checks:
+    enabled: true
+    cron: "0 */6 * * *"
+    run_type: "soft_checks"
+    payload:
+      updated_after_hours: 6
+
+  ar_dunning:
+    enabled: true
+    cron: "0 9 * * *"
+    run_type: "ar_dunning"
+    payload:
+      as_of: "today"
+
+  vat_export:
+    enabled: true
+    cron: "0 2 1 * *"
+    run_type: "tax_export"
+    payload:
+      period: "prev_month"
+
+  working_papers:
+    enabled: true
+    cron: "0 3 1 * *"
+    run_type: "working_papers"
+    payload:
+      period: "prev_month"
+
+  close_checklist:
+    enabled: true
+    cron: "0 8 1 * *"
+    run_type: "close_checklist"
+    payload:
+      period: "this_month"
+

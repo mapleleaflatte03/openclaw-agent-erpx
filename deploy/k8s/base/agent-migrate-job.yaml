@@ -1,0 +1,24 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: agent-migrate
+spec:
+  backoffLimit: 5
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: migrate
+          image: openclaw-agent-erpx/agent-service:0.1.0
+          imagePullPolicy: IfNotPresent
+          envFrom:
+            - configMapRef:
+                name: agent-config
+            - secretRef:
+                name: agent-secrets
+          command: ["sh", "-c"]
+          args:
+            - |
+              set -eu
+              alembic -c db/alembic.ini upgrade head
+              echo "migrations done"

@@ -1,0 +1,32 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agent-scheduler
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: agent-scheduler
+  template:
+    metadata:
+      labels:
+        app: agent-scheduler
+    spec:
+      nodeSelector:
+        role: control-ingress
+      containers:
+        - name: scheduler
+          image: openclaw-agent-erpx/agent-scheduler:0.1.0
+          imagePullPolicy: IfNotPresent
+          envFrom:
+            - configMapRef:
+                name: agent-config
+            - secretRef:
+                name: agent-secrets
+          resources:
+            requests:
+              cpu: "200m"
+              memory: "256Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"

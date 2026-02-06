@@ -1,0 +1,46 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: agent-config
+data:
+  AGENT_ENV: "prod"
+  LOG_LEVEL: "INFO"
+
+  # Agent DB/Redis in-cluster
+  REDIS_URL: "redis://redis:6379/0"
+  CELERY_BROKER_URL: "redis://redis:6379/0"
+  CELERY_RESULT_BACKEND: "redis://redis:6379/1"
+
+  # ERPX base URL (demo uses erpx-mock-api)
+  ERPX_BASE_URL: "http://erpx-mock-api:8001"
+  ERPX_RATE_LIMIT_QPS: "5"
+  ERPX_TIMEOUT_SECONDS: "15"
+  ERPX_RETRY_MAX_ATTEMPTS: "5"
+  ERPX_RETRY_BASE_SECONDS: "0.5"
+  ERPX_RETRY_MAX_SECONDS: "10"
+
+  TASK_RETRY_MAX_ATTEMPTS: "3"
+  TASK_RETRY_BACKOFF_SECONDS: "2"
+
+  # MinIO (S3)
+  MINIO_ENDPOINT: "minio:9000"
+  MINIO_REGION: "sgp1"
+  MINIO_SECURE: "false"
+  MINIO_BUCKET_ATTACHMENTS: "agent-attachments"
+  MINIO_BUCKET_EXPORTS: "agent-exports"
+  MINIO_BUCKET_EVIDENCE: "agent-evidence"
+  MINIO_BUCKET_KB: "agent-kb"
+  MINIO_BUCKET_DROP: "agent-drop"
+
+  # Auth
+  AGENT_AUTH_MODE: "api_key"
+
+  # Scheduler -> Agent API
+  AGENT_BASE_URL: "http://agent-service:8000"
+
+  WORKFLOWS_YAML: "/app/config/workflows.yaml"
+  SCHEDULES_YAML: "/app/config/schedules.yaml"
+
+  MATCH_CONFIDENCE_THRESHOLD: "0.85"
+  OCR_TIMEOUT_SECONDS: "40"
+  OCR_PDF_MAX_PAGES: "3"
