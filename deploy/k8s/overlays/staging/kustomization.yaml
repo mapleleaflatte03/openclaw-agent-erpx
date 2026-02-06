@@ -9,4 +9,22 @@ resources:
 
 patchesStrategicMerge:
   - configmap-patch.yaml
+  - ingress-patch.yaml
+  - replicas-patch.yaml
 
+images:
+  - name: openclaw-agent-erpx/agent-service
+    newName: ghcr.io/mapleleaflatte03/openclaw-agent-erpx/agent-service
+    newTag: staging-latest
+  - name: openclaw-agent-erpx/agent-worker
+    newName: ghcr.io/mapleleaflatte03/openclaw-agent-erpx/agent-worker
+    newTag: staging-latest
+  - name: openclaw-agent-erpx/agent-scheduler
+    newName: ghcr.io/mapleleaflatte03/openclaw-agent-erpx/agent-scheduler
+    newTag: staging-latest
+  - name: openclaw-agent-erpx/erpx-mock-api
+    newName: ghcr.io/mapleleaflatte03/openclaw-agent-erpx/erpx-mock-api
+    newTag: staging-latest
+  - name: openclaw-agent-erpx/ui
+    newName: ghcr.io/mapleleaflatte03/openclaw-agent-erpx/ui
+    newTag: staging-latest
