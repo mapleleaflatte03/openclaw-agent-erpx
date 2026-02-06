@@ -49,6 +49,13 @@ class Settings(BaseSettings):
     ocr_pdf_max_pages: int = Field(default=3, alias="OCR_PDF_MAX_PAGES")
 
     obligation_confidence_threshold: float = Field(default=0.8, alias="OBLIGATION_CONFIDENCE_THRESHOLD")
+    obligation_required_fields: Literal["strict", "relaxed"] = Field(
+        default="strict", alias="OBLIGATION_REQUIRED_FIELDS"
+    )
+    obligation_conflict_policy: Literal["drop_to_tier2"] = Field(
+        default="drop_to_tier2", alias="OBLIGATION_CONFLICT_POLICY"
+    )
+    obligation_primary_source_weight: float = Field(default=1.0, alias="OBLIGATION_PRIMARY_SOURCE_WEIGHT")
 
     smtp_host: str = Field(default="", alias="SMTP_HOST")
     smtp_port: int = Field(default=587, alias="SMTP_PORT")
