@@ -11,6 +11,9 @@ patchesStrategicMerge:
   - configmap-patch.yaml
   - ingress-patch.yaml
   - replicas-patch.yaml
+  - nodeselector-patch.yaml
+  - resources-patch.yaml
+  - services-nodeport-patch.yaml
 
 images:
   - name: openclaw-agent-erpx/agent-service
