@@ -128,6 +128,25 @@ jobs:
           echo "${KUBECONFIG_B64}" | base64 -d > kubeconfig
           echo "KUBECONFIG=$PWD/kubeconfig" >> "$GITHUB_ENV"
 
+      - name: Create/Update image pull secret (ghcr-pull)
+        env:
+          NS: ${{ secrets.STAGING_NAMESPACE }}
+          GHCR_USERNAME: ${{ github.actor }}
+          GHCR_PASSWORD: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          NS="${NS:-openclaw-agent-staging}"
+
+          # Namespace must exist before creating secrets.
+          kubectl apply -f deploy/k8s/overlays/staging/namespace.yaml
+
+          # GHCR packages are private by default; provide a pull secret to the cluster.
+          kubectl -n "$NS" create secret docker-registry ghcr-pull \
+            --docker-server=ghcr.io \
+            --docker-username="$GHCR_USERNAME" \
+            --docker-password="$GHCR_PASSWORD" \
+            --dry-run=client -o yaml | kubectl apply -f -
+
       - name: Create/Update k8s secrets (agent-secrets)
         env:
           NS: ${{ secrets.STAGING_NAMESPACE }}
