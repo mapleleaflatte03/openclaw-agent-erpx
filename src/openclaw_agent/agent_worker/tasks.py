@@ -184,7 +184,7 @@ def _parse_doc_keys(text: str) -> dict[str, Any]:
     norm = " ".join(text.split())
     out: dict[str, Any] = {}
 
-    m = re.search(r"(?:S[oố]\s*h[oó]a\s*đ[oơ]n|Invoice\s*No)\s*[:#]?\s*([A-Z0-9\\-/]+)", norm, re.I)
+    m = re.search(r"(?:S[oố]\s*h[oó]a\s*đ[oơ]n|Invoice\s*No)\s*[:#]?\s*([A-Z0-9/-]+)", norm, re.I)
     if m:
         out["invoice_no"] = m.group(1).strip()
 
@@ -1171,12 +1171,12 @@ def _extract_contract_meta(text: str) -> dict[str, str]:
     norm = " ".join(text.split())
     out: dict[str, str] = {}
 
-    m = re.search(r"(?:MST|Tax\\s*ID)\\s*[:#]?\\s*([0-9]{10,13})", norm, re.I)
+    m = re.search(r"(?:MST|Tax\s*ID)\s*[:#]?\s*([0-9]{10,13})", norm, re.I)
     if m:
         out["partner_tax_id"] = m.group(1).strip()
 
     m = re.search(
-        r"(?:H[oơ]p\\s*đ[oồ]ng\\s*s[oố]|S[oố]\\s*HĐ|Contract\\s*(?:No|Code))\\s*[:#]?\\s*([A-Z0-9\\-/]+)",
+        r"(?:H[oơ]p\s*đ[oồ]ng\s*s[oố]|S[oố]\s*HĐ|Contract\s*(?:No|Code))\s*[:#]?\s*([A-Z0-9/-]+)",
         norm,
         re.I,
     )
@@ -1187,7 +1187,7 @@ def _extract_contract_meta(text: str) -> dict[str, str]:
 
 
 def _parse_percent(s: str) -> float | None:
-    m = re.search(r"(\\d+(?:\\.\\d+)?)\\s*%", s)
+    m = re.search(r"(\d+(?:\.\d+)?)\s*%", s)
     if not m:
         return None
     try:
@@ -1203,19 +1203,23 @@ def _extract_obligation_candidates(text: str) -> list[dict[str, Any]]:
         if not line:
             continue
         lower = line.lower()
+        is_discount = "discount" in lower or "chiết khấu" in lower or "chiet khau" in lower
+        is_penalty = "penalty" in lower or "phạt" in lower or "phat" in lower
 
         currency = None
-        m_cur = re.search(r"\\b(VND|USD|EUR)\\b", line)
+        m_cur = re.search(r"\b(VND|USD|EUR)\b", line)
         if m_cur:
             currency = m_cur.group(1).upper()
 
-        m_due = re.search(r"(\\d{4}-\\d{2}-\\d{2}|\\d{1,2}[/-]\\d{1,2}[/-]\\d{4})", line)
+        m_due = re.search(r"(\d{4}-\d{2}-\d{2}|\d{1,2}[/-]\d{1,2}[/-]\d{4})", line)
         due_date = _try_parse_date_any(m_due.group(1)) if m_due else None
-        m_within = re.search(r"(?:within|trong\\s*v[oò]ng)\\s*(\\d{1,3})\\s*(?:days|ng[aà]y)", line, re.I)
+        m_within = re.search(r"(?:within|trong\s*v[oò]ng)\s*(\d{1,3})\s*(?:days|ng[aà]y)", line, re.I)
         within_days = int(m_within.group(1)) if m_within else None
 
         # 1) Milestone payment
-        if re.search(r"\\b(milestone|đ[oợ]t|thanh\\s*to[aá]n|payment|pay)\\b", line, re.I):
+        if (not is_discount) and (not is_penalty) and re.search(
+            r"\b(milestone|đ[oợ]t|thanh\s*to[aá]n|payment|pay)\b", line, re.I
+        ):
             pct = _parse_percent(line)
             conf = 0.4
             if pct is not None:
@@ -1237,7 +1241,7 @@ def _extract_obligation_candidates(text: str) -> list[dict[str, Any]]:
             )
 
         # 2) Early payment discount
-        if "discount" in lower or "chiết khấu" in lower or "chiet khau" in lower:
+        if is_discount:
             pct = _parse_percent(line)
             conf = 0.4
             if pct is not None:
@@ -1261,7 +1265,7 @@ def _extract_obligation_candidates(text: str) -> list[dict[str, Any]]:
             )
 
         # 3) Late payment penalty
-        if "penalty" in lower or "phạt" in lower or "phat" in lower:
+        if is_penalty:
             pct = _parse_percent(line)
             conf = 0.4
             if pct is not None:
