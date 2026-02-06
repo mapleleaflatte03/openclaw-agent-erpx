@@ -1,4 +1,4 @@
-# Workflows & Skills Mapping (8 tác vụ)
+# Workflows & Skills Mapping (9 tác vụ)
 
 Nguồn cấu hình: `config/workflows.yaml` (mapping step/skill/queue + idempotency + retry/rate limit mặc định).
 
@@ -18,7 +18,7 @@ Nguồn cấu hình: `config/workflows.yaml` (mapping step/skill/queue + idempot
   - `io`: upload/download/pack/register outputs
   - `default`: rules/checks nhẹ
 
-## 8 tác vụ (run_type)
+## 9 tác vụ (run_type)
 
 ### 1) `attachment` (Thu thập & gắn chứng từ)
 - Trigger: event (MinIO drop bucket) hoặc manual
@@ -116,3 +116,34 @@ Nguồn cấu hình: `config/workflows.yaml` (mapping step/skill/queue + idempot
   - extracted text ở bucket kb (s3 uri)
 - Idempotency: (`file_hash`,`version`) unique
 
+### 9) `contract_obligation` (Contract Obligation Agent, 5C)
+- Trigger: manual (MVP)
+- Input:
+  - `contract_files`: list of `s3://...` or local paths
+  - optional `email_files`
+  - optional metadata: `partner_name`, `partner_tax_id`, `contract_code`, `case_key`
+- Steps/skills (MVP):
+  - `ingest_sources` → stage inputs + upload to drop bucket (by hash), upsert `agent_contract_cases` + `agent_source_files`
+  - `extract_contract_text` → pdfplumber (fallback OCR) → `agent_extracted_text`
+  - `parse_emails` → parse `.eml` → `agent_email_threads`
+  - `extract_obligations` → rule-based extract + coords → `agent_obligations` + `agent_obligation_evidence`
+  - `reconcile_erpx` → ERPX read-only connectivity check (no write to ERPX core)
+  - `create_proposals` → 5C gating + proposals + evidence pack → `agent_proposals` + `agent_approvals` + `agent_audit_log` + `agent_evidence_packs`
+- 5C.1 3-tier gating (an toàn: chỉ tạo draft/output phụ trợ):
+  - Required fields: `amount` + `due_date` (hoặc `within_days`) + `trigger_condition`
+  - Evidence strength:
+    - `OBLIGATION_CONFIDENCE_THRESHOLD` là ngưỡng **evidence strength** (không phải ML accuracy; không ép “2 nguồn”)
+    - evidence phải có tọa độ (PDF: `page/line`, email: `email_line/subject`)
+    - ưu tiên primary source (contract PDF) qua `OBLIGATION_PRIMARY_SOURCE_WEIGHT`
+  - Conflict giữa nguồn (amount/due_date/within_days) ⇒ drop Tier 2 và ghi rõ `conflicts` trong output
+  - Output theo tier:
+    - Tier 1: `reminder` (và `accrual_template` chỉ cho `milestone_payment`), `status=draft`, `tier=1`
+    - Tier 2: `review_confirm` (summary + quick confirm), `tier=2`, KHÔNG tạo template bút toán
+    - Tier 3: `missing_data`, `tier=3`, KHÔNG suy diễn
+- 5C.2 Maker-checker approvals (2 lớp cho risk cao):
+  - API enforce:
+    - maker-checker: `proposal.created_by != approver_id`
+    - `evidence_ack=true` bắt buộc
+    - `risk_level=high` ⇒ cần 2 approvals khác nhau; `medium/low` ⇒ 1
+    - idempotency: header `Idempotency-Key` hoặc hash(proposal_id, approver_id, decision)
+  - Writes: chỉ ghi `agent_approvals` + `agent_audit_log` (append-only), không ghi sổ vào ERPX

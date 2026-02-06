@@ -536,9 +536,7 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                additionalProperties: true
-                title: Response List Contract Cases Agent V1 Contract Cases Get
+                $ref: '#/components/schemas/ContractCaseListResponse'
         '422':
           description: Validation Error
           content:
@@ -570,9 +568,7 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                additionalProperties: true
-                title: Response Get Contract Case Agent V1 Contract Cases  Case Id  Get
+                $ref: '#/components/schemas/ContractCaseOut'
         '422':
           description: Validation Error
           content:
@@ -604,10 +600,7 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                additionalProperties: true
-                title: Response List Contract Case Sources Agent V1 Contract Cases  Case
-                  Id  Sources Get
+                $ref: '#/components/schemas/ContractSourceListResponse'
         '422':
           description: Validation Error
           content:
@@ -639,10 +632,7 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                additionalProperties: true
-                title: Response List Case Obligations Agent V1 Contract Cases  Case
-                  Id  Obligations Get
+                $ref: '#/components/schemas/ContractObligationListResponse'
         '422':
           description: Validation Error
           content:
@@ -674,10 +664,7 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                additionalProperties: true
-                title: Response List Case Proposals Agent V1 Contract Cases  Case
-                  Id  Proposals Get
+                $ref: '#/components/schemas/ContractProposalListResponse'
         '422':
           description: Validation Error
           content:
@@ -702,19 +689,14 @@ paths:
         content:
           application/json:
             schema:
-              type: object
-              additionalProperties: true
-              title: Body
+              $ref: '#/components/schemas/ContractProposalCreateRequest'
       responses:
         '200':
           description: Successful Response
           content:
             application/json:
               schema:
-                type: object
-                additionalProperties: true
-                title: Response Post Contract Proposal Agent V1 Contract Proposals
-                  Post
+                $ref: '#/components/schemas/ContractProposalCreateResponse'
         '422':
           description: Validation Error
           content:
@@ -722,6 +704,37 @@ paths:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
   /agent/v1/contract/proposals/{proposal_id}/approvals:
+    get:
+      summary: List Contract Proposal Approvals
+      operationId: list_contract_proposal_approvals_agent_v1_contract_proposals__proposal_id__approvals_get
+      parameters:
+      - name: proposal_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Proposal Id
+      - name: X-API-Key
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Api-Key
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ContractApprovalListResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
     post:
       summary: Post Contract Approval
       operationId: post_contract_approval_agent_v1_contract_proposals__proposal_id__approvals_post
@@ -745,19 +758,14 @@ paths:
         content:
           application/json:
             schema:
-              type: object
-              additionalProperties: true
-              title: Body
+              $ref: '#/components/schemas/ContractApprovalCreateRequest'
       responses:
         '200':
           description: Successful Response
           content:
             application/json:
               schema:
-                type: object
-                additionalProperties: true
-                title: Response Post Contract Approval Agent V1 Contract Proposals  Proposal
-                  Id  Approvals Post
+                $ref: '#/components/schemas/ContractApprovalCreateResponse'
         '422':
           description: Validation Error
           content:
@@ -817,6 +825,511 @@ paths:
                 $ref: '#/components/schemas/HTTPValidationError'
 components:
   schemas:
+    ContractApprovalCreateRequest:
+      properties:
+        decision:
+          type: string
+          enum:
+          - approve
+          - reject
+          title: Decision
+        approver_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Approver Id
+        actor_user_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Actor User Id
+          description: Deprecated alias for approver_id
+        evidence_ack:
+          type: boolean
+          title: Evidence Ack
+          default: false
+        note:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Note
+        run_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Run Id
+      type: object
+      required:
+      - decision
+      title: ContractApprovalCreateRequest
+    ContractApprovalCreateResponse:
+      properties:
+        approval_id:
+          type: string
+          title: Approval Id
+        proposal_id:
+          type: string
+          title: Proposal Id
+        decision:
+          type: string
+          enum:
+          - approve
+          - reject
+          title: Decision
+        proposal_status:
+          type: string
+          title: Proposal Status
+        approvals_required:
+          type: integer
+          title: Approvals Required
+        approvals_approved:
+          type: integer
+          title: Approvals Approved
+      type: object
+      required:
+      - approval_id
+      - proposal_id
+      - decision
+      - proposal_status
+      - approvals_required
+      - approvals_approved
+      title: ContractApprovalCreateResponse
+    ContractApprovalListResponse:
+      properties:
+        items:
+          items:
+            $ref: '#/components/schemas/ContractApprovalOut'
+          type: array
+          title: Items
+      type: object
+      required:
+      - items
+      title: ContractApprovalListResponse
+    ContractApprovalOut:
+      properties:
+        approval_id:
+          type: string
+          title: Approval Id
+        proposal_id:
+          type: string
+          title: Proposal Id
+        decision:
+          type: string
+          enum:
+          - approve
+          - reject
+          title: Decision
+        approver_id:
+          type: string
+          title: Approver Id
+        evidence_ack:
+          type: boolean
+          title: Evidence Ack
+        decided_at:
+          type: string
+          format: date-time
+          title: Decided At
+        note:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Note
+        created_at:
+          type: string
+          format: date-time
+          title: Created At
+      type: object
+      required:
+      - approval_id
+      - proposal_id
+      - decision
+      - approver_id
+      - evidence_ack
+      - decided_at
+      - created_at
+      title: ContractApprovalOut
+    ContractCaseListResponse:
+      properties:
+        items:
+          items:
+            $ref: '#/components/schemas/ContractCaseOut'
+          type: array
+          title: Items
+      type: object
+      required:
+      - items
+      title: ContractCaseListResponse
+    ContractCaseOut:
+      properties:
+        case_id:
+          type: string
+          title: Case Id
+        case_key:
+          type: string
+          title: Case Key
+        partner_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Partner Name
+        partner_tax_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Partner Tax Id
+        contract_code:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Contract Code
+        status:
+          type: string
+          title: Status
+        meta:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Meta
+        created_at:
+          type: string
+          format: date-time
+          title: Created At
+        updated_at:
+          type: string
+          format: date-time
+          title: Updated At
+      type: object
+      required:
+      - case_id
+      - case_key
+      - status
+      - created_at
+      - updated_at
+      title: ContractCaseOut
+    ContractObligationListResponse:
+      properties:
+        items:
+          items:
+            $ref: '#/components/schemas/ContractObligationOut'
+          type: array
+          title: Items
+      type: object
+      required:
+      - items
+      title: ContractObligationListResponse
+    ContractObligationOut:
+      properties:
+        obligation_id:
+          type: string
+          title: Obligation Id
+        case_id:
+          type: string
+          title: Case Id
+        obligation_type:
+          type: string
+          title: Obligation Type
+        currency:
+          type: string
+          title: Currency
+        amount_value:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Amount Value
+        amount_percent:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Amount Percent
+        due_date:
+          anyOf:
+          - type: string
+            format: date
+          - type: 'null'
+          title: Due Date
+        condition_text:
+          type: string
+          title: Condition Text
+        confidence:
+          type: number
+          title: Confidence
+        risk_level:
+          type: string
+          title: Risk Level
+        signature:
+          type: string
+          title: Signature
+        meta:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Meta
+        created_at:
+          type: string
+          format: date-time
+          title: Created At
+      type: object
+      required:
+      - obligation_id
+      - case_id
+      - obligation_type
+      - currency
+      - condition_text
+      - confidence
+      - risk_level
+      - signature
+      - created_at
+      title: ContractObligationOut
+    ContractProposalCreateRequest:
+      properties:
+        case_id:
+          type: string
+          title: Case Id
+        obligation_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Obligation Id
+        proposal_type:
+          type: string
+          title: Proposal Type
+        title:
+          type: string
+          title: Title
+        summary:
+          type: string
+          title: Summary
+        details:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Details
+        risk_level:
+          type: string
+          title: Risk Level
+          default: medium
+        confidence:
+          type: number
+          title: Confidence
+          default: 0.0
+        status:
+          type: string
+          title: Status
+          default: draft
+        created_by:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Created By
+        tier:
+          type: integer
+          title: Tier
+          default: 3
+        evidence_summary_hash:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Evidence Summary Hash
+        run_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Run Id
+        proposal_key:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Proposal Key
+        actor_user_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Actor User Id
+          description: Deprecated alias for created_by
+      type: object
+      required:
+      - case_id
+      - proposal_type
+      - title
+      - summary
+      title: ContractProposalCreateRequest
+    ContractProposalCreateResponse:
+      properties:
+        proposal_id:
+          type: string
+          title: Proposal Id
+        status:
+          type: string
+          title: Status
+        proposal_key:
+          type: string
+          title: Proposal Key
+      type: object
+      required:
+      - proposal_id
+      - status
+      - proposal_key
+      title: ContractProposalCreateResponse
+    ContractProposalListResponse:
+      properties:
+        items:
+          items:
+            $ref: '#/components/schemas/ContractProposalOut'
+          type: array
+          title: Items
+      type: object
+      required:
+      - items
+      title: ContractProposalListResponse
+    ContractProposalOut:
+      properties:
+        proposal_id:
+          type: string
+          title: Proposal Id
+        case_id:
+          type: string
+          title: Case Id
+        obligation_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Obligation Id
+        proposal_type:
+          type: string
+          title: Proposal Type
+        title:
+          type: string
+          title: Title
+        summary:
+          type: string
+          title: Summary
+        details:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Details
+        risk_level:
+          type: string
+          title: Risk Level
+        confidence:
+          type: number
+          title: Confidence
+        status:
+          type: string
+          title: Status
+        created_by:
+          type: string
+          title: Created By
+        tier:
+          type: integer
+          title: Tier
+        evidence_summary_hash:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Evidence Summary Hash
+        proposal_key:
+          type: string
+          title: Proposal Key
+        run_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Run Id
+        approvals_required:
+          type: integer
+          title: Approvals Required
+        approvals_approved:
+          type: integer
+          title: Approvals Approved
+        created_at:
+          type: string
+          format: date-time
+          title: Created At
+      type: object
+      required:
+      - proposal_id
+      - case_id
+      - proposal_type
+      - title
+      - summary
+      - risk_level
+      - confidence
+      - status
+      - created_by
+      - tier
+      - proposal_key
+      - approvals_required
+      - approvals_approved
+      - created_at
+      title: ContractProposalOut
+    ContractSourceListResponse:
+      properties:
+        items:
+          items:
+            $ref: '#/components/schemas/ContractSourceOut'
+          type: array
+          title: Items
+      type: object
+      required:
+      - items
+      title: ContractSourceListResponse
+    ContractSourceOut:
+      properties:
+        source_id:
+          type: string
+          title: Source Id
+        case_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Case Id
+        source_type:
+          type: string
+          title: Source Type
+        source_uri:
+          type: string
+          title: Source Uri
+        stored_uri:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Stored Uri
+        file_hash:
+          type: string
+          title: File Hash
+        size_bytes:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Size Bytes
+        content_type:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Content Type
+        meta:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Meta
+        created_at:
+          type: string
+          format: date-time
+          title: Created At
+      type: object
+      required:
+      - source_id
+      - source_type
+      - source_uri
+      - file_hash
+      - created_at
+      title: ContractSourceOut
     HTTPValidationError:
       properties:
         detail:

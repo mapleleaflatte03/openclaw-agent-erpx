@@ -1291,6 +1291,92 @@ def _extract_obligation_candidates(text: str) -> list[dict[str, Any]]:
     return out
 
 
+def _normalize_trigger_key(text: str) -> str:
+    t = " ".join(text.lower().split())
+    # Strip volatile numbers so cross-source comparisons can detect conflicts.
+    t = re.sub(r"[0-9]+", "#", t)
+    t = re.sub(r"#+", "#", t)
+    return t[:160]
+
+
+def _evidence_strength(
+    base_confidence: float,
+    *,
+    amount_present: bool,
+    timepoint_present: bool,
+    coords_present: bool,
+    source_type: str,
+) -> float:
+    # Evidence-strength score, used for Tier gating (NOT ML accuracy).
+    strength = float(base_confidence or 0.0)
+    if amount_present:
+        strength += 0.2
+    if timepoint_present:
+        strength += 0.2
+    if coords_present:
+        strength += 0.1
+
+    # "Primary source" bias for product-mode (contract PDF over email).
+    if source_type == "contract":
+        strength *= float(getattr(settings, "obligation_primary_source_weight", 1.0))
+
+    return max(0.0, min(1.0, strength))
+
+
+def _missing_required_fields(
+    *,
+    amount_present: bool,
+    timepoint_present: bool,
+    trigger_present: bool,
+    mode: str,
+) -> list[str]:
+    missing: list[str] = []
+    if not amount_present:
+        missing.append("amount")
+    if mode == "strict" and not timepoint_present:
+        # due_date or equivalent milestone timepoint
+        missing.append("due_date")
+    if not trigger_present:
+        missing.append("trigger_condition")
+    return missing
+
+
+def _risk_level_max(a: str, b: str) -> str:
+    order = {"low": 0, "medium": 1, "med": 1, "high": 2}
+    aa = a if a in order else "medium"
+    bb = b if b in order else "medium"
+    return aa if order[aa] >= order[bb] else bb
+
+
+def _classify_risk_level(
+    obligation_type: str,
+    *,
+    has_email_source: bool,
+    has_conflict: bool,
+    missing_fields: list[str],
+    ambiguous_condition: bool,
+    currency: str,
+) -> str:
+    risk = "low"
+    if obligation_type == "late_payment_penalty":
+        risk = "high"
+    elif obligation_type == "early_payment_discount":
+        risk = "medium"
+
+    if currency and currency.upper() != "VND":
+        risk = _risk_level_max(risk, "high")
+    if has_email_source:
+        risk = _risk_level_max(risk, "medium")
+    if ambiguous_condition:
+        risk = _risk_level_max(risk, "high")
+    if missing_fields:
+        risk = _risk_level_max(risk, "medium")
+    if has_conflict:
+        risk = _risk_level_max(risk, "high")
+    # normalize legacy "med"
+    return "medium" if risk == "med" else risk
+
+
 def _wf_contract_obligation(run_id: str) -> dict[str, Any]:
     payload = _run_payload(run_id)
     contract_files = list(payload.get("contract_files") or [])
@@ -1440,14 +1526,44 @@ def _wf_contract_obligation(run_id: str) -> dict[str, Any]:
             case_id = case.case_id
 
         # Phase 2: extract contract text + parse emails (idempotent per source_id)
-        contract_texts: list[tuple[str, str]] = []
-        email_texts: list[tuple[str, str]] = []
+        contract_sources: list[dict[str, Any]] = []
+        email_sources: list[dict[str, Any]] = []
 
         t_id = _task_start(run_id, "extract_contract_text", {"contracts": len(contract_files)})
         try:
             for item in staged:
                 if item["source_type"] != "contract":
                     continue
+
+                ext = Path(item["local_path"]).suffix.lower()
+                engine_name = "unknown"
+                pages_text: list[str] = []
+                text = ""
+
+                if ext == ".pdf":
+                    engine_name = "pdfplumber"
+                    try:
+                        with pdfplumber.open(item["local_path"]) as pdf:
+                            for page in pdf.pages:
+                                pages_text.append(page.extract_text() or "")
+                        text = "\n".join(t for t in pages_text if t.strip())
+                    except Exception:
+                        text = ""
+                        pages_text = []
+
+                    if not text.strip():
+                        engine_name = "tesseract"
+                        text = _ocr_pdf(item["local_path"], max_pages=settings.ocr_pdf_max_pages)
+                        pages_text = [text]
+                elif ext in {".png", ".jpg", ".jpeg", ".tif", ".tiff"}:
+                    engine_name = "tesseract"
+                    text = _ocr_image(item["local_path"])
+                    pages_text = [text]
+                else:
+                    engine_name = "raw"
+                    text = Path(item["local_path"]).read_text(encoding="utf-8", errors="ignore")
+                    pages_text = [text]
+
                 with db_session(engine) as s:
                     src = s.execute(
                         select(AgentSourceFile).where(
@@ -1461,43 +1577,34 @@ def _wf_contract_obligation(run_id: str) -> dict[str, Any]:
                     existing = s.execute(
                         select(AgentExtractedText).where(AgentExtractedText.source_id == src.source_id)
                     ).scalar_one_or_none()
-                    if existing:
-                        contract_texts.append((src.source_id, existing.text))
-                        continue
-
-                    ext = Path(item["local_path"]).suffix.lower()
-                    engine_name = "unknown"
-                    if ext == ".pdf":
-                        engine_name = "pdfplumber"
-                        text = _extract_pdf_text(item["local_path"])
-                        if not text.strip():
-                            engine_name = "tesseract"
-                            text = _ocr_pdf(item["local_path"], max_pages=settings.ocr_pdf_max_pages)
-                    elif ext in {".png", ".jpg", ".jpeg", ".tif", ".tiff"}:
-                        engine_name = "tesseract"
-                        text = _ocr_image(item["local_path"])
-                    else:
-                        engine_name = "raw"
-                        text = Path(item["local_path"]).read_text(encoding="utf-8", errors="ignore")
-
-                    s.add(
-                        AgentExtractedText(
-                            text_id=new_uuid(),
-                            source_id=src.source_id,
-                            engine=engine_name,
-                            text=text,
-                            page_confidence=None,
+                    if not existing:
+                        s.add(
+                            AgentExtractedText(
+                                text_id=new_uuid(),
+                                source_id=src.source_id,
+                                engine=engine_name,
+                                text=text,
+                                page_confidence=None,
+                            )
                         )
+                    else:
+                        # Keep the stored text stable for later reads.
+                        text = existing.text
+
+                    contract_sources.append(
+                        {"source_id": src.source_id, "text": text, "pages_text": pages_text}
                     )
-                    contract_texts.append((src.source_id, text))
         finally:
-            _task_finish(run_id, "extract_contract_text", "success", {"sources": len(contract_texts)})
+            _task_finish(run_id, "extract_contract_text", "success", {"sources": len(contract_sources)})
 
         t_id = _task_start(run_id, "parse_emails", {"emails": len(email_files)})
         try:
             for item in staged:
                 if item["source_type"] != "email":
                     continue
+
+                subject, from_addr, to_addrs, clean_text = _parse_email_file(item["local_path"])
+
                 with db_session(engine) as s:
                     src = s.execute(
                         select(AgentSourceFile).where(
@@ -1511,66 +1618,237 @@ def _wf_contract_obligation(run_id: str) -> dict[str, Any]:
                     existing = s.execute(
                         select(AgentEmailThread).where(AgentEmailThread.source_id == src.source_id)
                     ).scalar_one_or_none()
-                    if existing:
-                        email_texts.append((src.source_id, existing.clean_text))
-                        continue
-
-                    subject, from_addr, to_addrs, clean_text = _parse_email_file(item["local_path"])
-                    s.add(
-                        AgentEmailThread(
-                            thread_id=new_uuid(),
-                            source_id=src.source_id,
-                            subject=subject,
-                            from_addr=from_addr,
-                            to_addrs=to_addrs,
-                            clean_text=clean_text or "",
-                            highlights=None,
-                        )
-                    )
-                    email_texts.append((src.source_id, clean_text or ""))
-        finally:
-            _task_finish(run_id, "parse_emails", "success", {"sources": len(email_texts)})
-
-        combined_text = "\n".join([t for _, t in contract_texts] + [t for _, t in email_texts])
-
-        # Phase 3: extract obligations + evidence
-        t_id = _task_start(run_id, "extract_obligations", {"text_len": len(combined_text)})
-        try:
-            sig_to_item: dict[str, dict[str, Any]] = {}
-            for source_id, text in contract_texts + email_texts:
-                for cand in _extract_obligation_candidates(text):
-                    sig_payload = [
-                        case_key,
-                        cand["obligation_type"],
-                        cand.get("currency"),
-                        cand.get("amount_value"),
-                        cand.get("amount_percent"),
-                        str(cand.get("due_date") or ""),
-                        " ".join(str(cand.get("condition_text") or "").split()),
-                    ]
-                    signature = sha256_text(json_dumps_canonical(sig_payload))
-                    existing = sig_to_item.get(signature)
-                    ev = {
-                        "source_id": source_id,
-                        "evidence_type": "email" if (source_id, text) in email_texts else "quote",
-                        "snippet": str(cand.get("condition_text") or "")[:2000],
-                        "meta": None,
-                    }
                     if not existing:
-                        sig_to_item[signature] = {
-                            **cand,
-                            "signature": signature,
-                            "evidence": [ev],
-                        }
+                        s.add(
+                            AgentEmailThread(
+                                thread_id=new_uuid(),
+                                source_id=src.source_id,
+                                subject=subject,
+                                from_addr=from_addr,
+                                to_addrs=to_addrs,
+                                clean_text=clean_text or "",
+                                highlights=None,
+                            )
+                        )
                     else:
-                        existing["confidence"] = max(float(existing.get("confidence") or 0.0), float(cand["confidence"]))
-                        existing["evidence"].append(ev)
+                        # Keep the stored clean_text stable for later reads.
+                        clean_text = existing.clean_text
+                        subject = existing.subject
 
-            obligations_created = 0
-            evidence_created = 0
+                    email_sources.append(
+                        {
+                            "source_id": src.source_id,
+                            "subject": subject,
+                            "from_addr": from_addr,
+                            "to_addrs": to_addrs,
+                            "clean_text": clean_text or "",
+                        }
+                    )
+        finally:
+            _task_finish(run_id, "parse_emails", "success", {"sources": len(email_sources)})
 
-            with db_session(engine) as s:
-                for signature, item in sig_to_item.items():
+        combined_text = "\n".join([x["text"] for x in contract_sources] + [x["clean_text"] for x in email_sources])
+
+        # Phase 3: extract obligations + evidence (3-tier gating uses evidence strength + conflicts)
+        t_id = _task_start(run_id, "extract_obligations", {"text_len": len(combined_text)})
+        groups: dict[str, dict[str, Any]] = {}
+        obligations_created = 0
+        evidence_created = 0
+        group_signatures: list[str] = []
+        try:
+            for src in contract_sources:
+                pages = src.get("pages_text") or [src.get("text") or ""]
+                for page_no, page_text in enumerate(pages, start=1):
+                    for line_no, raw_line in enumerate(str(page_text).splitlines(), start=1):
+                            for cand in _extract_obligation_candidates(raw_line):
+                                within_days = (cand.get("meta") or {}).get("within_days")
+                                due_date = cand.get("due_date")
+                                trigger_key = _normalize_trigger_key(str(cand.get("condition_text") or ""))
+                                group_key = f"{cand['obligation_type']}:{trigger_key}"
+
+                            amount_present = (cand.get("amount_value") is not None) or (
+                                cand.get("amount_percent") is not None
+                            )
+                            timepoint_present = (due_date is not None) or (within_days is not None)
+                            trigger_present = bool(str(cand.get("condition_text") or "").strip())
+                            coords = {"page": page_no, "line": line_no}
+                            strength = _evidence_strength(
+                                float(cand.get("confidence") or 0.0),
+                                amount_present=amount_present,
+                                timepoint_present=timepoint_present,
+                                coords_present=True,
+                                source_type="contract",
+                            )
+
+                            groups.setdefault(
+                                group_key,
+                                {
+                                    "obligation_type": cand["obligation_type"],
+                                    "candidates": [],
+                                },
+                            )["candidates"].append(
+                                {
+                                    **cand,
+                                    "source_id": src["source_id"],
+                                    "source_type": "contract",
+                                    "within_days": within_days,
+                                    "coords": coords,
+                                    "evidence_strength": strength,
+                                    "amount_present": amount_present,
+                                    "timepoint_present": timepoint_present,
+                                    "trigger_present": trigger_present,
+                                }
+                            )
+
+            for src in email_sources:
+                subject = src.get("subject")
+                for line_no, raw_line in enumerate(str(src.get("clean_text") or "").splitlines(), start=1):
+                    for cand in _extract_obligation_candidates(raw_line):
+                        within_days = (cand.get("meta") or {}).get("within_days")
+                        due_date = cand.get("due_date")
+                        trigger_key = _normalize_trigger_key(str(cand.get("condition_text") or ""))
+                        group_key = f"{cand['obligation_type']}:{trigger_key}"
+
+                        amount_present = (cand.get("amount_value") is not None) or (cand.get("amount_percent") is not None)
+                        timepoint_present = (due_date is not None) or (within_days is not None)
+                        trigger_present = bool(str(cand.get("condition_text") or "").strip())
+                        coords = {"email_line": line_no, "subject": subject}
+                        strength = _evidence_strength(
+                            float(cand.get("confidence") or 0.0),
+                            amount_present=amount_present,
+                            timepoint_present=timepoint_present,
+                            coords_present=True,
+                            source_type="email",
+                        )
+
+                        groups.setdefault(
+                            group_key,
+                            {
+                                "obligation_type": cand["obligation_type"],
+                                "candidates": [],
+                            },
+                        )["candidates"].append(
+                            {
+                                **cand,
+                                "source_id": src["source_id"],
+                                "source_type": "email",
+                                "within_days": within_days,
+                                "coords": coords,
+                                "evidence_strength": strength,
+                                "amount_present": amount_present,
+                                "timepoint_present": timepoint_present,
+                                "trigger_present": trigger_present,
+                            }
+                        )
+
+            mode = str(getattr(settings, "obligation_required_fields", "strict") or "strict")
+            for group_key, g in groups.items():
+                candidates = list(g.get("candidates") or [])
+                if not candidates:
+                    continue
+
+                def _field_conflicts(
+                    cands: list[dict[str, Any]], field: str
+                ) -> list[dict[str, Any]] | None:
+                    vals: dict[str, list[dict[str, Any]]] = {}
+                    for c in cands:
+                        v = c.get(field)
+                        if v is None:
+                            continue
+                        key = str(v)
+                        vals.setdefault(key, []).append(
+                            {"source_id": c["source_id"], "source_type": c["source_type"]}
+                        )
+                    if len(vals) <= 1:
+                        return None
+                    return [{"value": k, "sources": srcs} for k, srcs in vals.items()]
+
+                conflicts: dict[str, Any] = {}
+                for f in ["amount_value", "amount_percent", "due_date", "within_days"]:
+                    c = _field_conflicts(candidates, f)
+                    if c:
+                        conflicts[f] = c
+
+                has_conflict = bool(conflicts)
+                has_email_source = any(c.get("source_type") == "email" for c in candidates)
+
+                # Choose a "best" candidate for display (prefer contract, then strength).
+                candidates_sorted = sorted(
+                    candidates,
+                    key=lambda c: (
+                        1 if c.get("source_type") == "contract" else 0,
+                        float(c.get("evidence_strength") or 0.0),
+                    ),
+                    reverse=True,
+                )
+                best = candidates_sorted[0]
+                currency = (best.get("currency") or "VND").upper()
+
+                # If a field conflicts, keep it unset and surface the conflict in meta.
+                amount_value = None if "amount_value" in conflicts else best.get("amount_value")
+                amount_percent = None if "amount_percent" in conflicts else best.get("amount_percent")
+                due_date = None if "due_date" in conflicts else best.get("due_date")
+                within_days = None if "within_days" in conflicts else best.get("within_days")
+
+                amount_present = (amount_value is not None) or (amount_percent is not None)
+                timepoint_present = (due_date is not None) or (within_days is not None)
+                trigger_present = bool(str(best.get("condition_text") or "").strip())
+
+                missing_fields = _missing_required_fields(
+                    amount_present=amount_present,
+                    timepoint_present=timepoint_present,
+                    trigger_present=trigger_present,
+                    mode=mode,
+                )
+
+                strong_evidence = any(
+                    bool(c.get("amount_present"))
+                    and bool(c.get("timepoint_present"))
+                    and bool(c.get("trigger_present"))
+                    and bool(c.get("coords"))
+                    for c in candidates
+                )
+
+                cond_lower = str(best.get("condition_text") or "").lower()
+                ambiguous_condition = any(
+                    k in cond_lower
+                    for k in [
+                        "tbd",
+                        "to be discussed",
+                        "subject to",
+                        "pending",
+                        "nghiem thu",
+                        "nghiệm thu",
+                        "acceptance",
+                        "tranh chấp",
+                        "dispute",
+                    ]
+                )
+
+                risk_level = _classify_risk_level(
+                    best.get("obligation_type") or g.get("obligation_type") or "unknown",
+                    has_email_source=has_email_source,
+                    has_conflict=has_conflict,
+                    missing_fields=missing_fields,
+                    ambiguous_condition=ambiguous_condition,
+                    currency=currency,
+                )
+
+                signature = sha256_text(json_dumps_canonical([case_key, group_key]))
+                meta: dict[str, Any] = {
+                    "group_key": group_key,
+                    "within_days": within_days,
+                    "missing_fields": missing_fields,
+                    "strong_evidence": bool(strong_evidence),
+                    "conflicts": conflicts or None,
+                    "sources": [
+                        {"source_id": c["source_id"], "source_type": c["source_type"]} for c in candidates_sorted
+                    ],
+                }
+
+                max_strength = max(float(c.get("evidence_strength") or 0.0) for c in candidates_sorted)
+
+                with db_session(engine) as s:
                     ob = s.execute(
                         select(AgentObligation).where(AgentObligation.signature == signature)
                     ).scalar_one_or_none()
@@ -1578,30 +1856,46 @@ def _wf_contract_obligation(run_id: str) -> dict[str, Any]:
                         ob = AgentObligation(
                             obligation_id=new_uuid(),
                             case_id=case_id,
-                            obligation_type=item["obligation_type"],
-                            currency=item.get("currency") or "VND",
-                            amount_value=item.get("amount_value"),
-                            amount_percent=item.get("amount_percent"),
-                            due_date=item.get("due_date"),
-                            condition_text=item.get("condition_text") or "",
-                            confidence=float(item.get("confidence") or 0.0),
+                            obligation_type=best.get("obligation_type") or g.get("obligation_type") or "unknown",
+                            currency=currency,
+                            amount_value=amount_value,
+                            amount_percent=amount_percent,
+                            due_date=due_date,
+                            condition_text=str(best.get("condition_text") or "")[:4000],
+                            confidence=max_strength,
+                            risk_level=risk_level,
                             signature=signature,
-                            meta=item.get("meta"),
+                            meta=meta,
                         )
                         s.add(ob)
                         s.flush()
                         obligations_created += 1
                     else:
-                        # keep best known confidence
-                        ob.confidence = max(float(ob.confidence or 0.0), float(item.get("confidence") or 0.0))
+                        ob.confidence = max(float(ob.confidence or 0.0), max_strength)
+                        ob.risk_level = risk_level
+                        ob.meta = meta
+                        # only fill missing scalar fields if we have a non-conflicting value
+                        if amount_value is not None and ob.amount_value is None:
+                            ob.amount_value = amount_value
+                        if amount_percent is not None and ob.amount_percent is None:
+                            ob.amount_percent = amount_percent
+                        if due_date is not None and ob.due_date is None:
+                            ob.due_date = due_date
+                        if ob.condition_text and ob.condition_text.strip():
+                            pass
+                        else:
+                            ob.condition_text = str(best.get("condition_text") or "")[:4000]
 
-                    for ev in item["evidence"]:
+                    for ev in candidates_sorted:
+                        evidence_type = "email" if ev.get("source_type") == "email" else "quote"
+                        snippet = str(ev.get("condition_text") or "")[:2000]
                         evidence_id = make_idempotency_key(
                             "obligation_evidence",
                             signature,
                             ev["source_id"],
-                            ev["evidence_type"],
-                            ev["snippet"],
+                            evidence_type,
+                            snippet,
+                            ev.get("coords"),
                         )[:36]
                         if s.get(AgentObligationEvidence, evidence_id):
                             continue
@@ -1610,12 +1904,19 @@ def _wf_contract_obligation(run_id: str) -> dict[str, Any]:
                                 evidence_id=evidence_id,
                                 obligation_id=ob.obligation_id,
                                 source_id=ev["source_id"],
-                                evidence_type=ev["evidence_type"],
-                                snippet=ev["snippet"],
-                                meta=ev.get("meta"),
+                                evidence_type=evidence_type,
+                                snippet=snippet,
+                                meta={
+                                    "coords": ev.get("coords"),
+                                    "source_type": ev.get("source_type"),
+                                    "evidence_strength": float(ev.get("evidence_strength") or 0.0),
+                                    "group_key": group_key,
+                                },
                             )
                         )
                         evidence_created += 1
+
+                group_signatures.append(signature)
         finally:
             _task_finish(
                 run_id,
@@ -1645,32 +1946,282 @@ def _wf_contract_obligation(run_id: str) -> dict[str, Any]:
         finally:
             _task_finish(run_id, "reconcile_erpx", "success")
 
-        # Phase 5: create proposals (idempotent via proposal_key)
+        # Phase 5: create proposals (3-tier gating + maker-checker metadata)
         t_id = _task_start(run_id, "create_proposals")
         try:
             proposals_created = 0
+            tier_counts = {1: 0, 2: 0, 3: 0}
+
             with db_session(engine) as s:
+                run = s.get(AgentRun, run_id)
+                created_by = (getattr(run, "requested_by", None) or "").strip() or "system"
+
                 threshold = float(getattr(settings, "obligation_confidence_threshold", 0.8))
-                obs = s.execute(select(AgentObligation).where(AgentObligation.case_id == case_id)).scalars().all()
-                for ob in obs:
+                mode = str(getattr(settings, "obligation_required_fields", "strict") or "strict")
+                conflict_policy = str(getattr(settings, "obligation_conflict_policy", "drop_to_tier2"))
+
+                obs = (
+                    s.execute(
+                        select(AgentObligation)
+                        .where(AgentObligation.case_id == case_id)
+                        .order_by(AgentObligation.created_at.desc())
+                    )
+                    .scalars()
+                    .all()
+                )
+
+                # Evidence pack: zip (index.json + extracted texts), idempotent by (issue_key, version=1)
+                issue_key = f"contract_obligation:{case_id}"
+                ev_pack = s.execute(
+                    select(AgentEvidencePack).where(
+                        (AgentEvidencePack.issue_key == issue_key) & (AgentEvidencePack.version == 1)
+                    )
+                ).scalar_one_or_none()
+                pack_uri = ev_pack.pack_uri if ev_pack else None
+                if not ev_pack:
+                    index_json = {
+                        "case_id": case_id,
+                        "case_key": case_key,
+                        "generated_at": utcnow().isoformat(),
+                        "obligations": [
+                            {
+                                "obligation_id": ob.obligation_id,
+                                "signature": ob.signature,
+                                "obligation_type": ob.obligation_type,
+                                "currency": ob.currency,
+                                "amount_value": ob.amount_value,
+                                "amount_percent": ob.amount_percent,
+                                "due_date": str(ob.due_date) if ob.due_date else None,
+                                "condition_text": ob.condition_text,
+                                "confidence": float(ob.confidence or 0.0),
+                                "risk_level": getattr(ob, "risk_level", None),
+                                "meta": ob.meta,
+                            }
+                            for ob in obs
+                        ],
+                    }
+
+                    pack_path = str(workdir / "contract_obligation_evidence_pack.zip")
+                    with zipfile.ZipFile(pack_path, "w", compression=zipfile.ZIP_DEFLATED) as z:
+                        z.writestr("index.json", json_dumps_canonical(index_json))
+                        for src in contract_sources:
+                            z.writestr(f"sources/{src['source_id']}.txt", str(src.get("text") or ""))
+                        for src in email_sources:
+                            z.writestr(
+                                f"sources/{src['source_id']}.eml.txt", str(src.get("clean_text") or "")
+                            )
+
+                    key = f"evidence/contract_obligation/{case_key}/pack_v1.zip"
+                    obj = upload_file(
+                        settings,
+                        settings.minio_bucket_evidence,
+                        key,
+                        pack_path,
+                        content_type="application/zip",
+                    )
+                    pack_uri = obj.uri()
+                    ev_pack = AgentEvidencePack(
+                        id=new_uuid(),
+                        issue_key=issue_key,
+                        version=1,
+                        pack_uri=pack_uri,
+                        index_json=index_json,
+                        run_id=run_id,
+                    )
+                    s.add(ev_pack)
+
+                def _tier_for_obligation(ob: AgentObligation) -> tuple[int, list[str], dict | None]:
+                    meta = ob.meta if isinstance(ob.meta, dict) else {}
+                    within_days = meta.get("within_days")
+                    strong_evidence = bool(meta.get("strong_evidence"))
+                    conflicts = meta.get("conflicts")
+
+                    amount_present = (ob.amount_value is not None) or (ob.amount_percent is not None)
+                    timepoint_present = (ob.due_date is not None) or (within_days is not None)
+                    trigger_present = bool((ob.condition_text or "").strip())
+                    missing_fields = _missing_required_fields(
+                        amount_present=amount_present,
+                        timepoint_present=timepoint_present,
+                        trigger_present=trigger_present,
+                        mode=mode,
+                    )
+
+                    if conflicts and conflict_policy == "drop_to_tier2":
+                        return 2, missing_fields, conflicts
                     if float(ob.confidence or 0.0) < threshold:
-                        p_key = make_idempotency_key("review_needed", ob.signature)
+                        return 3, missing_fields, conflicts
+                    if missing_fields:
+                        return 2, missing_fields, conflicts
+                    if not strong_evidence:
+                        return 2, missing_fields, conflicts
+                    return 1, missing_fields, conflicts
+
+                for ob in obs:
+                    tier, missing_fields, conflicts = _tier_for_obligation(ob)
+                    tier_counts[tier] = tier_counts.get(tier, 0) + 1
+
+                    risk_level = (getattr(ob, "risk_level", None) or "medium").strip().lower()
+                    if risk_level == "med":
+                        risk_level = "medium"
+
+                    base_details = {
+                        "tier": tier,
+                        "risk_level": risk_level,
+                        "evidence_pack_uri": pack_uri,
+                        "obligation_signature": ob.signature,
+                        "missing_fields": missing_fields,
+                        "conflicts": conflicts,
+                        "note": "Draft outside ERPX core. Agent does not post entries to ERPX.",
+                    }
+
+                    if tier == 1:
+                        # Tier 1: draft proposals + evidence pack
+                        reminder_key = make_idempotency_key(
+                            "contract_proposal", ob.signature, "reminder", tier
+                        )
+                        existing = s.execute(
+                            select(AgentProposal).where(AgentProposal.proposal_key == reminder_key)
+                        ).scalar_one_or_none()
+                        if not existing:
+                            details = {
+                                **base_details,
+                                "due_date": str(ob.due_date) if ob.due_date else None,
+                                "within_days": (ob.meta or {}).get("within_days") if isinstance(ob.meta, dict) else None,
+                            }
+                            p = AgentProposal(
+                                proposal_id=new_uuid(),
+                                case_id=case_id,
+                                obligation_id=ob.obligation_id,
+                                proposal_type="reminder",
+                                title=f"Reminder (Tier1): {ob.obligation_type}",
+                                summary=ob.condition_text[:2000],
+                                details=details,
+                                risk_level=risk_level,
+                                confidence=float(ob.confidence or 0.0),
+                                status="draft",
+                                created_by=created_by,
+                                tier=1,
+                                evidence_summary_hash=sha256_text(json_dumps_canonical(details)),
+                                proposal_key=reminder_key,
+                                run_id=run_id,
+                            )
+                            s.add(p)
+                            s.flush()
+                            s.add(
+                                AgentAuditLog(
+                                    audit_id=new_uuid(),
+                                    actor_user_id=created_by,
+                                    action="proposal.create",
+                                    object_type="proposal",
+                                    object_id=p.proposal_id,
+                                    before=None,
+                                    after={
+                                        "proposal_id": p.proposal_id,
+                                        "case_id": p.case_id,
+                                        "obligation_id": p.obligation_id,
+                                        "proposal_type": p.proposal_type,
+                                        "proposal_key": p.proposal_key,
+                                        "tier": 1,
+                                        "risk_level": risk_level,
+                                    },
+                                    run_id=run_id,
+                                )
+                            )
+                            proposals_created += 1
+
+                        if ob.obligation_type != "milestone_payment":
+                            continue
+
+                        accrual_key = make_idempotency_key(
+                            "contract_proposal", ob.signature, "accrual_template", tier
+                        )
+                        existing = s.execute(
+                            select(AgentProposal).where(AgentProposal.proposal_key == accrual_key)
+                        ).scalar_one_or_none()
+                        if existing:
+                            continue
+
+                        details = {
+                            **base_details,
+                            "template": {
+                                "currency": ob.currency,
+                                "amount_percent": ob.amount_percent,
+                                "amount_value": ob.amount_value,
+                                "due_date": str(ob.due_date) if ob.due_date else None,
+                            }
+                        }
+                        p = AgentProposal(
+                            proposal_id=new_uuid(),
+                            case_id=case_id,
+                            obligation_id=ob.obligation_id,
+                            proposal_type="accrual_template",
+                            title="Accrual/deferral template (Tier1, review & approve)",
+                            summary=ob.condition_text[:2000],
+                            details=details,
+                            risk_level=risk_level,
+                            confidence=float(ob.confidence or 0.0),
+                            status="draft",
+                            created_by=created_by,
+                            tier=1,
+                            evidence_summary_hash=sha256_text(json_dumps_canonical(details)),
+                            proposal_key=accrual_key,
+                            run_id=run_id,
+                        )
+                        s.add(p)
+                        s.flush()
+                        s.add(
+                            AgentAuditLog(
+                                audit_id=new_uuid(),
+                                actor_user_id=created_by,
+                                action="proposal.create",
+                                object_type="proposal",
+                                object_id=p.proposal_id,
+                                before=None,
+                                after={
+                                    "proposal_id": p.proposal_id,
+                                    "case_id": p.case_id,
+                                    "obligation_id": p.obligation_id,
+                                    "proposal_type": p.proposal_type,
+                                    "proposal_key": p.proposal_key,
+                                    "tier": 1,
+                                    "risk_level": risk_level,
+                                },
+                                run_id=run_id,
+                            )
+                        )
+                        proposals_created += 1
+                        continue
+
+                    if tier == 2:
+                        # Tier 2: summary + quick confirm (no accounting template)
+                        p_key = make_idempotency_key(
+                            "contract_proposal", ob.signature, "review_confirm", tier
+                        )
                         existing = s.execute(
                             select(AgentProposal).where(AgentProposal.proposal_key == p_key)
                         ).scalar_one_or_none()
                         if existing:
                             continue
+
+                        details = {
+                            **base_details,
+                            "action_required": "confirm_fields",
+                            "hint": "Resolve missing/uncertain fields or conflicts, then re-run.",
+                        }
                         p = AgentProposal(
                             proposal_id=new_uuid(),
                             case_id=case_id,
                             obligation_id=ob.obligation_id,
-                            proposal_type="review_needed",
-                            title=f"Review needed: {ob.obligation_type}",
+                            proposal_type="review_confirm",
+                            title=f"Confirm obligation (Tier2): {ob.obligation_type}",
                             summary=ob.condition_text[:2000],
-                            details={"reason": "low_confidence", "confidence": float(ob.confidence or 0.0)},
-                            risk_level="high",
+                            details=details,
+                            risk_level=risk_level,
                             confidence=float(ob.confidence or 0.0),
                             status="pending",
+                            created_by=created_by,
+                            tier=2,
+                            evidence_summary_hash=sha256_text(json_dumps_canonical(details)),
                             proposal_key=p_key,
                             run_id=run_id,
                         )
@@ -1679,7 +2230,7 @@ def _wf_contract_obligation(run_id: str) -> dict[str, Any]:
                         s.add(
                             AgentAuditLog(
                                 audit_id=new_uuid(),
-                                actor_user_id=None,
+                                actor_user_id=created_by,
                                 action="proposal.create",
                                 object_type="proposal",
                                 object_id=p.proposal_id,
@@ -1690,6 +2241,8 @@ def _wf_contract_obligation(run_id: str) -> dict[str, Any]:
                                     "obligation_id": p.obligation_id,
                                     "proposal_type": p.proposal_type,
                                     "proposal_key": p.proposal_key,
+                                    "tier": 2,
+                                    "risk_level": risk_level,
                                 },
                                 run_id=run_id,
                             )
@@ -1697,75 +2250,36 @@ def _wf_contract_obligation(run_id: str) -> dict[str, Any]:
                         proposals_created += 1
                         continue
 
-                    # High confidence: reminder + (milestone-only) accrual template
-                    reminder_key = make_idempotency_key("reminder", ob.signature)
+                    # Tier 3: missing data (no inference)
+                    p_key = make_idempotency_key(
+                        "contract_proposal", ob.signature, "missing_data", tier
+                    )
                     existing = s.execute(
-                        select(AgentProposal).where(AgentProposal.proposal_key == reminder_key)
-                    ).scalar_one_or_none()
-                    if not existing:
-                        p = AgentProposal(
-                            proposal_id=new_uuid(),
-                            case_id=case_id,
-                            obligation_id=ob.obligation_id,
-                            proposal_type="reminder",
-                            title=f"Reminder: {ob.obligation_type}",
-                            summary=ob.condition_text[:2000],
-                            details={"due_date": str(ob.due_date) if ob.due_date else None},
-                            risk_level="low",
-                            confidence=float(ob.confidence or 0.0),
-                            status="pending",
-                            proposal_key=reminder_key,
-                            run_id=run_id,
-                        )
-                        s.add(p)
-                        s.flush()
-                        s.add(
-                            AgentAuditLog(
-                                audit_id=new_uuid(),
-                                actor_user_id=None,
-                                action="proposal.create",
-                                object_type="proposal",
-                                object_id=p.proposal_id,
-                                before=None,
-                                after={
-                                    "proposal_id": p.proposal_id,
-                                    "case_id": p.case_id,
-                                    "obligation_id": p.obligation_id,
-                                    "proposal_type": p.proposal_type,
-                                    "proposal_key": p.proposal_key,
-                                },
-                                run_id=run_id,
-                            )
-                        )
-                        proposals_created += 1
-
-                    if ob.obligation_type != "milestone_payment":
-                        continue
-
-                    accrual_key = make_idempotency_key("accrual_template", ob.signature)
-                    existing = s.execute(
-                        select(AgentProposal).where(AgentProposal.proposal_key == accrual_key)
+                        select(AgentProposal).where(AgentProposal.proposal_key == p_key)
                     ).scalar_one_or_none()
                     if existing:
                         continue
 
+                    details = {
+                        **base_details,
+                        "action_required": "provide_missing_data",
+                        "hint": "Provide missing amount/date/trigger evidence (PDF/email excerpt) and re-run.",
+                    }
                     p = AgentProposal(
                         proposal_id=new_uuid(),
                         case_id=case_id,
                         obligation_id=ob.obligation_id,
-                        proposal_type="accrual_template",
-                        title="Accrual/deferral template (review & approve)",
+                        proposal_type="missing_data",
+                        title=f"Missing data (Tier3): {ob.obligation_type}",
                         summary=ob.condition_text[:2000],
-                        details={
-                            "note": "Template only. Must be reviewed/approved. Agent does not post to ERPX.",
-                            "currency": ob.currency,
-                            "amount_percent": ob.amount_percent,
-                            "amount_value": ob.amount_value,
-                        },
-                        risk_level="med",
+                        details=details,
+                        risk_level=risk_level,
                         confidence=float(ob.confidence or 0.0),
                         status="pending",
-                        proposal_key=accrual_key,
+                        created_by=created_by,
+                        tier=3,
+                        evidence_summary_hash=sha256_text(json_dumps_canonical(details)),
+                        proposal_key=p_key,
                         run_id=run_id,
                     )
                     s.add(p)
@@ -1773,7 +2287,7 @@ def _wf_contract_obligation(run_id: str) -> dict[str, Any]:
                     s.add(
                         AgentAuditLog(
                             audit_id=new_uuid(),
-                            actor_user_id=None,
+                            actor_user_id=created_by,
                             action="proposal.create",
                             object_type="proposal",
                             object_id=p.proposal_id,
@@ -1784,19 +2298,56 @@ def _wf_contract_obligation(run_id: str) -> dict[str, Any]:
                                 "obligation_id": p.obligation_id,
                                 "proposal_type": p.proposal_type,
                                 "proposal_key": p.proposal_key,
+                                "tier": 3,
+                                "risk_level": risk_level,
                             },
                             run_id=run_id,
                         )
                     )
                     proposals_created += 1
 
+                if not obs:
+                    # No obligations extracted at all -> Tier3 case-level output.
+                    p_key = make_idempotency_key("contract_case", case_key, "missing_data")
+                    existing = s.execute(
+                        select(AgentProposal).where(AgentProposal.proposal_key == p_key)
+                    ).scalar_one_or_none()
+                    if not existing:
+                        details = {
+                            "tier": 3,
+                            "risk_level": "medium",
+                            "evidence_pack_uri": pack_uri,
+                            "missing_fields": ["amount", "due_date", "trigger_condition"],
+                            "action_required": "provide_source_documents",
+                        }
+                        p = AgentProposal(
+                            proposal_id=new_uuid(),
+                            case_id=case_id,
+                            obligation_id=None,
+                            proposal_type="missing_data",
+                            title="Missing data (Tier3): no obligations extracted",
+                            summary="No obligation clause was extracted with sufficient confidence.",
+                            details=details,
+                            risk_level="medium",
+                            confidence=0.0,
+                            status="pending",
+                            created_by=created_by,
+                            tier=3,
+                            evidence_summary_hash=sha256_text(json_dumps_canonical(details)),
+                            proposal_key=p_key,
+                            run_id=run_id,
+                        )
+                        s.add(p)
+                        proposals_created += 1
+
             _update_run(
                 run_id,
                 cursor_out={
                     "case_id": case_id,
                     "case_key": case_key,
-                    "obligations": len(sig_to_item),
+                    "obligations": len(obs),
                     "proposals_created": proposals_created,
+                    "tiers": tier_counts,
                 },
             )
         finally:
@@ -1806,7 +2357,7 @@ def _wf_contract_obligation(run_id: str) -> dict[str, Any]:
             "case_id": case_id,
             "case_key": case_key,
             "sources": len(staged),
-            "obligations": len(sig_to_item),
+            "obligations": len(group_signatures),
         }
     finally:
         shutil.rmtree(workdir, ignore_errors=True)
