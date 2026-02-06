@@ -4,7 +4,13 @@ Scope/safety (non-negotiable):
 - ERPX core: **read-only** (agent does not post entries, does not write accounting numbers).
 - Agent writes **auxiliary outputs only**: `proposals` (drafts), `approvals`, `audit log`, `evidence pack` (MinIO), plus run/task logs.
 
-## 0) Start Local Stack (Docker Compose)
+## 0) Pick Demo Environment
+
+You can run the demo either:
+- **A) Local Docker Compose** (fastest on a laptop with Docker)
+- **B) Deployed k3s/staging** (use port-forward/Ingress)
+
+### A) Start Local Stack (Docker Compose)
 
 ```bash
 cd /root/openclaw-agent-erpx
@@ -18,6 +24,21 @@ curl -fsS http://localhost:8000/healthz
 curl -fsS http://localhost:8000/readyz | jq .
 curl -fsS http://localhost:8501 >/dev/null && echo "ui ok"
 ```
+
+### B) k3s/staging (port-forward)
+
+Adjust namespace if needed (example: `openclaw`):
+```bash
+kubectl -n openclaw get pods
+kubectl -n openclaw port-forward svc/agent-service 8000:8000
+kubectl -n openclaw port-forward svc/ui 8501:8501
+kubectl -n openclaw port-forward svc/minio 9000:9000
+```
+
+Then use the same demo flow but with:
+- Agent API: `http://localhost:8000`
+- UI: `http://localhost:8501`
+- MinIO: `http://localhost:9000`
 
 ## 1) Generate Demo Source Files (PDF + EML)
 
@@ -141,4 +162,3 @@ Agent (aux outputs):
 
 ERPX (read-only):
 - `GET /erp/v1/*` (mock in local compose: `http://localhost:8001/erp/v1/...`)
-
