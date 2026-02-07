@@ -30,6 +30,68 @@ paths:
                 additionalProperties: true
                 type: object
                 title: Response Readyz Readyz Get
+  /diagnostics/llm:
+    get:
+      summary: Diagnostics Llm
+      operationId: diagnostics_llm_diagnostics_llm_get
+      parameters:
+      - name: X-API-Key
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Api-Key
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Diagnostics Llm Diagnostics Llm Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /llm/test:
+    post:
+      summary: Llm Test
+      operationId: llm_test_llm_test_post
+      parameters:
+      - name: X-API-Key
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Api-Key
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LlmTestRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Llm Test Llm Test Post
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /metrics:
     get:
       summary: Metrics
@@ -1339,6 +1401,17 @@ components:
           title: Detail
       type: object
       title: HTTPValidationError
+    LlmTestRequest:
+      properties:
+        prompt:
+          type: string
+          maxLength: 4000
+          minLength: 1
+          title: Prompt
+      type: object
+      required:
+      - prompt
+      title: LlmTestRequest
     ValidationError:
       properties:
         loc:
