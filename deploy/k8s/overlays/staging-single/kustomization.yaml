@@ -1,0 +1,36 @@
+# staging-single overlay
+# Purpose: single-node deployment (removes all nodeSelector constraints from base).
+# Suitable for k3s single-node, dev laptops, CI.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: openclaw-agent-staging
+
+resources:
+  - namespace.yaml
+  - default-serviceaccount.yaml
+  - ../../base
+
+patches:
+  - path: configmap-patch.yaml
+  - path: nodeselector-remove-patch.yaml
+  - path: replicas-patch.yaml
+  - path: resources-patch.yaml
+  - path: services-nodeport-patch.yaml
+
+images:
+  - name: openclaw-agent-erpx/agent-service
+    newName: ghcr.io/mapleleaflatte03/openclaw-agent-erpx/agent-service
+    newTag: staging-latest
+  - name: openclaw-agent-erpx/agent-worker
+    newName: ghcr.io/mapleleaflatte03/openclaw-agent-erpx/agent-worker
+    newTag: staging-latest
+  - name: openclaw-agent-erpx/agent-scheduler
+    newName: ghcr.io/mapleleaflatte03/openclaw-agent-erpx/agent-scheduler
+    newTag: staging-latest
+  - name: openclaw-agent-erpx/erpx-mock-api
+    newName: ghcr.io/mapleleaflatte03/openclaw-agent-erpx/erpx-mock-api
+    newTag: staging-latest
+  - name: openclaw-agent-erpx/ui
+    newName: ghcr.io/mapleleaflatte03/openclaw-agent-erpx/ui
+    newTag: staging-latest

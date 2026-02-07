@@ -1,0 +1,142 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres
+spec:
+  template:
+    spec:
+      nodeSelector: null
+      affinity: null
+      tolerations: null
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: redis
+spec:
+  template:
+    spec:
+      nodeSelector: null
+      affinity: null
+      tolerations: null
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: minio
+spec:
+  template:
+    spec:
+      nodeSelector: null
+      affinity: null
+      tolerations: null
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: minio-init
+spec:
+  template:
+    spec:
+      nodeSelector: null
+      affinity: null
+      tolerations: null
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: agent-migrate
+spec:
+  template:
+    spec:
+      nodeSelector: null
+      affinity: null
+      tolerations: null
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: erpx-mock-api
+spec:
+  template:
+    spec:
+      nodeSelector: null
+      affinity: null
+      tolerations: null
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agent-service
+spec:
+  template:
+    spec:
+      nodeSelector: null
+      affinity: null
+      tolerations: null
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agent-worker-ocr
+spec:
+  template:
+    spec:
+      nodeSelector: null
+      affinity: null
+      tolerations: null
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agent-worker-export
+spec:
+  template:
+    spec:
+      nodeSelector: null
+      affinity: null
+      tolerations: null
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agent-worker-io
+spec:
+  template:
+    spec:
+      nodeSelector: null
+      affinity: null
+      tolerations: null
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agent-worker-standby
+spec:
+  template:
+    spec:
+      nodeSelector: null
+      affinity: null
+      tolerations: null
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agent-scheduler
+spec:
+  template:
+    spec:
+      nodeSelector: null
+      affinity: null
+      tolerations: null
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ui
+spec:
+  template:
+    spec:
+      nodeSelector: null
+      affinity: null
+      tolerations: null

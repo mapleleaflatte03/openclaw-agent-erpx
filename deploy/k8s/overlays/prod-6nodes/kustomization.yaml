@@ -1,0 +1,32 @@
+# prod-6nodes overlay
+# Purpose: production 6-node k3s cluster with nodeSelector per role label.
+# Base already includes nodeSelector; this overlay keeps them (no override).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: openclaw-agent
+
+resources:
+  - namespace.yaml
+  - default-serviceaccount.yaml
+  - ../../base
+
+patches:
+  - path: configmap-patch.yaml
+
+images:
+  - name: openclaw-agent-erpx/agent-service
+    newName: ghcr.io/mapleleaflatte03/openclaw-agent-erpx/agent-service
+    newTag: latest
+  - name: openclaw-agent-erpx/agent-worker
+    newName: ghcr.io/mapleleaflatte03/openclaw-agent-erpx/agent-worker
+    newTag: latest
+  - name: openclaw-agent-erpx/agent-scheduler
+    newName: ghcr.io/mapleleaflatte03/openclaw-agent-erpx/agent-scheduler
+    newTag: latest
+  - name: openclaw-agent-erpx/erpx-mock-api
+    newName: ghcr.io/mapleleaflatte03/openclaw-agent-erpx/erpx-mock-api
+    newTag: latest
+  - name: openclaw-agent-erpx/ui
+    newName: ghcr.io/mapleleaflatte03/openclaw-agent-erpx/ui
+    newTag: latest
