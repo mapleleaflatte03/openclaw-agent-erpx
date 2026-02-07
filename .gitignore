@@ -19,5 +19,6 @@ data/
 tmp/
 *.sqlite
 *.db
+reports/benchmark/
 
 .DS_Store

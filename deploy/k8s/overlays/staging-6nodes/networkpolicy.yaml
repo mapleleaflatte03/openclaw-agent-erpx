@@ -1,0 +1,57 @@
+# NetworkPolicy — egress allowlist for agent namespace
+# Only applied if cluster CNI supports NetworkPolicy (Calico, Cilium, etc.)
+# Default-deny egress, then allow DNS, intra-namespace, and ERPX endpoint.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-egress
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+  egress:
+    # Allow DNS
+    - to: []
+      ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+    # Allow intra-namespace communication
+    - to:
+        - podSelector: {}
+    # Allow ERPX API (configurable — placeholder CIDR)
+    # Replace with actual ERPX cluster/service IP when known.
+    # For staging with erpx-mock in-cluster, the podSelector rule above covers it.
+---
+# Allow agent-service ingress from outside (NodePort / Ingress)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-agent-service-ingress
+spec:
+  podSelector:
+    matchLabels:
+      app: agent-service
+  policyTypes:
+    - Ingress
+  ingress:
+    - ports:
+        - port: 8000
+          protocol: TCP
+---
+# Allow ui ingress
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-ui-ingress
+spec:
+  podSelector:
+    matchLabels:
+      app: ui
+  policyTypes:
+    - Ingress
+  ingress:
+    - ports:
+        - port: 8501
+          protocol: TCP

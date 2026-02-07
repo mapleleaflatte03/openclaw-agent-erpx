@@ -20,22 +20,35 @@ configure_logging(settings.log_level)
 log = get_logger("agent-scheduler")
 
 
-def _expand_env(obj: Any) -> Any:
+def _expand_env(obj: Any, *, _missing: set[str] | None = None) -> Any:
+    """Expand ``${ENV_VAR}`` placeholders.  Collects missing var names into *_missing*."""
+    if _missing is None:
+        _missing = set()
     if isinstance(obj, dict):
-        return {k: _expand_env(v) for k, v in obj.items()}
+        return {k: _expand_env(v, _missing=_missing) for k, v in obj.items()}
     if isinstance(obj, list):
-        return [_expand_env(v) for v in obj]
+        return [_expand_env(v, _missing=_missing) for v in obj]
     if isinstance(obj, str):
         def repl(m: re.Match[str]) -> str:
-            return os.getenv(m.group(1), "")
+            val = os.getenv(m.group(1))
+            if val is None:
+                _missing.add(m.group(1))
+                return ""
+            return val
 
-        return re.sub(r"\\$\\{([A-Z0-9_]+)\\}", repl, obj)
+        # Expand `${ENV_VAR}` placeholders in YAML config.
+        return re.sub(r"\$\{([A-Z0-9_]+)\}", repl, obj)
     return obj
 
 
 def _load_yaml(path: str) -> dict[str, Any]:
+    missing: set[str] = set()
     with open(path, encoding="utf-8") as f:
-        return _expand_env(yaml.safe_load(f) or {})
+        result = _expand_env(yaml.safe_load(f) or {}, _missing=missing)
+    if missing:
+        log.error("missing_env_vars", missing=sorted(missing), config_path=path)
+        raise SystemExit(f"FATAL: missing required environment variables: {', '.join(sorted(missing))}")
+    return result
 
 
 def _month_yyyy_mm(dt: date) -> str:

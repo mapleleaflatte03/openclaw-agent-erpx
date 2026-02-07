@@ -30,6 +30,95 @@ paths:
                 additionalProperties: true
                 type: object
                 title: Response Readyz Readyz Get
+  /agent/v1/healthz:
+    get:
+      summary: Healthz V1
+      operationId: healthz_v1_agent_v1_healthz_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                additionalProperties:
+                  type: string
+                type: object
+                title: Response Healthz V1 Agent V1 Healthz Get
+  /agent/v1/readyz:
+    get:
+      summary: Readyz V1
+      operationId: readyz_v1_agent_v1_readyz_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                type: object
+                title: Response Readyz V1 Agent V1 Readyz Get
+  /diagnostics/llm:
+    get:
+      summary: Diagnostics Llm
+      operationId: diagnostics_llm_diagnostics_llm_get
+      parameters:
+      - name: X-API-Key
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Api-Key
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Diagnostics Llm Diagnostics Llm Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /llm/test:
+    post:
+      summary: Llm Test
+      operationId: llm_test_llm_test_post
+      parameters:
+      - name: X-API-Key
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Api-Key
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LlmTestRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Llm Test Llm Test Post
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /metrics:
     get:
       summary: Metrics
@@ -1339,6 +1428,17 @@ components:
           title: Detail
       type: object
       title: HTTPValidationError
+    LlmTestRequest:
+      properties:
+        prompt:
+          type: string
+          maxLength: 4000
+          minLength: 1
+          title: Prompt
+      type: object
+      required:
+      - prompt
+      title: LlmTestRequest
     ValidationError:
       properties:
         loc:

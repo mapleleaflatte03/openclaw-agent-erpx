@@ -32,6 +32,7 @@ from openclaw_agent.common.models import (
     AgentCloseTask,
     AgentContractCase,
     AgentEmailThread,
+    AgentErpXLink,
     AgentEvidencePack,
     AgentException,
     AgentExport,
@@ -1660,11 +1661,11 @@ def _wf_contract_obligation(run_id: str) -> dict[str, Any]:
                 pages = src.get("pages_text") or [src.get("text") or ""]
                 for page_no, page_text in enumerate(pages, start=1):
                     for line_no, raw_line in enumerate(str(page_text).splitlines(), start=1):
-                            for cand in _extract_obligation_candidates(raw_line):
-                                within_days = (cand.get("meta") or {}).get("within_days")
-                                due_date = cand.get("due_date")
-                                trigger_key = _normalize_trigger_key(str(cand.get("condition_text") or ""))
-                                group_key = f"{cand['obligation_type']}:{trigger_key}"
+                        for cand in _extract_obligation_candidates(raw_line):
+                            within_days = (cand.get("meta") or {}).get("within_days")
+                            due_date = cand.get("due_date")
+                            trigger_key = _normalize_trigger_key(str(cand.get("condition_text") or ""))
+                            group_key = f"{cand['obligation_type']}:{trigger_key}"
 
                             amount_present = (cand.get("amount_value") is not None) or (
                                 cand.get("amount_percent") is not None
@@ -1925,8 +1926,9 @@ def _wf_contract_obligation(run_id: str) -> dict[str, Any]:
                 {"obligations": obligations_created, "evidence": evidence_created},
             )
 
-        # Phase 4: reconcile ERPX (read-only)
+        # Phase 4: reconcile ERPX (read-only) — persist agent_erpx_links
         t_id = _task_start(run_id, "reconcile_erpx")
+        erpx_links_created = 0
         try:
             contract_meta = _extract_contract_meta(combined_text)
             with db_session(engine) as s:
@@ -1939,12 +1941,92 @@ def _wf_contract_obligation(run_id: str) -> dict[str, Any]:
 
             client = ErpXClient(settings)
             try:
-                # Just verify connectivity for MVP; full linking is handled in later iterations.
-                _ = client.get_contracts()
+                erpx_contracts = client.get_contracts(
+                    partner_id=contract_meta.get("partner_tax_id"),
+                )
+                erpx_payments = client.get_payments(
+                    contract_id=erpx_contracts[0]["contract_id"] if erpx_contracts else None,
+                )
+            except Exception as e:
+                _db_log(run_id, t_id, "warn", "erpx_read_partial", {"error": str(e)})
+                erpx_contracts = []
+                erpx_payments = []
             finally:
                 client.close()
+
+            # Link ERPX contracts + payments to this case (idempotent by signature)
+            with db_session(engine) as s:
+                obs = (
+                    s.execute(
+                        select(AgentObligation).where(AgentObligation.case_id == case_id)
+                    )
+                    .scalars()
+                    .all()
+                )
+
+                for ec in erpx_contracts:
+                    existing = s.execute(
+                        select(AgentErpXLink).where(
+                            (AgentErpXLink.case_id == case_id)
+                            & (AgentErpXLink.erpx_object_type == "contract")
+                            & (AgentErpXLink.erpx_object_id == str(ec.get("contract_id", "")))
+                        )
+                    ).scalar_one_or_none()
+                    if not existing:
+                        s.add(
+                            AgentErpXLink(
+                                link_id=new_uuid(),
+                                case_id=case_id,
+                                obligation_id=None,
+                                erpx_object_type="contract",
+                                erpx_object_id=str(ec.get("contract_id", "")),
+                                match_confidence=0.8,
+                                meta={"partner_name": ec.get("partner_name"), "contract_code": ec.get("contract_code")},
+                            )
+                        )
+                        erpx_links_created += 1
+
+                for ep in erpx_payments:
+                    existing = s.execute(
+                        select(AgentErpXLink).where(
+                            (AgentErpXLink.case_id == case_id)
+                            & (AgentErpXLink.erpx_object_type == "payment")
+                            & (AgentErpXLink.erpx_object_id == str(ep.get("payment_id", "")))
+                        )
+                    ).scalar_one_or_none()
+                    if not existing:
+                        # Try to match payment to an obligation by due date or amount
+                        matched_ob_id = None
+                        best_conf = 0.5
+                        for ob in obs:
+                            if ob.amount_value and ep.get("amount"):
+                                ratio = min(float(ob.amount_value), float(ep["amount"])) / max(
+                                    float(ob.amount_value), float(ep["amount"]), 1.0
+                                )
+                                if ratio > 0.95:
+                                    matched_ob_id = ob.obligation_id
+                                    best_conf = ratio
+                                    break
+                        s.add(
+                            AgentErpXLink(
+                                link_id=new_uuid(),
+                                case_id=case_id,
+                                obligation_id=matched_ob_id,
+                                erpx_object_type="payment",
+                                erpx_object_id=str(ep.get("payment_id", "")),
+                                match_confidence=best_conf,
+                                meta={"amount": ep.get("amount"), "date": ep.get("date")},
+                            )
+                        )
+                        erpx_links_created += 1
+
+            _db_log(run_id, t_id, "info", "erpx_reconciled", {
+                "contracts": len(erpx_contracts),
+                "payments": len(erpx_payments),
+                "links_created": erpx_links_created,
+            })
         finally:
-            _task_finish(run_id, "reconcile_erpx", "success")
+            _task_finish(run_id, "reconcile_erpx", "success", {"erpx_links_created": erpx_links_created})
 
         # Phase 5: create proposals (3-tier gating + maker-checker metadata)
         t_id = _task_start(run_id, "create_proposals")

@@ -1,0 +1,88 @@
+name: auto-open-pr
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - "chore/*"
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  open-pr:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Create PR if missing
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          BRANCH: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+
+          api="https://api.github.com/repos/${REPO}"
+
+          # Check existing open PR for this head (URL-encoded).
+          head_q="$(python3 -c 'import os,urllib.parse; repo=os.environ["REPO"]; branch=os.environ["BRANCH"]; owner=repo.split("/")[0]; print(urllib.parse.quote(f"{owner}:{branch}", safe=""))')"
+          existing="$(curl -fsSL \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            "${api}/pulls?state=open&head=${head_q}")"
+
+          pr_url="$(python3 -c 'import json,sys; prs=json.load(sys.stdin); print(prs[0]["html_url"] if prs else "")' <<<"$existing")"
+          if [ -n "${pr_url}" ]; then
+            echo "PR already exists: ${pr_url}"
+            exit 0
+          fi
+
+          title="CI/CD + k3s staging auto-deploy"
+          body="$(cat <<'MD'
+## What
+Add production-lite auto-deploy for k3s **staging**:
+- Build & push images to GHCR tagged by commit SHA.
+- Deploy to k3s via `kubectl apply -k deploy/k8s/overlays/staging`.
+- Run smoke E2E (no UI click): `contract_obligation` + maker-checker + 2-step high-risk approvals.
+
+Safety invariant:
+- ERPX core stays **read-only**.
+- Agent writes **auxiliary outputs only** (proposals/approvals/audit/evidence packs).
+
+## How to enable staging
+Set GitHub Environment secrets: `Settings → Environments → staging → Add secret`
+- `STAGING_KUBECONFIG_B64`
+- `STAGING_POSTGRES_PASSWORD`
+- `STAGING_AGENT_API_KEY`
+- `STAGING_MINIO_ACCESS_KEY`
+- `STAGING_MINIO_SECRET_KEY`
+
+Optional:
+- `STAGING_NAMESPACE` (default `openclaw-agent-staging`)
+- `STAGING_ERPX_TOKEN`, `STAGING_SMTP_*`
+
+## Docs
+- `docs/DEPLOY_STAGING_K3S.md`
+
+## Touch product (staging)
+- UI NodePort: `http://<node-public-ip>:30851`
+- Agent API NodePort: `http://<node-public-ip>:30080/agent/v1/...`
+
+## Smoke
+- Script: `scripts/smoke_contract_obligation_demo.py`
+- Workflow: `.github/workflows/deploy-staging.yml`
+MD
+)"
+
+          payload="$(python3 -c 'import json,os; print(json.dumps({"title": os.environ["TITLE"], "head": os.environ["BRANCH"], "base": "main", "body": os.environ["BODY"]}))' \
+            TITLE="$title" BODY="$body")"
+
+          pr="$(curl -fsSL -X POST \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "Content-Type: application/json" \
+            -d "${payload}" \
+            "${api}/pulls")"
+
+          pr_url="$(python3 -c 'import json,sys; print(json.load(sys.stdin).get("html_url", ""))' <<<"$pr")"
+          echo "Created PR: ${pr_url}"

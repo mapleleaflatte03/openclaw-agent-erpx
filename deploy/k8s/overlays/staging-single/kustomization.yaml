@@ -1,3 +1,6 @@
+# staging-single overlay
+# Purpose: single-node deployment (removes all nodeSelector constraints from base).
+# Suitable for k3s single-node, dev laptops, CI.
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
@@ -10,10 +13,8 @@ resources:
 
 patches:
   - path: configmap-patch.yaml
-  - path: ingress-patch.yaml
+  - path: nodeselector-remove-patch.yaml
   - path: replicas-patch.yaml
-  - path: nodeselector-patch.yaml
-  - path: agent-service-llm-envfrom-patch.yaml
   - path: resources-patch.yaml
   - path: services-nodeport-patch.yaml
 

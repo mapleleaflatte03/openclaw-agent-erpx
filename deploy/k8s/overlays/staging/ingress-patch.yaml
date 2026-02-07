@@ -1,0 +1,8 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: openclaw-agent
+  annotations:
+    # Staging is often served over plain HTTP (or TLS is terminated upstream).
+    nginx.ingress.kubernetes.io/ssl-redirect: "false"
+
