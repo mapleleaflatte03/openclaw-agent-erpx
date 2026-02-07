@@ -448,3 +448,13 @@ def test_contract_approvals_high_risk_two_step_maker_checker(tmp_path: Path, mon
         body3 = r.json()
         assert body3["proposal_status"] == "approved"
         assert body3["approvals_approved"] == 2
+
+        # Audit log append-only: count events must be >= 2 (two approval actions)
+        r = client.get(
+            f"/agent/v1/contract/audit?object_type=proposal&object_id={proposal_id}&limit=100",
+        )
+        assert r.status_code == 200
+        audit_items = r.json().get("items", [])
+        assert len(audit_items) >= 2, f"Expected >=2 audit events, got {len(audit_items)}"
+        # All audit events should have a ts (append-only, no updates)
+        assert all(item.get("ts") is not None for item in audit_items)
