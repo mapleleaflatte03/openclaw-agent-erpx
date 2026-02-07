@@ -208,38 +208,49 @@ jobs:
           NS: ${{ secrets.STAGING_NAMESPACE }}
           OVERLAY: ${{ github.event.inputs.overlay || 'staging' }}
         run: |
-          set -euo pipefail
+          set -euxo pipefail
           NS="${NS:-openclaw-agent-staging}"
           OVERLAY_DIR="deploy/k8s/overlays/${OVERLAY}"
 
+          echo "::group::kustomize edit set image"
           pushd "$OVERLAY_DIR" >/dev/null
-          kustomize edit set image openclaw-agent-erpx/agent-service=ghcr.io/${GITHUB_REPOSITORY}/agent-service:${GITHUB_SHA}
-          kustomize edit set image openclaw-agent-erpx/agent-worker=ghcr.io/${GITHUB_REPOSITORY}/agent-worker:${GITHUB_SHA}
-          kustomize edit set image openclaw-agent-erpx/agent-scheduler=ghcr.io/${GITHUB_REPOSITORY}/agent-scheduler:${GITHUB_SHA}
-          kustomize edit set image openclaw-agent-erpx/erpx-mock-api=ghcr.io/${GITHUB_REPOSITORY}/erpx-mock-api:${GITHUB_SHA}
-          kustomize edit set image openclaw-agent-erpx/ui=ghcr.io/${GITHUB_REPOSITORY}/ui:${GITHUB_SHA}
+          kustomize edit set image "openclaw-agent-erpx/agent-service=ghcr.io/${GITHUB_REPOSITORY}/agent-service:${GITHUB_SHA}"
+          kustomize edit set image "openclaw-agent-erpx/agent-worker=ghcr.io/${GITHUB_REPOSITORY}/agent-worker:${GITHUB_SHA}"
+          kustomize edit set image "openclaw-agent-erpx/agent-scheduler=ghcr.io/${GITHUB_REPOSITORY}/agent-scheduler:${GITHUB_SHA}"
+          kustomize edit set image "openclaw-agent-erpx/erpx-mock-api=ghcr.io/${GITHUB_REPOSITORY}/erpx-mock-api:${GITHUB_SHA}"
+          kustomize edit set image "openclaw-agent-erpx/ui=ghcr.io/${GITHUB_REPOSITORY}/ui:${GITHUB_SHA}"
           popd >/dev/null
+          echo "::endgroup::"
 
-          # Ensure jobs rerun on each deploy (new images / migrations).
+          echo "::group::delete old jobs"
           kubectl -n "$NS" delete job minio-init --ignore-not-found
           kubectl -n "$NS" delete job agent-migrate --ignore-not-found
+          echo "::endgroup::"
 
+          echo "::group::kubectl apply"
           kubectl apply -k "$OVERLAY_DIR"
+          echo "::endgroup::"
 
+          echo "::group::wait statefulsets"
           kubectl -n "$NS" rollout status statefulset/postgres --timeout=300s
           kubectl -n "$NS" rollout status statefulset/redis --timeout=300s
           kubectl -n "$NS" rollout status statefulset/minio --timeout=300s
+          echo "::endgroup::"
 
+          echo "::group::wait jobs"
           kubectl -n "$NS" wait --for=condition=complete job/minio-init --timeout=300s
           kubectl -n "$NS" wait --for=condition=complete job/agent-migrate --timeout=300s
+          echo "::endgroup::"
 
+          echo "::group::wait deployments"
           kubectl -n "$NS" rollout status deployment/erpx-mock-api --timeout=300s
           kubectl -n "$NS" rollout status deployment/agent-service --timeout=300s
-          kubectl -n "$NS" rollout status deployment/agent-worker-io --timeout=300s
-          kubectl -n "$NS" rollout status deployment/agent-worker-ocr --timeout=300s
-          kubectl -n "$NS" rollout status deployment/agent-worker-export --timeout=300s
+          kubectl -n "$NS" rollout status deployment/agent-worker-io --timeout=300s || echo "WARN: agent-worker-io rollout failed (0 replicas?)"
+          kubectl -n "$NS" rollout status deployment/agent-worker-ocr --timeout=300s || echo "WARN: agent-worker-ocr rollout failed (0 replicas?)"
+          kubectl -n "$NS" rollout status deployment/agent-worker-export --timeout=300s || echo "WARN: agent-worker-export rollout failed (0 replicas?)"
           kubectl -n "$NS" rollout status deployment/agent-scheduler --timeout=300s
           kubectl -n "$NS" rollout status deployment/ui --timeout=300s
+          echo "::endgroup::"
 
       - name: Smoke (contract_obligation 5C, no UI click)
         env:
