@@ -29,7 +29,8 @@ def _expand_env(obj: Any) -> Any:
         def repl(m: re.Match[str]) -> str:
             return os.getenv(m.group(1), "")
 
-        return re.sub(r"\\$\\{([A-Z0-9_]+)\\}", repl, obj)
+        # Expand `${ENV_VAR}` placeholders in YAML config.
+        return re.sub(r"\$\{([A-Z0-9_]+)\}", repl, obj)
     return obj
 
 
