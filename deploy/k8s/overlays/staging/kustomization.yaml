@@ -8,14 +8,14 @@ resources:
   - default-serviceaccount.yaml
   - ../../base
 
-patchesStrategicMerge:
-  - configmap-patch.yaml
-  - ingress-patch.yaml
-  - replicas-patch.yaml
-  - nodeselector-patch.yaml
-  - agent-service-llm-envfrom-patch.yaml
-  - resources-patch.yaml
-  - services-nodeport-patch.yaml
+patches:
+  - path: configmap-patch.yaml
+  - path: ingress-patch.yaml
+  - path: replicas-patch.yaml
+  - path: nodeselector-patch.yaml
+  - path: agent-service-llm-envfrom-patch.yaml
+  - path: resources-patch.yaml
+  - path: services-nodeport-patch.yaml
 
 images:
   - name: openclaw-agent-erpx/agent-service
