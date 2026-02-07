@@ -4,6 +4,16 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      overlay:
+        description: "Kustomize overlay to deploy"
+        required: false
+        default: "staging"
+        type: choice
+        options:
+          - staging
+          - staging-single
+          - staging-6nodes
 
 permissions:
   contents: read
@@ -133,12 +143,14 @@ jobs:
           NS: ${{ secrets.STAGING_NAMESPACE }}
           GHCR_USERNAME: ${{ github.actor }}
           GHCR_PASSWORD: ${{ github.token }}
+          OVERLAY: ${{ github.event.inputs.overlay || 'staging' }}
         run: |
           set -euo pipefail
           NS="${NS:-openclaw-agent-staging}"
+          OVERLAY_DIR="deploy/k8s/overlays/${OVERLAY}"
 
           # Namespace must exist before creating secrets.
-          kubectl apply -f deploy/k8s/overlays/staging/namespace.yaml
+          kubectl apply -f "${OVERLAY_DIR}/namespace.yaml"
 
           # GHCR packages are private by default; provide a pull secret to the cluster.
           kubectl -n "$NS" create secret docker-registry ghcr-pull \
@@ -150,6 +162,7 @@ jobs:
       - name: Create/Update k8s secrets (agent-secrets)
         env:
           NS: ${{ secrets.STAGING_NAMESPACE }}
+          OVERLAY: ${{ github.event.inputs.overlay || 'staging' }}
           POSTGRES_PASSWORD: ${{ secrets.STAGING_POSTGRES_PASSWORD }}
           ERPX_TOKEN: ${{ secrets.STAGING_ERPX_TOKEN }}
           AGENT_API_KEY: ${{ secrets.STAGING_AGENT_API_KEY }}
@@ -167,7 +180,7 @@ jobs:
           if [ -z "${MINIO_ACCESS_KEY:-}" ]; then echo "Missing secret: STAGING_MINIO_ACCESS_KEY" >&2; exit 1; fi
           if [ -z "${MINIO_SECRET_KEY:-}" ]; then echo "Missing secret: STAGING_MINIO_SECRET_KEY" >&2; exit 1; fi
 
-          kubectl apply -f deploy/k8s/overlays/staging/namespace.yaml
+          kubectl apply -f "deploy/k8s/overlays/${OVERLAY}/namespace.yaml"
 
           kubectl -n "$NS" create secret generic agent-secrets \
             --from-literal=POSTGRES_DB="agent" \
@@ -191,11 +204,13 @@ jobs:
       - name: Deploy to k3s staging (rollout + wait)
         env:
           NS: ${{ secrets.STAGING_NAMESPACE }}
+          OVERLAY: ${{ github.event.inputs.overlay || 'staging' }}
         run: |
           set -euo pipefail
           NS="${NS:-openclaw-agent-staging}"
+          OVERLAY_DIR="deploy/k8s/overlays/${OVERLAY}"
 
-          pushd deploy/k8s/overlays/staging >/dev/null
+          pushd "$OVERLAY_DIR" >/dev/null
           kustomize edit set image openclaw-agent-erpx/agent-service=ghcr.io/${GITHUB_REPOSITORY}/agent-service:${GITHUB_SHA}
           kustomize edit set image openclaw-agent-erpx/agent-worker=ghcr.io/${GITHUB_REPOSITORY}/agent-worker:${GITHUB_SHA}
           kustomize edit set image openclaw-agent-erpx/agent-scheduler=ghcr.io/${GITHUB_REPOSITORY}/agent-scheduler:${GITHUB_SHA}
@@ -207,7 +222,7 @@ jobs:
           kubectl -n "$NS" delete job minio-init --ignore-not-found
           kubectl -n "$NS" delete job agent-migrate --ignore-not-found
 
-          kubectl apply -k deploy/k8s/overlays/staging
+          kubectl apply -k "$OVERLAY_DIR"
 
           kubectl -n "$NS" rollout status statefulset/postgres --timeout=300s
           kubectl -n "$NS" rollout status statefulset/redis --timeout=300s
@@ -256,3 +271,20 @@ jobs:
           export MINIO_SECRET_KEY="$MINIO_SECRET_KEY"
 
           python scripts/smoke_contract_obligation_demo.py --timeout 180
+
+      - name: Benchmark smoke (5 cases)
+        if: success()
+        run: |
+          set -euo pipefail
+          ./scripts/benchmark/fetch_or_generate_dataset.sh --cases 5
+          python -m pytest tests/benchmark/test_benchmark_smoke.py -q
+
+      - name: Upload smoke + benchmark artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-and-benchmark-logs
+          path: |
+            /tmp/pf-*.log
+            reports/benchmark/
+          retention-days: 14

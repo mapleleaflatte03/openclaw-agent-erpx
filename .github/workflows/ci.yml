@@ -27,12 +27,17 @@ jobs:
 
       - name: Tests
         run: |
-          pytest
+          pytest -q
 
       - name: OpenAPI export is up-to-date
         run: |
           python scripts/export_openapi.py
           git diff --exit-code openapi/
+
+      - name: Benchmark smoke (5 cases)
+        run: |
+          ./scripts/benchmark/fetch_or_generate_dataset.sh --cases 5
+          python -m pytest tests/benchmark/test_benchmark_smoke.py -q
 
   docker-build:
     runs-on: ubuntu-latest
