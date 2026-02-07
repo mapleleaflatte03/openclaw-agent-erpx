@@ -227,21 +227,9 @@ jobs:
           NS: ${{ secrets.STAGING_NAMESPACE }}
           OVERLAY: ${{ github.event.inputs.overlay || 'staging' }}
         run: |
+          set -euxo pipefail
           OVERLAY_DIR="deploy/k8s/overlays/${OVERLAY:-staging}"
-          echo "--- overlay dir ---"
-          ls -la "$OVERLAY_DIR/"
-          echo "--- kustomize build ---"
-          if ! build_out=$(kubectl kustomize "$OVERLAY_DIR" 2>&1); then
-            echo "::error::kustomize build failed: $build_out"
-            exit 1
-          fi
-          echo "Built $(echo "$build_out" | grep -c '^kind:') resources"
-          echo "--- kubectl apply ---"
-          if ! apply_out=$(echo "$build_out" | kubectl apply -f - 2>&1); then
-            echo "::error::kubectl apply failed: $apply_out"
-            exit 1
-          fi
-          echo "$apply_out"
+          kustomize build "$OVERLAY_DIR" | kubectl apply -f -
 
       - name: Wait for statefulsets
         env:
