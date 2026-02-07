@@ -13,6 +13,7 @@ patchesStrategicMerge:
   - ingress-patch.yaml
   - replicas-patch.yaml
   - nodeselector-patch.yaml
+  - agent-service-llm-envfrom-patch.yaml
   - resources-patch.yaml
   - services-nodeport-patch.yaml
 
