@@ -1,0 +1,143 @@
+# Override base nodeSelectors for staging-6nodes role mapping:
+#   api-ui:            agent-service, ui, erpx-mock
+#   data-core:         postgres, minio (StatefulSets)
+#   orchestrator-queue: redis, agent-scheduler
+#   pool-ocr:          agent-worker-ocr
+#   pool-audio:        agent-worker-export (repurposed for audio pipeline)
+#   (pool-io, pool-standby workers → also pool-ocr for simplicity on 6 nodes)
+
+# --- agent-service → api-ui ---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agent-service
+spec:
+  template:
+    spec:
+      nodeSelector:
+        role: api-ui
+---
+# --- ui → api-ui ---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ui
+spec:
+  template:
+    spec:
+      nodeSelector:
+        role: api-ui
+---
+# --- erpx-mock → api-ui ---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: erpx-mock-api
+spec:
+  template:
+    spec:
+      nodeSelector:
+        role: api-ui
+---
+# --- agent-scheduler → orchestrator-queue ---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agent-scheduler
+spec:
+  template:
+    spec:
+      nodeSelector:
+        role: orchestrator-queue
+---
+# --- redis → orchestrator-queue ---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: redis
+spec:
+  template:
+    spec:
+      nodeSelector:
+        role: orchestrator-queue
+---
+# --- postgres → data-core (unchanged from base label) ---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres
+spec:
+  template:
+    spec:
+      nodeSelector:
+        role: data-core
+---
+# --- minio → data-core (unchanged from base label) ---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: minio
+spec:
+  template:
+    spec:
+      nodeSelector:
+        role: data-core
+---
+# --- minio-init-job → data-core ---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: minio-init
+spec:
+  template:
+    spec:
+      nodeSelector:
+        role: data-core
+---
+# --- agent-worker-ocr → pool-ocr ---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agent-worker-ocr
+spec:
+  template:
+    spec:
+      nodeSelector:
+        pool-ocr: "true"
+        role: pool-ocr
+---
+# --- agent-worker-export → pool-audio ---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agent-worker-export
+spec:
+  template:
+    spec:
+      nodeSelector:
+        pool-export: "true"
+        role: pool-audio
+---
+# --- agent-worker-io → pool-ocr (shared with OCR node) ---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agent-worker-io
+spec:
+  template:
+    spec:
+      nodeSelector:
+        pool-io: "true"
+        role: pool-ocr
+---
+# --- agent-worker-standby → pool-audio (shared with audio node) ---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agent-worker-standby
+spec:
+  template:
+    spec:
+      nodeSelector:
+        pool-standby: "true"
+        role: pool-audio
