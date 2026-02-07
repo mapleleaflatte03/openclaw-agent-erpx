@@ -124,3 +124,14 @@ GitHub Actions runners need network access to the k3s API server.
 - For hardening, restrict to [GitHub Actions IP ranges](https://api.github.com/meta) (`actions` key).
 - The kubeconfig uses client certificate auth (no token to rotate), embedded in the base64 secret.
 - Never commit the kubeconfig or its base64 value to git.
+
+## G) GitHub Actions Workflow Permissions
+
+For auto-merge and deploy workflows to function:
+
+1. Go to **Settings → Actions → General → Workflow permissions**
+2. Select **Read and write permissions**
+3. Check **Allow GitHub Actions to create and approve pull requests**
+4. Save
+
+This enables `GITHUB_TOKEN` to merge PRs (automerge workflow) and push GHCR images.
