@@ -1660,11 +1660,11 @@ def _wf_contract_obligation(run_id: str) -> dict[str, Any]:
                 pages = src.get("pages_text") or [src.get("text") or ""]
                 for page_no, page_text in enumerate(pages, start=1):
                     for line_no, raw_line in enumerate(str(page_text).splitlines(), start=1):
-                            for cand in _extract_obligation_candidates(raw_line):
-                                within_days = (cand.get("meta") or {}).get("within_days")
-                                due_date = cand.get("due_date")
-                                trigger_key = _normalize_trigger_key(str(cand.get("condition_text") or ""))
-                                group_key = f"{cand['obligation_type']}:{trigger_key}"
+                        for cand in _extract_obligation_candidates(raw_line):
+                            within_days = (cand.get("meta") or {}).get("within_days")
+                            due_date = cand.get("due_date")
+                            trigger_key = _normalize_trigger_key(str(cand.get("condition_text") or ""))
+                            group_key = f"{cand['obligation_type']}:{trigger_key}"
 
                             amount_present = (cand.get("amount_value") is not None) or (
                                 cand.get("amount_percent") is not None
