@@ -97,3 +97,30 @@ Notes:
 - No PAT is used; publishing uses `GITHUB_TOKEN` permissions in Actions.
 - GHCR packages are **private by default**. The deploy workflow creates an in-cluster pull secret `ghcr-pull`
   and the staging overlay configures the namespace `default` ServiceAccount to use it.
+
+## F) k3s Public API Endpoint (GitHub Actions → k3s)
+
+GitHub Actions runners need network access to the k3s API server.
+
+### Requirements
+
+1. **Port 6443 open** — The server firewall (DigitalOcean / UFW) must allow inbound TCP 6443.
+2. **TLS SAN includes the public IP** — k3s must have the public IP in its TLS certificate.
+   If not already present, add to `/etc/rancher/k3s/config.yaml`:
+   ```yaml
+   tls-san:
+     - <PUBLIC_IP>
+   ```
+   Then restart: `sudo systemctl restart k3s`
+3. **STAGING_KUBECONFIG_B64** must contain a kubeconfig with `server: https://<PUBLIC_IP>:6443`
+   (not `127.0.0.1`). Generate:
+   ```bash
+   sed 's|https://127.0.0.1:6443|https://<PUBLIC_IP>:6443|' /etc/rancher/k3s/k3s.yaml | base64 -w0
+   ```
+
+### Security considerations
+
+- Port 6443 is currently open to all IPs (`0.0.0.0/0`).
+- For hardening, restrict to [GitHub Actions IP ranges](https://api.github.com/meta) (`actions` key).
+- The kubeconfig uses client certificate auth (no token to rotate), embedded in the base64 secret.
+- Never commit the kubeconfig or its base64 value to git.
