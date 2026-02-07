@@ -21,9 +21,9 @@ class Settings(BaseSettings):
 
     erpx_base_url: str = Field(alias="ERPX_BASE_URL")
     erpx_token: str = Field(default="", alias="ERPX_TOKEN")
-    erpx_rate_limit_qps: float = Field(default=5.0, alias="ERPX_RATE_LIMIT_QPS")
+    erpx_rate_limit_qps: float = Field(default=10.0, alias="ERPX_RATE_LIMIT_QPS")
     erpx_timeout_seconds: float = Field(default=15.0, alias="ERPX_TIMEOUT_SECONDS")
-    erpx_retry_max_attempts: int = Field(default=5, alias="ERPX_RETRY_MAX_ATTEMPTS")
+    erpx_retry_max_attempts: int = Field(default=3, alias="ERPX_RETRY_MAX_ATTEMPTS")
     erpx_retry_base_seconds: float = Field(default=0.5, alias="ERPX_RETRY_BASE_SECONDS")
     erpx_retry_max_seconds: float = Field(default=10.0, alias="ERPX_RETRY_MAX_SECONDS")
 
