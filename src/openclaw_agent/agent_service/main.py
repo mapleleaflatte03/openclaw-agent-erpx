@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import os
+import time
 from datetime import date, datetime
 from typing import Any, Literal
 
 import redis
+import httpx
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import PlainTextResponse
 from prometheus_client import CONTENT_TYPE_LATEST, CollectorRegistry, Gauge, generate_latest
@@ -99,6 +101,129 @@ def readyz(settings: Settings = Depends(get_settings), engine: Engine = Depends(
     except Exception as e:
         raise HTTPException(status_code=503, detail=str(e)) from e
     return {"status": "ready"}
+
+
+def _do_agent_env() -> tuple[str, str, str | None]:
+    base_url = (os.getenv("DO_AGENT_BASE_URL") or "").strip().rstrip("/")
+    api_key = (os.getenv("DO_AGENT_API_KEY") or "").strip()
+    model = (os.getenv("DO_AGENT_MODEL") or "").strip() or None
+    if not base_url:
+        raise HTTPException(status_code=503, detail="DO_AGENT_BASE_URL is not set")
+    if not api_key:
+        raise HTTPException(status_code=503, detail="DO_AGENT_API_KEY is not set")
+    return base_url, api_key, model
+
+
+def _do_agent_chat(
+    base_url: str,
+    api_key: str,
+    *,
+    prompt: str,
+    instruction_override: str | None = None,
+    timeout_seconds: float = 10.0,
+) -> dict[str, Any]:
+    # DigitalOcean Agents: OpenAI-like chat endpoint at /api/v1/chat/completions (HTTP Bearer auth).
+    payload = {
+        "messages": [{"role": "user", "content": prompt}],
+        "stream": False,
+        "temperature": 0.0,
+        "max_completion_tokens": 128,
+    }
+    if instruction_override:
+        payload["instruction_override"] = instruction_override
+    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+    with httpx.Client(base_url=base_url, timeout=timeout_seconds) as client:
+        r = client.post("/api/v1/chat/completions", headers=headers, json=payload)
+        r.raise_for_status()
+        return r.json()
+
+
+@app.get("/diagnostics/llm", dependencies=[Depends(require_api_key)])
+def diagnostics_llm() -> dict[str, Any]:
+    base_url, api_key, model_env = _do_agent_env()
+    t0 = time.perf_counter()
+    health: dict[str, Any] | None = None
+    try:
+        with httpx.Client(base_url=base_url, timeout=5.0) as client:
+            health = client.get("/health").json()
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"do-agent health failed: {e}") from e
+
+    t1 = time.perf_counter()
+    try:
+        resp = _do_agent_chat(
+            base_url,
+            api_key,
+            prompt="Return exactly this JSON: {\"ok\": true}",
+            instruction_override="You must respond with ONLY valid JSON. No commentary. Output: {\"ok\": true}",
+        )
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"do-agent chat failed: {e}") from e
+    t2 = time.perf_counter()
+
+    choices = resp.get("choices") or []
+    msg = choices[0].get("message") if choices else None
+    content = (msg.get("content") if isinstance(msg, dict) else None) if msg else None
+    if isinstance(content, str) and len(content) > 500:
+        content = content[:500]
+
+    return {
+        "status": "ok",
+        "do_agent": {
+            "base_url": base_url,
+            "model_env": model_env,
+            "health": health,
+            "latency_ms": {
+                "health": int((t1 - t0) * 1000),
+                "chat": int((t2 - t1) * 1000),
+                "total": int((t2 - t0) * 1000),
+            },
+            "response": {
+                "id": resp.get("id"),
+                "model": resp.get("model"),
+                "content_preview": content,
+            },
+        },
+    }
+
+
+class LlmTestRequest(BaseModel):
+    prompt: str = Field(min_length=1, max_length=4000)
+
+
+@app.post("/llm/test", dependencies=[Depends(require_api_key)])
+def llm_test(body: LlmTestRequest) -> dict[str, Any]:
+    base_url, api_key, model_env = _do_agent_env()
+    t0 = time.perf_counter()
+    resp = _do_agent_chat(
+        base_url,
+        api_key,
+        prompt=body.prompt,
+        instruction_override=(
+            "Put your final answer in message.content. "
+            "Do not include secrets. "
+            "If the user requests JSON, respond with ONLY valid JSON."
+        ),
+        timeout_seconds=15.0,
+    )
+    t1 = time.perf_counter()
+
+    choices = resp.get("choices") or []
+    msg = choices[0].get("message") if choices else None
+    content = (msg.get("content") if isinstance(msg, dict) else None) if msg else None
+    if isinstance(content, str) and len(content) > 2000:
+        content = content[:2000]
+
+    return {
+        "status": "ok",
+        "model_env": model_env,
+        "response": {
+            "id": resp.get("id"),
+            "model": resp.get("model"),
+            "content": content,
+        },
+        "latency_ms": int((t1 - t0) * 1000),
+    }
 
 
 @app.get("/metrics", response_class=PlainTextResponse)
