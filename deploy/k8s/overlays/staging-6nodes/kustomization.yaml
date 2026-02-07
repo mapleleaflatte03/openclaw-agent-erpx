@@ -16,6 +16,7 @@ namespace: openclaw-agent-staging
 resources:
   - namespace.yaml
   - default-serviceaccount.yaml
+  - networkpolicy.yaml
   - ../../base
 
 patches:
