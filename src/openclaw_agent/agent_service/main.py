@@ -5,8 +5,8 @@ import time
 from datetime import date, datetime
 from typing import Any, Literal
 
-import redis
 import httpx
+import redis
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import PlainTextResponse
 from prometheus_client import CONTENT_TYPE_LATEST, CollectorRegistry, Gauge, generate_latest
