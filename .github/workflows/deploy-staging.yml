@@ -122,9 +122,11 @@ jobs:
           version: v1.29.0
 
       - name: Setup kustomize
-        uses: imranismail/setup-kustomize@v2
-        with:
-          kustomize-version: v5.7.1
+        run: |
+          set -euo pipefail
+          curl -sL "https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2Fv5.7.1/kustomize_v5.7.1_linux_amd64.tar.gz" \
+            | tar xz -C /usr/local/bin
+          kustomize version
 
       - name: Configure kubeconfig
         env:
