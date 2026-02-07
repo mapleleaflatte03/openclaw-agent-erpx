@@ -103,6 +103,22 @@ def readyz(settings: Settings = Depends(get_settings), engine: Engine = Depends(
     return {"status": "ready"}
 
 
+# ---------------------------------------------------------------------------
+# Aliases under /agent/v1 prefix (backward-compat: keep root /healthz, /readyz)
+# ---------------------------------------------------------------------------
+@app.get("/agent/v1/healthz")
+def healthz_v1() -> dict[str, str]:
+    return healthz()
+
+
+@app.get("/agent/v1/readyz")
+def readyz_v1(
+    settings: Settings = Depends(get_settings),
+    engine: Engine = Depends(get_engine_dep),
+) -> dict[str, Any]:
+    return readyz(settings=settings, engine=engine)
+
+
 def _do_agent_env() -> tuple[str, str, str | None]:
     base_url = (os.getenv("DO_AGENT_BASE_URL") or "").strip().rstrip("/")
     api_key = (os.getenv("DO_AGENT_API_KEY") or "").strip()

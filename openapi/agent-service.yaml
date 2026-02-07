@@ -30,6 +30,33 @@ paths:
                 additionalProperties: true
                 type: object
                 title: Response Readyz Readyz Get
+  /agent/v1/healthz:
+    get:
+      summary: Healthz V1
+      operationId: healthz_v1_agent_v1_healthz_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                additionalProperties:
+                  type: string
+                type: object
+                title: Response Healthz V1 Agent V1 Healthz Get
+  /agent/v1/readyz:
+    get:
+      summary: Readyz V1
+      operationId: readyz_v1_agent_v1_readyz_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                type: object
+                title: Response Readyz V1 Agent V1 Readyz Get
   /diagnostics/llm:
     get:
       summary: Diagnostics Llm
