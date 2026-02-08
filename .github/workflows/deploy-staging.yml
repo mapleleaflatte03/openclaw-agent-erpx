@@ -161,6 +161,52 @@ jobs:
             --docker-password="$GHCR_PASSWORD" \
             --dry-run=client -o yaml | kubectl apply -f -
 
+      - name: Guard NO-ROTATE (refuse credential rotation)
+        env:
+          NS: ${{ secrets.STAGING_NAMESPACE }}
+          POSTGRES_PASSWORD: ${{ secrets.STAGING_POSTGRES_PASSWORD }}
+          AGENT_API_KEY: ${{ secrets.STAGING_AGENT_API_KEY }}
+          MINIO_ACCESS_KEY: ${{ secrets.STAGING_MINIO_ACCESS_KEY }}
+          MINIO_SECRET_KEY: ${{ secrets.STAGING_MINIO_SECRET_KEY }}
+        run: |
+          set -euo pipefail
+          NS="${NS:-openclaw-agent-staging}"
+
+          # If secret doesn't exist yet, allow creation
+          if ! kubectl -n "$NS" get secret agent-secrets >/dev/null 2>&1; then
+            echo "Secret agent-secrets does not exist yet — will be created."
+            exit 0
+          fi
+
+          echo "Secret agent-secrets exists — verifying no credential rotation…"
+
+          check_key() {
+            local key="$1" expected_val="$2" ch eh
+            ch=$(kubectl -n "$NS" get secret agent-secrets \
+                 -o jsonpath="{.data.${key}}" | base64 -d | sha256sum | awk '{print $1}')
+            eh=$(printf '%s' "$expected_val" | sha256sum | awk '{print $1}')
+            if [ "$ch" != "$eh" ]; then
+              echo "::error::NO-ROTATE VIOLATION: ${key} hash on cluster (${ch:0:12}…) != GitHub secret (${eh:0:12}…)"
+              return 1
+            fi
+            echo "  ✓ ${key} hash matches (${ch:0:12}…)"
+            return 0
+          }
+
+          MISMATCH=0
+          check_key POSTGRES_PASSWORD "$POSTGRES_PASSWORD" || MISMATCH=1
+          check_key AGENT_API_KEY     "$AGENT_API_KEY"     || MISMATCH=1
+          check_key MINIO_ACCESS_KEY  "$MINIO_ACCESS_KEY"  || MISMATCH=1
+          check_key MINIO_SECRET_KEY  "$MINIO_SECRET_KEY"  || MISMATCH=1
+
+          if [ "$MISMATCH" -ne 0 ]; then
+            echo "::error::Refusing to rotate credentials in deploy-staging; secrets mismatch between GitHub and cluster."
+            echo "::error::Sync GitHub Secrets to match cluster values, or update cluster manually first."
+            exit 1
+          fi
+
+          echo "All credential hashes match — proceeding with secret apply."
+
       - name: Create/Update k8s secrets (agent-secrets)
         env:
           NS: ${{ secrets.STAGING_NAMESPACE }}
