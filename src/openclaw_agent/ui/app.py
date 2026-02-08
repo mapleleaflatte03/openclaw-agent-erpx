@@ -247,6 +247,49 @@ else:
                             )
                 else:
                     st.caption("Không có candidates.")
+
+                # --- Micro-feedback (explicit Đúng/Sai) ---
+                st.markdown("#### 📝 Feedback")
+                all_displayed = high_conf + visible_candidates
+                if all_displayed:
+                    fb_idx = st.selectbox(
+                        "Chọn nghĩa vụ để đánh giá",
+                        range(len(all_displayed)),
+                        format_func=lambda i: (
+                            f"{all_displayed[i]['obligation_type']} "
+                            f"(conf={all_displayed[i].get('confidence', 0):.2f})"
+                        ),
+                        key="fb_select",
+                    )
+                    fb_cols = st.columns(2)
+                    with fb_cols[0]:
+                        if st.button("✅ Đúng", key="fb_yes"):
+                            try:
+                                _post(
+                                    "/agent/v1/tier-b/feedback",
+                                    {
+                                        "obligation_id": all_displayed[fb_idx]["obligation_id"],
+                                        "feedback_type": "explicit_yes",
+                                        "user_id": current_user.strip() or None,
+                                    },
+                                )
+                                st.success("Đã ghi feedback: Đúng")
+                            except Exception as ex:
+                                st.error(f"Lỗi ghi feedback: {ex}")
+                    with fb_cols[1]:
+                        if st.button("❌ Sai", key="fb_no"):
+                            try:
+                                _post(
+                                    "/agent/v1/tier-b/feedback",
+                                    {
+                                        "obligation_id": all_displayed[fb_idx]["obligation_id"],
+                                        "feedback_type": "explicit_no",
+                                        "user_id": current_user.strip() or None,
+                                    },
+                                )
+                                st.success("Đã ghi feedback: Sai")
+                            except Exception as ex:
+                                st.error(f"Lỗi ghi feedback: {ex}")
             else:
                 st.info("No obligations yet.")
         except Exception as e:

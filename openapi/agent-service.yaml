@@ -861,6 +861,88 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /agent/v1/tier-b/feedback:
+    post:
+      summary: Post Tier B Feedback
+      operationId: post_tier_b_feedback_agent_v1_tier_b_feedback_post
+      parameters:
+      - name: X-API-Key
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Api-Key
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TierBFeedbackCreateRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Post Tier B Feedback Agent V1 Tier B Feedback Post
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    get:
+      summary: List Tier B Feedback
+      operationId: list_tier_b_feedback_agent_v1_tier_b_feedback_get
+      parameters:
+      - name: obligation_id
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Obligation Id
+      - name: feedback_type
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Feedback Type
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          default: 200
+          title: Limit
+      - name: X-API-Key
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Api-Key
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TierBFeedbackListResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /agent/v1/contract/audit:
     get:
       summary: List Contract Audit Log
@@ -1439,6 +1521,80 @@ components:
       required:
       - prompt
       title: LlmTestRequest
+    TierBFeedbackCreateRequest:
+      properties:
+        obligation_id:
+          type: string
+          title: Obligation Id
+        feedback_type:
+          type: string
+          enum:
+          - explicit_yes
+          - explicit_no
+          - implicit_accept
+          - implicit_edit
+          - implicit_reject
+          title: Feedback Type
+        user_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: User Id
+        delta:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Delta
+      type: object
+      required:
+      - obligation_id
+      - feedback_type
+      title: TierBFeedbackCreateRequest
+    TierBFeedbackListResponse:
+      properties:
+        items:
+          items:
+            $ref: '#/components/schemas/TierBFeedbackOut'
+          type: array
+          title: Items
+      type: object
+      required:
+      - items
+      title: TierBFeedbackListResponse
+    TierBFeedbackOut:
+      properties:
+        id:
+          type: string
+          title: Id
+        obligation_id:
+          type: string
+          title: Obligation Id
+        feedback_type:
+          type: string
+          title: Feedback Type
+        user_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: User Id
+        delta:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Delta
+        created_at:
+          type: string
+          format: date-time
+          title: Created At
+      type: object
+      required:
+      - id
+      - obligation_id
+      - feedback_type
+      - created_at
+      title: TierBFeedbackOut
     ValidationError:
       properties:
         loc:

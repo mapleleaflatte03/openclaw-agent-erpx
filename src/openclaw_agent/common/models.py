@@ -471,3 +471,16 @@ class AgentAuditLog(Base):
     ts: Mapped[sa.DateTime] = mapped_column(
         sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False, index=True
     )
+
+
+class TierBFeedback(Base):
+    __tablename__ = "tier_b_feedback"
+
+    id: Mapped[str] = mapped_column(sa.String(36), primary_key=True)
+    obligation_id: Mapped[str] = mapped_column(sa.String(36), nullable=False, index=True)
+    user_id: Mapped[str | None] = mapped_column(sa.String(64), nullable=True, index=True)
+    feedback_type: Mapped[str] = mapped_column(sa.String(32), nullable=False, index=True)
+    delta: Mapped[dict | None] = mapped_column(sa.JSON, nullable=True)
+    created_at: Mapped[sa.DateTime] = mapped_column(
+        sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False, index=True
+    )

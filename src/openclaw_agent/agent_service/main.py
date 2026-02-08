@@ -1188,6 +1188,86 @@ def post_contract_approval(
     }
 
 
+# ---------------------------------------------------------------------------
+# Tier B Feedback (explicit + implicit)
+# ---------------------------------------------------------------------------
+
+class TierBFeedbackCreateRequest(BaseModel):
+    obligation_id: str
+    feedback_type: Literal[
+        "explicit_yes", "explicit_no",
+        "implicit_accept", "implicit_edit", "implicit_reject",
+    ]
+    user_id: str | None = None
+    delta: dict[str, Any] | None = None
+
+
+class TierBFeedbackOut(BaseModel):
+    id: str
+    obligation_id: str
+    feedback_type: str
+    user_id: str | None = None
+    delta: dict[str, Any] | None = None
+    created_at: datetime
+
+
+class TierBFeedbackListResponse(BaseModel):
+    items: list[TierBFeedbackOut]
+
+
+@app.post("/agent/v1/tier-b/feedback", dependencies=[Depends(require_api_key)])
+def post_tier_b_feedback(
+    body: TierBFeedbackCreateRequest,
+    session: Session = Depends(get_session),
+) -> dict[str, Any]:
+    from openclaw_agent.common.models import TierBFeedback
+
+    fb = TierBFeedback(
+        id=new_uuid(),
+        obligation_id=body.obligation_id,
+        user_id=body.user_id,
+        feedback_type=body.feedback_type,
+        delta=body.delta,
+    )
+    session.add(fb)
+    session.flush()
+    return {"id": fb.id, "obligation_id": fb.obligation_id, "feedback_type": fb.feedback_type}
+
+
+@app.get(
+    "/agent/v1/tier-b/feedback",
+    dependencies=[Depends(require_api_key)],
+    response_model=TierBFeedbackListResponse,
+)
+def list_tier_b_feedback(
+    obligation_id: str | None = None,
+    feedback_type: str | None = None,
+    limit: int = 200,
+    session: Session = Depends(get_session),
+) -> TierBFeedbackListResponse:
+    from openclaw_agent.common.models import TierBFeedback
+
+    q = select(TierBFeedback).order_by(TierBFeedback.created_at.desc()).limit(min(limit, 1000))
+    if obligation_id:
+        q = q.where(TierBFeedback.obligation_id == obligation_id)
+    if feedback_type:
+        q = q.where(TierBFeedback.feedback_type == feedback_type)
+    rows = session.execute(q).scalars().all()
+    return TierBFeedbackListResponse(
+        items=[
+            {
+                "id": r.id,
+                "obligation_id": r.obligation_id,
+                "feedback_type": r.feedback_type,
+                "user_id": r.user_id,
+                "delta": r.delta,
+                "created_at": r.created_at,
+            }
+            for r in rows
+        ]
+    )
+
+
 @app.get("/agent/v1/contract/audit", dependencies=[Depends(require_api_key)])
 def list_contract_audit_log(
     limit: int = 200,
