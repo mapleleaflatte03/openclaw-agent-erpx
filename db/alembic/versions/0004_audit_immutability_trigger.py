@@ -9,8 +9,8 @@ The trigger is only created on PostgreSQL; SQLite is skipped silently.
 """
 from alembic import op
 
-revision = "0004_audit_immutability_trigger"
-down_revision = "0003_add_risk_and_approval_fields"
+revision = "0004"
+down_revision = "0003"
 branch_labels = None
 depends_on = None
 
