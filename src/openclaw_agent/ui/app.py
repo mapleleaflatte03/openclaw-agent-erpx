@@ -163,26 +163,90 @@ else:
     case_labels = {c["case_id"]: f"{c['case_key']} ({c['status']})" for c in cases}
     case_id = st.selectbox("case_id", list(case_labels.keys()), format_func=lambda cid: case_labels[cid])
 
+    # --- Tier B disclaimer (Design Principles §1, §2) ---
+    st.info(
+        "⚠️ **Disclaimer:** Agent chỉ tóm tắt và gom bằng chứng để hỗ trợ đọc hiểu. "
+        "Quyết định kế toán vẫn thuộc về người dùng."
+    )
+
+    CONFIDENCE_THRESHOLD = 0.75
+    CANDIDATE_LIMIT = 5
+
     colC, colD = st.columns(2)
     with colC:
-        st.markdown("### Obligations")
+        st.markdown("### Obligations — Tier B")
         try:
             obligations = _get(f"/agent/v1/contract/cases/{case_id}/obligations").get("items", [])
             if obligations:
-                df = pd.DataFrame(obligations)
-                st.dataframe(
-                    df[
-                        [
-                            "obligation_type",
-                            "risk_level",
-                            "confidence",
-                            "amount_value",
-                            "amount_percent",
-                            "due_date",
-                        ]
-                    ],
-                    use_container_width=True,
+                high_conf = [o for o in obligations if o.get("confidence", 0) >= CONFIDENCE_THRESHOLD]
+                candidates = [o for o in obligations if o.get("confidence", 0) < CONFIDENCE_THRESHOLD]
+
+                # Sort candidates: payment > penalty > discount > other
+                _type_priority = {"payment": 0, "penalty": 1, "discount": 2}
+                candidates.sort(
+                    key=lambda o: (
+                        _type_priority.get(o.get("obligation_type", ""), 99),
+                        -(o.get("confidence", 0)),
+                    )
                 )
+
+                # --- High-confidence ---
+                st.markdown(f"#### ✅ High-confidence ({len(high_conf)})")
+                if high_conf:
+                    df_high = pd.DataFrame(high_conf)
+                    st.dataframe(
+                        df_high[
+                            [
+                                "obligation_type",
+                                "risk_level",
+                                "confidence",
+                                "amount_value",
+                                "amount_percent",
+                                "due_date",
+                            ]
+                        ],
+                        use_container_width=True,
+                    )
+                else:
+                    st.caption("Không có nghĩa vụ high-confidence.")
+
+                # --- Candidates ---
+                visible_candidates = candidates[:CANDIDATE_LIMIT]
+                hidden_count = max(0, len(candidates) - CANDIDATE_LIMIT)
+                st.markdown(f"#### 🔍 Candidates ({len(candidates)})")
+                if visible_candidates:
+                    df_cand = pd.DataFrame(visible_candidates)
+                    st.dataframe(
+                        df_cand[
+                            [
+                                "obligation_type",
+                                "risk_level",
+                                "confidence",
+                                "amount_value",
+                                "amount_percent",
+                                "due_date",
+                            ]
+                        ],
+                        use_container_width=True,
+                    )
+                    if hidden_count > 0:
+                        with st.expander(f"Xem thêm ({hidden_count})"):
+                            df_rest = pd.DataFrame(candidates[CANDIDATE_LIMIT:])
+                            st.dataframe(
+                                df_rest[
+                                    [
+                                        "obligation_type",
+                                        "risk_level",
+                                        "confidence",
+                                        "amount_value",
+                                        "amount_percent",
+                                        "due_date",
+                                    ]
+                                ],
+                                use_container_width=True,
+                            )
+                else:
+                    st.caption("Không có candidates.")
             else:
                 st.info("No obligations yet.")
         except Exception as e:
