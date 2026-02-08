@@ -52,8 +52,24 @@ def _s3():
 
 
 st.set_page_config(page_title="OpenClaw Agent Ops", layout="wide")
+
+# CSS fix: ensure DataFrame toolbar (Download CSV) is clickable above glide overlay
+st.markdown(
+    """
+    <style>
+    [data-testid="stDataFrame"] [data-testid="stElementToolbar"] {
+        z-index: 100 !important;
+        pointer-events: auto !important;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
 st.title("OpenClaw Agent Ops UI")
-st.caption(f"Agent API: {AGENT_BASE_URL}")
+# Internal endpoint shown only via expander for dev/debug
+with st.expander("⚙️ Dev / Debug info", expanded=False):
+    st.caption(f"Agent API: {AGENT_BASE_URL}")
 
 col1, col2 = st.columns(2)
 with col1:
@@ -149,7 +165,10 @@ else:
 st.divider()
 st.subheader("Contract Obligation Cases / Proposals")
 
-current_user = st.text_input("current_user_id (for approvals)", value="checker-001")
+# P0 security: current_user_id from env, not editable by user
+_DEMO_USER_ID = os.getenv("OPENCLAW_DEMO_USER_ID", "demo-checker")
+current_user = _DEMO_USER_ID
+st.markdown(f"👤 Người duyệt (demo): **{current_user}**")
 
 try:
     cases = _get("/agent/v1/contract/cases", params={"limit": 50}).get("items", [])
@@ -270,7 +289,7 @@ else:
                                     {
                                         "obligation_id": all_displayed[fb_idx]["obligation_id"],
                                         "feedback_type": "explicit_yes",
-                                        "user_id": current_user.strip() or None,
+                                        "user_id": current_user or None,
                                     },
                                 )
                                 st.success("Đã ghi feedback: Đúng")
@@ -284,7 +303,7 @@ else:
                                     {
                                         "obligation_id": all_displayed[fb_idx]["obligation_id"],
                                         "feedback_type": "explicit_no",
-                                        "user_id": current_user.strip() or None,
+                                        "user_id": current_user or None,
                                     },
                                 )
                                 st.success("Đã ghi feedback: Sai")
@@ -335,15 +354,23 @@ else:
                     st.markdown("#### Approvals")
                     st.dataframe(pd.DataFrame(approvals), use_container_width=True)
 
-                evidence_ack = st.checkbox("I have reviewed evidence", value=False)
-                note = st.text_input("note (optional)", value="")
+                # Check if proposal is already finalized
+                proposal_status = selected.get("status", "")
+                is_finalized = proposal_status in {"approved", "rejected"}
+
+                if is_finalized:
+                    _label = "✅ Đã duyệt" if proposal_status == "approved" else "❌ Đã từ chối"
+                    st.info(f"{_label} — trạng thái: **{proposal_status}**")
+
+                evidence_ack = st.checkbox("I have reviewed evidence", value=False, disabled=is_finalized)
+                note = st.text_input("note (optional)", value="", disabled=is_finalized)
 
                 maker = (selected.get("created_by") or "").strip()
-                if maker and maker == current_user.strip():
+                if maker and maker == current_user:
                     st.warning("Maker-checker: you cannot approve your own proposal.")
                     can_act = False
                 else:
-                    can_act = True
+                    can_act = not is_finalized
 
                 colX, colY = st.columns(2)
                 with colX:
@@ -353,12 +380,13 @@ else:
                                 f"/agent/v1/contract/proposals/{proposal_id}/approvals",
                                 {
                                     "decision": "approve",
-                                    "approver_id": current_user.strip(),
+                                    "approver_id": current_user,
                                     "evidence_ack": evidence_ack,
                                     "note": note or None,
                                 },
                             )
                             st.success(res)
+                            st.rerun()
                         except Exception as e:
                             st.error(e)
                 with colY:
@@ -368,11 +396,12 @@ else:
                                 f"/agent/v1/contract/proposals/{proposal_id}/approvals",
                                 {
                                     "decision": "reject",
-                                    "approver_id": current_user.strip(),
+                                    "approver_id": current_user,
                                     "evidence_ack": evidence_ack,
                                     "note": note or None,
                                 },
                             )
                             st.success(res)
+                            st.rerun()
                         except Exception as e:
                             st.error(e)

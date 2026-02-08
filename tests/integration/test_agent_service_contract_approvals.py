@@ -127,3 +127,79 @@ def test_agent_service_contract_approvals_high_risk(tmp_path: Path, monkeypatch)
         assert body3["proposal_status"] == "approved"
         assert body3["approvals_approved"] == 2
 
+        # After approval finalized: additional attempt → 409
+        r = client.post(
+            f"/agent/v1/contract/proposals/{proposal_id}/approvals",
+            headers={"Idempotency-Key": "idem-3"},
+            json={"decision": "approve", "approver_id": "approver3", "evidence_ack": True},
+        )
+        assert r.status_code == 409
+        assert "already finalized" in r.json()["detail"]
+
+        # Re-fetch proposal list: status must reflect approved
+        r = client.get(f"/agent/v1/contract/cases/{case_id}/proposals")
+        assert r.status_code == 200
+        found = [p for p in r.json()["items"] if p["proposal_id"] == proposal_id]
+        assert len(found) == 1
+        assert found[0]["status"] == "approved"
+
+
+def test_agent_service_contract_reject_finalizes(tmp_path: Path, monkeypatch):
+    """After reject, proposal_status=rejected and further actions → 409."""
+    agent_db = tmp_path / "agent.sqlite"
+    monkeypatch.setenv("AGENT_DB_DSN", f"sqlite+pysqlite:///{agent_db}")
+    monkeypatch.setenv("ERPX_BASE_URL", "http://127.0.0.1:1")
+    monkeypatch.setenv("ERPX_TOKEN", "testtoken")
+    monkeypatch.setenv("MINIO_ENDPOINT", "minio:9000")
+    monkeypatch.setenv("MINIO_ACCESS_KEY", "minioadmin")
+    monkeypatch.setenv("MINIO_SECRET_KEY", "minioadmin")
+    monkeypatch.setenv("REDIS_URL", "redis://localhost:6379/0")
+    monkeypatch.setenv("CELERY_BROKER_URL", "redis://localhost:6379/0")
+    monkeypatch.setenv("CELERY_RESULT_BACKEND", "redis://localhost:6379/1")
+
+    engine = make_engine()
+    Base.metadata.create_all(engine)
+
+    case_id = new_uuid()
+    proposal_id = new_uuid()
+    proposal_key = make_idempotency_key("proposal", case_id, None, "reminder", "rej")
+
+    with db_session(engine) as s:
+        s.add(AgentContractCase(
+            case_id=case_id,
+            case_key=make_idempotency_key("contract_case", "reject_test"),
+            partner_name=None, partner_tax_id=None, contract_code=None,
+            status="open", meta=None,
+        ))
+        s.add(AgentProposal(
+            proposal_id=proposal_id, case_id=case_id, obligation_id=None,
+            proposal_type="reminder", title="To be rejected",
+            summary="", details={}, risk_level="low", confidence=1.0,
+            status="draft", created_by="maker1", tier=1,
+            evidence_summary_hash=None, proposal_key=proposal_key, run_id=None,
+        ))
+
+    from openclaw_agent.agent_service import main as svc_main
+    from openclaw_agent.common.settings import get_settings
+
+    get_settings.cache_clear()
+    monkeypatch.setattr(svc_main, "ensure_buckets", lambda _settings: None)
+    svc_main.ENGINE = None
+
+    with TestClient(svc_main.app) as client:
+        r = client.post(
+            f"/agent/v1/contract/proposals/{proposal_id}/approvals",
+            json={"decision": "reject", "approver_id": "approver1", "evidence_ack": True},
+        )
+        assert r.status_code == 200
+        body = r.json()
+        assert body["proposal_status"] == "rejected"
+
+        # Further approve attempt → 409
+        r = client.post(
+            f"/agent/v1/contract/proposals/{proposal_id}/approvals",
+            json={"decision": "approve", "approver_id": "approver2", "evidence_ack": True},
+        )
+        assert r.status_code == 409
+        assert "already finalized" in r.json()["detail"]
+
