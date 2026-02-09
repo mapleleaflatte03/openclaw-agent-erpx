@@ -21,8 +21,13 @@ from openclaw_agent.common.logging import configure_logging, get_logger
 from openclaw_agent.common.models import (
     AcctAnomalyFlag,
     AcctBankTransaction,
+    AcctCashflowForecast,
     AcctJournalLine,
     AcctJournalProposal,
+    AcctQnaAudit,
+    AcctReportSnapshot,
+    AcctSoftCheckResult,
+    AcctValidationIssue,
     AcctVoucher,
     AgentApproval,
     AgentAttachment,
@@ -335,6 +340,7 @@ def create_run(
         "contract_obligation",
         "journal_suggestion",
         "bank_reconcile",
+        "cashflow_forecast",
     }
     if run_type not in _VALID_RUN_TYPES:
         raise HTTPException(status_code=400, detail=f"invalid run_type: '{run_type}'. Valid: {sorted(_VALID_RUN_TYPES)}")
@@ -397,6 +403,7 @@ def create_run(
         "contract_obligation": "ocr",
         "journal_suggestion": "default",
         "bank_reconcile": "default",
+        "cashflow_forecast": "default",
     }
     celery_app.send_task(
         "openclaw_agent.agent_worker.tasks.dispatch_run",
@@ -1494,6 +1501,182 @@ def list_bank_transactions(
                 "match_status": r.match_status,
                 "synced_at": r.synced_at,
                 "run_id": r.run_id,
+            }
+            for r in rows
+        ]
+    }
+
+
+# ---------------------------------------------------------------------------
+# Phase 2: Extended accounting endpoints
+# ---------------------------------------------------------------------------
+
+@app.get("/agent/v1/acct/soft_check_results", dependencies=[Depends(require_api_key)])
+def list_soft_check_results(
+    period: str | None = None,
+    limit: int = 50,
+    session: Session = Depends(get_session),
+) -> dict[str, Any]:
+    q = select(AcctSoftCheckResult).order_by(AcctSoftCheckResult.created_at.desc()).limit(min(limit, 200))
+    if period:
+        q = q.where(AcctSoftCheckResult.period == period)
+    rows = session.execute(q).scalars().all()
+    return {
+        "items": [
+            {
+                "id": r.id,
+                "period": r.period,
+                "total_checks": r.total_checks,
+                "passed": r.passed,
+                "warnings": r.warnings,
+                "errors": r.errors,
+                "score": r.score,
+                "created_at": r.created_at,
+                "run_id": r.run_id,
+            }
+            for r in rows
+        ]
+    }
+
+
+@app.get("/agent/v1/acct/validation_issues", dependencies=[Depends(require_api_key)])
+def list_validation_issues(
+    resolution: str | None = None,
+    severity: str | None = None,
+    limit: int = 100,
+    session: Session = Depends(get_session),
+) -> dict[str, Any]:
+    q = select(AcctValidationIssue).order_by(AcctValidationIssue.created_at.desc()).limit(min(limit, 500))
+    if resolution:
+        q = q.where(AcctValidationIssue.resolution == resolution)
+    if severity:
+        q = q.where(AcctValidationIssue.severity == severity)
+    rows = session.execute(q).scalars().all()
+    return {
+        "items": [
+            {
+                "id": r.id,
+                "check_result_id": r.check_result_id,
+                "rule_code": r.rule_code,
+                "severity": r.severity,
+                "message": r.message,
+                "erp_ref": r.erp_ref,
+                "resolution": r.resolution,
+                "resolved_by": r.resolved_by,
+                "resolved_at": r.resolved_at,
+                "created_at": r.created_at,
+            }
+            for r in rows
+        ]
+    }
+
+
+@app.post("/agent/v1/acct/validation_issues/{issue_id}/resolve", dependencies=[Depends(require_api_key)])
+def resolve_validation_issue(
+    issue_id: str,
+    body: dict[str, Any],
+    session: Session = Depends(get_session),
+) -> dict[str, Any]:
+    issue = session.get(AcctValidationIssue, issue_id)
+    if not issue:
+        raise HTTPException(status_code=404, detail="validation issue not found")
+    if issue.resolution != "open":
+        raise HTTPException(
+            status_code=409,
+            detail=f"Vấn đề đã được xử lý (trạng thái: {issue.resolution}). Không thể thay đổi.",
+        )
+    action = body.get("action", "resolved")
+    if action not in ("resolved", "ignored"):
+        raise HTTPException(status_code=400, detail="action must be 'resolved' or 'ignored'")
+    issue.resolution = action
+    issue.resolved_by = body.get("resolved_by", "user")
+    issue.resolved_at = utcnow()
+    session.commit()
+    return {"id": issue.id, "resolution": issue.resolution}
+
+
+@app.get("/agent/v1/acct/report_snapshots", dependencies=[Depends(require_api_key)])
+def list_report_snapshots(
+    report_type: str | None = None,
+    period: str | None = None,
+    limit: int = 50,
+    session: Session = Depends(get_session),
+) -> dict[str, Any]:
+    q = select(AcctReportSnapshot).order_by(AcctReportSnapshot.created_at.desc()).limit(min(limit, 200))
+    if report_type:
+        q = q.where(AcctReportSnapshot.report_type == report_type)
+    if period:
+        q = q.where(AcctReportSnapshot.period == period)
+    rows = session.execute(q).scalars().all()
+    return {
+        "items": [
+            {
+                "id": r.id,
+                "report_type": r.report_type,
+                "period": r.period,
+                "version": r.version,
+                "file_uri": r.file_uri,
+                "summary_json": r.summary_json,
+                "created_at": r.created_at,
+                "run_id": r.run_id,
+            }
+            for r in rows
+        ]
+    }
+
+
+@app.get("/agent/v1/acct/cashflow_forecast", dependencies=[Depends(require_api_key)])
+def list_cashflow_forecast(
+    direction: str | None = None,
+    limit: int = 100,
+    session: Session = Depends(get_session),
+) -> dict[str, Any]:
+    q = select(AcctCashflowForecast).order_by(AcctCashflowForecast.forecast_date.asc()).limit(min(limit, 500))
+    if direction:
+        q = q.where(AcctCashflowForecast.direction == direction)
+    rows = session.execute(q).scalars().all()
+    total_inflow = sum(r.amount for r in rows if r.direction == "inflow")
+    total_outflow = sum(r.amount for r in rows if r.direction == "outflow")
+    return {
+        "summary": {
+            "total_inflow": total_inflow,
+            "total_outflow": total_outflow,
+            "net": total_inflow - total_outflow,
+        },
+        "items": [
+            {
+                "id": r.id,
+                "forecast_date": r.forecast_date,
+                "direction": r.direction,
+                "amount": r.amount,
+                "currency": r.currency,
+                "source_type": r.source_type,
+                "source_ref": r.source_ref,
+                "confidence": r.confidence,
+                "run_id": r.run_id,
+            }
+            for r in rows
+        ],
+    }
+
+
+@app.get("/agent/v1/acct/qna_audits", dependencies=[Depends(require_api_key)])
+def list_qna_audits(
+    limit: int = 50,
+    session: Session = Depends(get_session),
+) -> dict[str, Any]:
+    q = select(AcctQnaAudit).order_by(AcctQnaAudit.created_at.desc()).limit(min(limit, 200))
+    rows = session.execute(q).scalars().all()
+    return {
+        "items": [
+            {
+                "id": r.id,
+                "question": r.question,
+                "answer": r.answer,
+                "sources": r.sources,
+                "user_id": r.user_id,
+                "feedback": r.feedback,
+                "created_at": r.created_at,
             }
             for r in rows
         ]

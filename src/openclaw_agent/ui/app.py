@@ -104,6 +104,7 @@ with col1:
         [
             "journal_suggestion",
             "bank_reconcile",
+            "cashflow_forecast",
             "tax_export",
             "working_papers",
             "soft_checks",
@@ -116,10 +117,13 @@ with col1:
     )
     payload: dict[str, Any] = {}
     if run_type in {"tax_export", "working_papers", "close_checklist"}:
-        payload["period"] = st.text_input("period (YYYY-MM)", value=date.today().strftime("%Y-%m"))
+        payload["period"] = st.text_input("period (YYYY-MM) *", value=date.today().strftime("%Y-%m"))
     if run_type == "soft_checks":
         payload["updated_after"] = st.text_input("updated_after (ISO)", value="")
         payload["period"] = st.text_input("period (optional YYYY-MM)", value=date.today().strftime("%Y-%m"))
+    if run_type == "cashflow_forecast":
+        payload["period"] = st.text_input("period (YYYY-MM)", value=date.today().strftime("%Y-%m"))
+        payload["horizon_days"] = st.number_input("horizon_days", min_value=7, max_value=90, value=30)
     if run_type == "ar_dunning":
         payload["as_of"] = st.text_input("as_of (YYYY-MM-DD)", value=date.today().isoformat())
     if run_type == "evidence_pack":
@@ -562,3 +566,120 @@ with st.expander("🔬 Experimental: Contract Obligation Review (Labs)", expande
                             st.rerun()
                         except Exception as e:
                             st.error(e)
+
+# ---------------------------------------------------------------------------
+# Phase 2: Extended Accounting Dashboard
+# ---------------------------------------------------------------------------
+
+st.divider()
+st.subheader("📊 Kiểm tra logic (Soft Check Results)")
+
+try:
+    scr_data = _get("/agent/v1/acct/soft_check_results", params={"limit": 10})
+    scr_items = scr_data.get("items", [])
+except Exception as e:
+    st.error(f"Lỗi tải soft check results: {e}")
+    scr_items = []
+
+if scr_items:
+    df_scr = pd.DataFrame(scr_items)
+    st.dataframe(
+        df_scr[["period", "total_checks", "passed", "warnings", "errors", "score", "created_at"]],
+        use_container_width=True,
+    )
+else:
+    st.info("Chưa có kết quả kiểm tra. Hãy chạy 'soft_checks' ở trên.")
+
+# --- Validation Issues ---
+with st.expander("🔎 Chi tiết — Validation Issues", expanded=False):
+    issue_filter = st.selectbox("Lọc trạng thái", ["open", "resolved", "ignored", "(tất cả)"], key="vi_filter")
+    try:
+        vi_params: dict[str, Any] = {"limit": 50}
+        if issue_filter != "(tất cả)":
+            vi_params["resolution"] = issue_filter
+        vi_data = _get("/agent/v1/acct/validation_issues", params=vi_params)
+        vi_items = vi_data.get("items", [])
+    except Exception as e:
+        st.error(f"Lỗi tải validation issues: {e}")
+        vi_items = []
+
+    if vi_items:
+        df_vi = pd.DataFrame(vi_items)
+        st.dataframe(
+            df_vi[["rule_code", "severity", "message", "erp_ref", "resolution", "created_at"]],
+            use_container_width=True,
+        )
+
+        # Resolve action
+        resolve_id = st.text_input("Issue ID để xử lý", value="", key="resolve_vi_id")
+        if resolve_id and st.button("✅ Đánh dấu đã xử lý", key="resolve_vi_btn"):
+            try:
+                _post(
+                    f"/agent/v1/acct/validation_issues/{resolve_id}/resolve",
+                    {"action": "resolved", "resolved_by": current_user},
+                )
+                st.success("Đã đánh dấu xử lý")
+                st.rerun()
+            except Exception as ex:
+                st.error(f"Lỗi: {ex}")
+    else:
+        st.info("Không có validation issues.")
+
+
+st.divider()
+st.subheader("📈 Báo cáo kế toán (Report Snapshots)")
+
+try:
+    rpt_data = _get("/agent/v1/acct/report_snapshots", params={"limit": 20})
+    rpt_items = rpt_data.get("items", [])
+except Exception as e:
+    st.error(f"Lỗi tải reports: {e}")
+    rpt_items = []
+
+if rpt_items:
+    df_rpt = pd.DataFrame(rpt_items)
+    st.dataframe(
+        df_rpt[["report_type", "period", "version", "created_at"]],
+        use_container_width=True,
+    )
+    # Show summary of first report
+    with st.expander("📋 Chi tiết báo cáo mới nhất"):
+        latest = rpt_items[0]
+        if latest.get("summary_json"):
+            st.json(latest["summary_json"])
+        if latest.get("file_uri"):
+            st.caption(f"File: {latest['file_uri']}")
+else:
+    st.info("Chưa có báo cáo. Hãy chạy 'tax_export' ở trên.")
+
+
+st.divider()
+st.subheader("💰 Dự báo dòng tiền (Cashflow Forecast)")
+
+try:
+    cf_data = _get("/agent/v1/acct/cashflow_forecast", params={"limit": 100})
+    cf_items = cf_data.get("items", [])
+    cf_summary = cf_data.get("summary", {})
+except Exception as e:
+    st.error(f"Lỗi tải cashflow forecast: {e}")
+    cf_items = []
+    cf_summary = {}
+
+if cf_summary:
+    col_in, col_out, col_net = st.columns(3)
+    with col_in:
+        st.metric("Tổng thu dự kiến", f"{cf_summary.get('total_inflow', 0):,.0f} VND")
+    with col_out:
+        st.metric("Tổng chi dự kiến", f"{cf_summary.get('total_outflow', 0):,.0f} VND")
+    with col_net:
+        net = cf_summary.get("net", 0)
+        st.metric("Ròng", f"{net:,.0f} VND", delta=f"{net:,.0f}")
+
+if cf_items:
+    df_cf = pd.DataFrame(cf_items)
+    st.dataframe(
+        df_cf[["forecast_date", "direction", "amount", "source_type", "source_ref", "confidence"]],
+        use_container_width=True,
+    )
+else:
+    st.info("Chưa có dự báo. Hãy chạy 'cashflow_forecast' ở trên.")

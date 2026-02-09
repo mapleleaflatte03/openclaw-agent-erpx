@@ -62,7 +62,10 @@ from openclaw_agent.common.utils import (
     utcnow,
 )
 from openclaw_agent.flows.bank_reconcile import flow_bank_reconcile
+from openclaw_agent.flows.cashflow_forecast import flow_cashflow_forecast
 from openclaw_agent.flows.journal_suggestion import flow_journal_suggestion
+from openclaw_agent.flows.soft_checks_acct import flow_soft_checks_acct
+from openclaw_agent.flows.tax_report import flow_tax_report
 
 settings = get_settings()
 configure_logging(settings.log_level)
@@ -365,6 +368,8 @@ def dispatch_run(self: Task, run_id: str) -> dict[str, Any]:
             stats = _wf_journal_suggestion(run_id)
         elif run_type == "bank_reconcile":
             stats = _wf_bank_reconcile(run_id)
+        elif run_type == "cashflow_forecast":
+            stats = _wf_cashflow_forecast(run_id)
         else:
             raise RuntimeError(f"unsupported run_type: {run_type}")
 
@@ -531,9 +536,10 @@ def _wf_tax_export(run_id: str) -> dict[str, Any]:
     client = ErpXClient(settings)
     try:
         invoices = client.get_invoices(period=period)
+        vouchers = client.get_vouchers()
     finally:
         client.close()
-    _task_finish(run_id, "pull_invoices", "success", {"count": len(invoices)})
+    _task_finish(run_id, "pull_invoices", "success", {"count": len(invoices), "vouchers": len(vouchers)})
 
     _task_start(run_id, "validate", {"count": len(invoices)})
     errors = []
@@ -599,6 +605,19 @@ def _wf_tax_export(run_id: str) -> dict[str, Any]:
             )
 
         _task_finish(run_id, "export_xlsx", "success", {"file_uri": obj.uri(), "version": version})
+
+        # --- Phase 2: Create report snapshot ---
+        _task_start(run_id, "report_snapshot", {"period": period})
+        try:
+            with db_session(engine) as s:
+                rpt_stats = flow_tax_report(s, invoices, vouchers, period, run_id, file_uri=obj.uri())
+                s.commit()
+        except Exception as e:
+            _task_finish(run_id, "report_snapshot", "failed", error=str(e))
+            rpt_stats = {}
+        else:
+            _task_finish(run_id, "report_snapshot", "success", output_ref={"detail": str(rpt_stats)})
+
         _update_run(run_id, cursor_out={"period": period, "file_uri": obj.uri(), "version": version})
         return {"export": 1, "version": version}
     finally:
@@ -760,6 +779,19 @@ def _wf_soft_checks(run_id: str) -> dict[str, Any]:
                 inserted += 1
 
     _task_finish(run_id, "checks", "success", {"exceptions": len(exceptions)})
+
+    # --- Phase 2: Structured validation issues ---
+    _task_start(run_id, "acct_soft_checks", {"period": period})
+    try:
+        with db_session(engine) as s:
+            acct_stats = flow_soft_checks_acct(s, vouchers, journals, invoices, period, run_id)
+            s.commit()
+    except Exception as e:
+        _task_finish(run_id, "acct_soft_checks", "failed", error=str(e))
+        # Non-fatal: existing exception flow already saved data
+        acct_stats = {}
+    else:
+        _task_finish(run_id, "acct_soft_checks", "success", output_ref={"detail": str(acct_stats)})
 
     # Export report
     _task_start(run_id, "export_report", {"period": period, "exceptions": len(exceptions)})
@@ -2465,9 +2497,9 @@ def _wf_journal_suggestion(run_id: str) -> dict[str, Any]:
         client = ErpXClient(settings)
         vouchers = client.get_vouchers()
     except Exception as e:
-        _task_finish(run_id, "fetch_vouchers", "failed", detail=str(e))
+        _task_finish(run_id, "fetch_vouchers", "failed", error=str(e))
         raise
-    _task_finish(run_id, "fetch_vouchers", "success", detail=f"fetched {len(vouchers)} vouchers")
+    _task_finish(run_id, "fetch_vouchers", "success", {"fetched_vouchers": len(vouchers)})
 
     _task_start(run_id, "create_journal_proposals", {})
     try:
@@ -2475,9 +2507,9 @@ def _wf_journal_suggestion(run_id: str) -> dict[str, Any]:
             stats = flow_journal_suggestion(s, vouchers, run_id)
             s.commit()
     except Exception as e:
-        _task_finish(run_id, "create_journal_proposals", "failed", detail=str(e))
+        _task_finish(run_id, "create_journal_proposals", "failed", error=str(e))
         raise
-    _task_finish(run_id, "create_journal_proposals", "success", detail=str(stats))
+    _task_finish(run_id, "create_journal_proposals", "success", output_ref={"detail": str(stats)})
     return stats
 
 
@@ -2491,10 +2523,10 @@ def _wf_bank_reconcile(run_id: str) -> dict[str, Any]:
         bank_txs = client.get_bank_transactions()
         vouchers = client.get_vouchers()
     except Exception as e:
-        _task_finish(run_id, "fetch_bank_data", "failed", detail=str(e))
+        _task_finish(run_id, "fetch_bank_data", "failed", error=str(e))
         raise
     _task_finish(run_id, "fetch_bank_data", "success",
-                 detail=f"fetched {len(bank_txs)} bank txs, {len(vouchers)} vouchers")
+                 {"bank_txs": len(bank_txs), "vouchers": len(vouchers)})
 
     _task_start(run_id, "reconcile_and_flag", {})
     try:
@@ -2502,7 +2534,38 @@ def _wf_bank_reconcile(run_id: str) -> dict[str, Any]:
             stats = flow_bank_reconcile(s, bank_txs, vouchers, run_id)
             s.commit()
     except Exception as e:
-        _task_finish(run_id, "reconcile_and_flag", "failed", detail=str(e))
+        _task_finish(run_id, "reconcile_and_flag", "failed", error=str(e))
         raise
-    _task_finish(run_id, "reconcile_and_flag", "success", detail=str(stats))
+    _task_finish(run_id, "reconcile_and_flag", "success", output_ref={"detail": str(stats)})
+    return stats
+
+
+def _wf_cashflow_forecast(run_id: str) -> dict[str, Any]:
+    """Fetch invoices + bank txs → build 30-day cash-flow forecast."""
+    _db_log(run_id, None, "info", "cashflow_forecast_start", {})
+    payload = _run_payload(run_id)
+    period = payload.get("period") or datetime.now(timezone.utc).strftime("%Y-%m")
+    horizon = int(payload.get("horizon_days", 30))
+
+    _task_start(run_id, "fetch_data", {"period": period})
+    try:
+        client = ErpXClient(settings)
+        invoices = client.get_invoices(period=period)
+        bank_txs = client.get_bank_transactions()
+    except Exception as e:
+        _task_finish(run_id, "fetch_data", "failed", error=str(e))
+        raise
+    _task_finish(run_id, "fetch_data", "success",
+                 {"invoices": len(invoices), "bank_txs": len(bank_txs)})
+
+    _task_start(run_id, "build_forecast", {})
+    try:
+        with db_session(engine) as s:
+            stats = flow_cashflow_forecast(s, invoices, bank_txs, run_id, horizon_days=horizon)
+            s.commit()
+    except Exception as e:
+        _task_finish(run_id, "build_forecast", "failed", error=str(e))
+        raise
+    _task_finish(run_id, "build_forecast", "success", output_ref={"detail": str(stats)})
+    _update_run(run_id, cursor_out=stats)
     return stats

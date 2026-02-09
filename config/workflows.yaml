@@ -178,3 +178,39 @@ workflows:
       - name: create_proposals
         skill: create_contract_proposals
         queue: default
+
+  journal_suggestion:
+    run_type: journal_suggestion
+    idempotency:
+      run_key_template: "journal_suggestion:{period}"
+    steps:
+      - name: fetch_vouchers
+        skill: erpx_pull_vouchers
+        queue: default
+      - name: create_journal_proposals
+        skill: classify_and_propose_journals
+        queue: default
+
+  bank_reconcile:
+    run_type: bank_reconcile
+    idempotency:
+      run_key_template: "bank_reconcile:{period}"
+    steps:
+      - name: fetch_bank_data
+        skill: erpx_pull_bank_txs
+        queue: default
+      - name: reconcile_and_flag
+        skill: match_bank_vouchers
+        queue: default
+
+  cashflow_forecast:
+    run_type: cashflow_forecast
+    idempotency:
+      run_key_template: "cashflow_forecast:{period}"
+    steps:
+      - name: fetch_data
+        skill: erpx_pull_invoices_bank_txs
+        queue: default
+      - name: build_forecast
+        skill: forecast_cashflow
+        queue: default

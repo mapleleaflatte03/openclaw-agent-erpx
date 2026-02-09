@@ -603,3 +603,125 @@ class AcctAnomalyFlag(Base):
         sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False, index=True,
     )
     run_id: Mapped[str | None] = mapped_column(sa.String(36), nullable=True, index=True)
+
+
+# ---------------------------------------------------------------------------
+# Phase 2: Extended accounting domain models
+# ---------------------------------------------------------------------------
+
+class AcctSoftCheckResult(Base):
+    """Aggregate result of a soft-check run for a given period."""
+    __tablename__ = "acct_soft_check_results"
+
+    id: Mapped[str] = mapped_column(sa.String(36), primary_key=True)
+    period: Mapped[str] = mapped_column(sa.String(7), index=True, comment="YYYY-MM")
+    total_checks: Mapped[int] = mapped_column(sa.Integer, nullable=False, server_default="0")
+    passed: Mapped[int] = mapped_column(sa.Integer, nullable=False, server_default="0")
+    warnings: Mapped[int] = mapped_column(sa.Integer, nullable=False, server_default="0")
+    errors: Mapped[int] = mapped_column(sa.Integer, nullable=False, server_default="0")
+    score: Mapped[float] = mapped_column(
+        sa.Float, nullable=False, server_default="0",
+        comment="Health score 0.0–1.0",
+    )
+    created_at: Mapped[sa.DateTime] = mapped_column(
+        sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False, index=True,
+    )
+    run_id: Mapped[str | None] = mapped_column(sa.String(36), nullable=True, index=True)
+
+    issues: Mapped[list[AcctValidationIssue]] = relationship(
+        "AcctValidationIssue", back_populates="check_result", cascade="all, delete-orphan",
+    )
+
+
+class AcctValidationIssue(Base):
+    """Individual validation issue found during soft-check."""
+    __tablename__ = "acct_validation_issues"
+
+    id: Mapped[str] = mapped_column(sa.String(36), primary_key=True)
+    check_result_id: Mapped[str] = mapped_column(
+        sa.String(36), sa.ForeignKey("acct_soft_check_results.id"), nullable=False, index=True,
+    )
+    rule_code: Mapped[str] = mapped_column(
+        sa.String(64), nullable=False, index=True,
+        comment="e.g. MISSING_ATTACHMENT, JOURNAL_IMBALANCED, OVERDUE_INVOICE, DUPLICATE_VOUCHER",
+    )
+    severity: Mapped[str] = mapped_column(
+        sa.String(16), server_default="warning", index=True,
+        comment="info|warning|error|critical",
+    )
+    message: Mapped[str] = mapped_column(sa.Text, nullable=False)
+    erp_ref: Mapped[str | None] = mapped_column(sa.String(128), nullable=True, index=True, comment="e.g. voucher_id, journal_id")
+    details: Mapped[dict | None] = mapped_column(sa.JSON, nullable=True)
+    resolution: Mapped[str] = mapped_column(
+        sa.String(16), server_default="open", index=True,
+        comment="open|resolved|ignored",
+    )
+    resolved_by: Mapped[str | None] = mapped_column(sa.String(64), nullable=True)
+    resolved_at: Mapped[sa.DateTime | None] = mapped_column(sa.DateTime(timezone=True), nullable=True)
+    created_at: Mapped[sa.DateTime] = mapped_column(
+        sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False, index=True,
+    )
+
+    check_result: Mapped[AcctSoftCheckResult] = relationship("AcctSoftCheckResult", back_populates="issues")
+
+
+class AcctReportSnapshot(Base):
+    """Saved snapshot of a generated accounting report (VAT, P&L, trial-balance)."""
+    __tablename__ = "acct_report_snapshots"
+
+    id: Mapped[str] = mapped_column(sa.String(36), primary_key=True)
+    report_type: Mapped[str] = mapped_column(
+        sa.String(32), nullable=False, index=True,
+        comment="vat_list|trial_balance|pnl|balance_sheet",
+    )
+    period: Mapped[str] = mapped_column(sa.String(7), index=True, comment="YYYY-MM")
+    version: Mapped[int] = mapped_column(sa.Integer, nullable=False, server_default="1")
+    file_uri: Mapped[str | None] = mapped_column(sa.String(512), nullable=True, comment="S3/MinIO URI")
+    summary_json: Mapped[dict | None] = mapped_column(sa.JSON, nullable=True, comment="Quick numbers for dashboard")
+    created_at: Mapped[sa.DateTime] = mapped_column(
+        sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False, index=True,
+    )
+    run_id: Mapped[str | None] = mapped_column(sa.String(36), nullable=True, index=True)
+
+
+class AcctCashflowForecast(Base):
+    """Cash-flow forecast line – projected in/out per day/week."""
+    __tablename__ = "acct_cashflow_forecasts"
+
+    id: Mapped[str] = mapped_column(sa.String(36), primary_key=True)
+    forecast_date: Mapped[str] = mapped_column(sa.String(10), nullable=False, index=True, comment="YYYY-MM-DD")
+    direction: Mapped[str] = mapped_column(
+        sa.String(8), nullable=False, index=True,
+        comment="inflow|outflow",
+    )
+    amount: Mapped[float] = mapped_column(sa.Float, nullable=False)
+    currency: Mapped[str] = mapped_column(sa.String(3), server_default="VND")
+    source_type: Mapped[str] = mapped_column(
+        sa.String(32), nullable=False,
+        comment="invoice_receivable|invoice_payable|recurring|manual",
+    )
+    source_ref: Mapped[str | None] = mapped_column(sa.String(128), nullable=True, index=True)
+    confidence: Mapped[float] = mapped_column(sa.Float, server_default="1.0", comment="0.0–1.0")
+    created_at: Mapped[sa.DateTime] = mapped_column(
+        sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False, index=True,
+    )
+    run_id: Mapped[str | None] = mapped_column(sa.String(36), nullable=True, index=True)
+
+
+class AcctQnaAudit(Base):
+    """Audit trail for accounting Q&A queries answered by the AI."""
+    __tablename__ = "acct_qna_audits"
+
+    id: Mapped[str] = mapped_column(sa.String(36), primary_key=True)
+    question: Mapped[str] = mapped_column(sa.Text, nullable=False)
+    answer: Mapped[str] = mapped_column(sa.Text, nullable=False)
+    sources: Mapped[dict | None] = mapped_column(sa.JSON, nullable=True, comment="KB doc refs used")
+    user_id: Mapped[str | None] = mapped_column(sa.String(64), nullable=True, index=True)
+    feedback: Mapped[str | None] = mapped_column(
+        sa.String(16), nullable=True,
+        comment="helpful|not_helpful|null",
+    )
+    created_at: Mapped[sa.DateTime] = mapped_column(
+        sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False, index=True,
+    )
+    run_id: Mapped[str | None] = mapped_column(sa.String(36), nullable=True, index=True)
