@@ -994,59 +994,6 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
-  /agent/v1/acct/vouchers:
-    get:
-      summary: List Vouchers
-      description: List AcctVoucher rows with optional filter by classification_tag
-        or source.
-      operationId: list_vouchers_agent_v1_acct_vouchers_get
-      parameters:
-      - name: classification_tag
-        in: query
-        required: false
-        schema:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Classification Tag
-      - name: source
-        in: query
-        required: false
-        schema:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Source
-      - name: limit
-        in: query
-        required: false
-        schema:
-          type: integer
-          default: 50
-          title: Limit
-      - name: X-API-Key
-        in: header
-        required: false
-        schema:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: X-Api-Key
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema:
-                type: object
-                additionalProperties: true
-                title: Response List Vouchers Agent V1 Acct Vouchers Get
-        '422':
-          description: Validation Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
   /agent/v1/acct/journal_proposals:
     get:
       summary: List Journal Proposals
@@ -1532,6 +1479,59 @@ paths:
                 type: object
                 additionalProperties: true
                 title: Response List Qna Audits Agent V1 Acct Qna Audits Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /agent/v1/acct/vouchers:
+    get:
+      summary: List Vouchers
+      description: List AcctVoucher rows with optional filter by classification_tag
+        or source.
+      operationId: list_vouchers_agent_v1_acct_vouchers_get
+      parameters:
+      - name: classification_tag
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Classification Tag
+      - name: source
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Source
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          default: 50
+          title: Limit
+      - name: X-API-Key
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Api-Key
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response List Vouchers Agent V1 Acct Vouchers Get
         '422':
           description: Validation Error
           content:

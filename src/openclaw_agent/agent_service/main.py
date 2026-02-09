@@ -1325,35 +1325,8 @@ def list_contract_audit_log(
 # ---------------------------------------------------------------------------
 
 
-@app.get("/agent/v1/acct/vouchers", dependencies=[Depends(require_api_key)])
-def list_acct_vouchers(
-    limit: int = 100,
-    voucher_type: str | None = None,
-    session: Session = Depends(get_session),
-) -> dict[str, Any]:
-    q = select(AcctVoucher).order_by(AcctVoucher.synced_at.desc()).limit(min(limit, 500))
-    if voucher_type:
-        q = q.where(AcctVoucher.voucher_type == voucher_type)
-    rows = session.execute(q).scalars().all()
-    return {
-        "items": [
-            {
-                "id": r.id,
-                "erp_voucher_id": r.erp_voucher_id,
-                "voucher_no": r.voucher_no,
-                "voucher_type": r.voucher_type,
-                "date": r.date,
-                "amount": r.amount,
-                "currency": r.currency,
-                "partner_name": r.partner_name,
-                "description": r.description,
-                "has_attachment": r.has_attachment,
-                "synced_at": r.synced_at,
-                "run_id": r.run_id,
-            }
-            for r in rows
-        ]
-    }
+# NOTE: Voucher listing moved to Phase 5/6 unified endpoint below (list_vouchers).
+# Old list_acct_vouchers removed to avoid duplicate route.
 
 
 @app.get("/agent/v1/acct/journal_proposals", dependencies=[Depends(require_api_key)])
@@ -1619,7 +1592,7 @@ def list_report_snapshots(
                 "report_type": r.report_type,
                 "period": r.period,
                 "version": r.version,
-                "file_uri": r.file_uri,
+                "has_file": bool(r.file_uri),
                 "summary_json": r.summary_json,
                 "created_at": r.created_at,
                 "run_id": r.run_id,
