@@ -323,7 +323,7 @@ def create_run(
     trigger_type = body.get("trigger_type")
     payload = body.get("payload") or {}
     requested_by = body.get("requested_by")
-    if run_type not in {
+    _VALID_RUN_TYPES = {
         "attachment",
         "tax_export",
         "working_papers",
@@ -333,8 +333,11 @@ def create_run(
         "evidence_pack",
         "kb_index",
         "contract_obligation",
-    }:
-        raise HTTPException(status_code=400, detail="invalid run_type")
+        "journal_suggestion",
+        "bank_reconcile",
+    }
+    if run_type not in _VALID_RUN_TYPES:
+        raise HTTPException(status_code=400, detail=f"invalid run_type: '{run_type}'. Valid: {sorted(_VALID_RUN_TYPES)}")
     if trigger_type not in {"schedule", "event", "manual"}:
         raise HTTPException(status_code=400, detail="invalid trigger_type")
 
@@ -392,6 +395,8 @@ def create_run(
         "ar_dunning": "io",
         "evidence_pack": "io",
         "contract_obligation": "ocr",
+        "journal_suggestion": "default",
+        "bank_reconcile": "default",
     }
     celery_app.send_task(
         "openclaw_agent.agent_worker.tasks.dispatch_run",
@@ -1394,7 +1399,10 @@ def review_journal_proposal(
     if not proposal:
         raise HTTPException(status_code=404, detail="proposal not found")
     if proposal.status != "pending":
-        raise HTTPException(status_code=409, detail=f"proposal already {proposal.status}")
+        raise HTTPException(
+            status_code=409,
+            detail=f"Bút toán đã được xử lý (trạng thái: {proposal.status}). Không thể thay đổi.",
+        )
     proposal.status = body.status
     proposal.reviewed_by = body.reviewed_by
     proposal.reviewed_at = utcnow()
@@ -1450,7 +1458,10 @@ def resolve_anomaly_flag(
     if not flag:
         raise HTTPException(status_code=404, detail="anomaly flag not found")
     if flag.resolution != "open":
-        raise HTTPException(status_code=409, detail=f"flag already {flag.resolution}")
+        raise HTTPException(
+            status_code=409,
+            detail=f"Anomaly đã được xử lý (trạng thái: {flag.resolution}). Không thể thay đổi.",
+        )
     flag.resolution = body.resolution
     flag.resolved_by = body.resolved_by
     flag.resolved_at = utcnow()

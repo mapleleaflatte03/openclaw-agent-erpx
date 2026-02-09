@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import os
 import time
 from datetime import date
@@ -12,6 +13,7 @@ import streamlit as st
 
 AGENT_BASE_URL = os.getenv("UI_AGENT_BASE_URL", "http://localhost:8000").rstrip("/")
 AGENT_API_KEY = os.getenv("AGENT_API_KEY", "")
+DEBUG_UI = os.getenv("DEBUG_UI", "").lower() in ("1", "true", "yes")
 
 MINIO_ENDPOINT = os.getenv("UI_MINIO_ENDPOINT", "http://localhost:9000")
 MINIO_ACCESS_KEY = os.getenv("UI_MINIO_ACCESS_KEY", "minioadmin")
@@ -27,18 +29,38 @@ def _headers() -> dict[str, str]:
 
 
 def _get(path: str, params: dict[str, Any] | None = None) -> Any:
-    r = requests.get(f"{AGENT_BASE_URL}{path}", params=params, headers=_headers(), timeout=10)
-    r.raise_for_status()
-    return r.json()
+    try:
+        r = requests.get(f"{AGENT_BASE_URL}{path}", params=params, headers=_headers(), timeout=10)
+        r.raise_for_status()
+        return r.json()
+    except requests.exceptions.HTTPError as e:
+        detail = ""
+        with contextlib.suppress(Exception):
+            detail = e.response.json().get("detail", "")
+        raise RuntimeError(detail or f"Lỗi {e.response.status_code} khi tải dữ liệu.") from e
+    except requests.exceptions.ConnectionError as e:
+        raise RuntimeError("Không thể kết nối API backend.") from e
+    except requests.exceptions.Timeout as e:
+        raise RuntimeError("API backend phản hồi quá chậm (timeout).") from e
 
 
 def _post(path: str, json_body: dict[str, Any], idem: str | None = None) -> Any:
     headers = {"Content-Type": "application/json", **_headers()}
     if idem:
         headers["Idempotency-Key"] = idem
-    r = requests.post(f"{AGENT_BASE_URL}{path}", json=json_body, headers=headers, timeout=10)
-    r.raise_for_status()
-    return r.json()
+    try:
+        r = requests.post(f"{AGENT_BASE_URL}{path}", json=json_body, headers=headers, timeout=10)
+        r.raise_for_status()
+        return r.json()
+    except requests.exceptions.HTTPError as e:
+        detail = ""
+        with contextlib.suppress(Exception):
+            detail = e.response.json().get("detail", "")
+        raise RuntimeError(detail or f"Lỗi {e.response.status_code} khi gửi yêu cầu.") from e
+    except requests.exceptions.ConnectionError as e:
+        raise RuntimeError("Không thể kết nối API backend.") from e
+    except requests.exceptions.Timeout as e:
+        raise RuntimeError("API backend phản hồi quá chậm (timeout).") from e
 
 
 def _s3():
@@ -68,9 +90,10 @@ st.markdown(
 
 st.title("🧾 ERP-X AI Kế toán")
 st.caption("OpenClaw — Hỗ trợ đọc, phân loại & đối chiếu chứng từ (READ-ONLY)")
-# Internal endpoint shown only via expander for dev/debug
-with st.expander("⚙️ Dev / Debug info", expanded=False):
-    st.caption(f"Agent API: {AGENT_BASE_URL}")
+# Internal endpoint shown only when DEBUG_UI=true
+if DEBUG_UI:
+    with st.expander("⚙️ Dev / Debug info", expanded=False):
+        st.caption(f"Agent API: {AGENT_BASE_URL}")
 
 col1, col2 = st.columns(2)
 with col1:
@@ -128,8 +151,11 @@ with col1:
         body = {"run_type": run_type, "trigger_type": "manual", "payload": payload}
         if requested_by.strip():
             body["requested_by"] = requested_by.strip()
-        res = _post("/agent/v1/runs", body, idem or None)
-        st.success(res)
+        try:
+            res = _post("/agent/v1/runs", body, idem or None)
+            st.success(f"✅ Run đã được tạo: {res.get('run_id', '')} (status: {res.get('status', '')})")
+        except Exception as e:
+            st.error(f"❌ {e}")
 
 with col2:
     st.subheader("Upload Drop File (Event Trigger)")
@@ -142,9 +168,18 @@ with col2:
         st.success({"bucket": MINIO_BUCKET_DROP, "key": key, "file_uri": f"s3://{MINIO_BUCKET_DROP}/{key}"})
 
 st.divider()
-st.subheader("Runs")
+col_runs_hdr, col_refresh = st.columns([3, 1])
+with col_runs_hdr:
+    st.subheader("Runs")
+with col_refresh:
+    if st.button("🔄 Refresh", key="refresh_all"):
+        st.rerun()
 
-runs = _get("/agent/v1/runs", params={"limit": 50}).get("items", [])
+try:
+    runs = _get("/agent/v1/runs", params={"limit": 50}).get("items", [])
+except Exception as e:
+    st.error(f"Lỗi tải runs: {e}")
+    runs = []
 if runs:
     df = pd.DataFrame(runs)
     st.dataframe(df[["run_id", "run_type", "status", "trigger_type", "created_at"]], use_container_width=True)
@@ -154,12 +189,20 @@ if runs:
         colA, colB = st.columns(2)
         with colA:
             st.markdown("### Tasks")
-            tasks = _get("/agent/v1/tasks", params={"run_id": run_id}).get("items", [])
+            try:
+                tasks = _get("/agent/v1/tasks", params={"run_id": run_id}).get("items", [])
+            except Exception as e:
+                st.error(f"Lỗi tải tasks: {e}")
+                tasks = []
             if tasks:
                 st.dataframe(pd.DataFrame(tasks)[["task_name", "status", "error", "created_at"]], use_container_width=True)
         with colB:
             st.markdown("### Logs")
-            logs = _get("/agent/v1/logs", params={"run_id": run_id, "limit": 200}).get("items", [])
+            try:
+                logs = _get("/agent/v1/logs", params={"run_id": run_id, "limit": 200}).get("items", [])
+            except Exception as e:
+                st.error(f"Lỗi tải logs: {e}")
+                logs = []
             if logs:
                 st.dataframe(pd.DataFrame(logs)[["ts", "level", "message"]], use_container_width=True)
 else:
