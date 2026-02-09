@@ -51,6 +51,9 @@ graphs = [
   "langgraph>=1.0",
   "langchain-core>=0.3",
 ]
+ray = [
+  "ray[default]>=2.0,<3.0",
+]
 dev = [
   "pytest>=8.0",
   "pytest-asyncio>=0.23",

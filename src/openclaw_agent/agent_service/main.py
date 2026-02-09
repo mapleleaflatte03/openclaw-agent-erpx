@@ -1719,3 +1719,27 @@ def get_graph_info(graph_name: str) -> dict[str, Any]:
         raise HTTPException(status_code=501, detail="LangGraph is not installed")
     except KeyError:
         raise HTTPException(status_code=404, detail=f"Graph '{graph_name}' not found")
+
+
+# ---------------------------------------------------------------------------
+# Ray status endpoints
+# ---------------------------------------------------------------------------
+
+@app.get("/agent/v1/ray/status", dependencies=[Depends(require_api_key)])
+def ray_status() -> dict[str, Any]:
+    """Check Ray availability and cluster resources."""
+    try:
+        from openclaw_agent.kernel.swarm import is_available, get_swarm
+        available = is_available()
+        resources = {}
+        if available:
+            swarm = get_swarm()
+            if swarm.is_initialized:
+                resources = swarm.cluster_resources()
+        return {
+            "ray_available": available,
+            "initialized": available and get_swarm().is_initialized,
+            "resources": resources,
+        }
+    except ImportError:
+        return {"ray_available": False, "initialized": False, "resources": {}}
