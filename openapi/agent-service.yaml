@@ -994,8 +994,288 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /agent/v1/acct/vouchers:
+    get:
+      summary: List Acct Vouchers
+      operationId: list_acct_vouchers_agent_v1_acct_vouchers_get
+      parameters:
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          default: 100
+          title: Limit
+      - name: voucher_type
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Voucher Type
+      - name: X-API-Key
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Api-Key
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response List Acct Vouchers Agent V1 Acct Vouchers Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /agent/v1/acct/journal_proposals:
+    get:
+      summary: List Journal Proposals
+      operationId: list_journal_proposals_agent_v1_acct_journal_proposals_get
+      parameters:
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          default: 100
+          title: Limit
+      - name: status
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Status
+      - name: X-API-Key
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Api-Key
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response List Journal Proposals Agent V1 Acct Journal Proposals
+                  Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /agent/v1/acct/journal_proposals/{proposal_id}/review:
+    post:
+      summary: Review Journal Proposal
+      operationId: review_journal_proposal_agent_v1_acct_journal_proposals__proposal_id__review_post
+      parameters:
+      - name: proposal_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Proposal Id
+      - name: X-API-Key
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Api-Key
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/JournalProposalReviewIn'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Review Journal Proposal Agent V1 Acct Journal Proposals  Proposal
+                  Id  Review Post
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /agent/v1/acct/anomaly_flags:
+    get:
+      summary: List Anomaly Flags
+      operationId: list_anomaly_flags_agent_v1_acct_anomaly_flags_get
+      parameters:
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          default: 100
+          title: Limit
+      - name: resolution
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Resolution
+      - name: anomaly_type
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Anomaly Type
+      - name: X-API-Key
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Api-Key
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response List Anomaly Flags Agent V1 Acct Anomaly Flags Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /agent/v1/acct/anomaly_flags/{flag_id}/resolve:
+    post:
+      summary: Resolve Anomaly Flag
+      operationId: resolve_anomaly_flag_agent_v1_acct_anomaly_flags__flag_id__resolve_post
+      parameters:
+      - name: flag_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Flag Id
+      - name: X-API-Key
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Api-Key
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AnomalyResolveIn'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Resolve Anomaly Flag Agent V1 Acct Anomaly Flags  Flag
+                  Id  Resolve Post
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /agent/v1/acct/bank_transactions:
+    get:
+      summary: List Bank Transactions
+      operationId: list_bank_transactions_agent_v1_acct_bank_transactions_get
+      parameters:
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          default: 100
+          title: Limit
+      - name: match_status
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Match Status
+      - name: X-API-Key
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Api-Key
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response List Bank Transactions Agent V1 Acct Bank Transactions
+                  Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
 components:
   schemas:
+    AnomalyResolveIn:
+      properties:
+        resolution:
+          type: string
+          enum:
+          - resolved
+          - ignored
+          title: Resolution
+        resolved_by:
+          type: string
+          title: Resolved By
+      type: object
+      required:
+      - resolution
+      - resolved_by
+      title: AnomalyResolveIn
     ContractApprovalCreateRequest:
       properties:
         decision:
@@ -1510,6 +1790,22 @@ components:
           title: Detail
       type: object
       title: HTTPValidationError
+    JournalProposalReviewIn:
+      properties:
+        status:
+          type: string
+          enum:
+          - approved
+          - rejected
+          title: Status
+        reviewed_by:
+          type: string
+          title: Reviewed By
+      type: object
+      required:
+      - status
+      - reviewed_by
+      title: JournalProposalReviewIn
     LlmTestRequest:
       properties:
         prompt:
