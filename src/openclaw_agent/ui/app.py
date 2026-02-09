@@ -51,7 +51,7 @@ def _s3():
     )
 
 
-st.set_page_config(page_title="OpenClaw Agent Ops", layout="wide")
+st.set_page_config(page_title="ERP-X AI Kế toán – OpenClaw", layout="wide")
 
 # CSS fix: ensure DataFrame toolbar (Download CSV) is clickable above glide overlay
 st.markdown(
@@ -66,7 +66,8 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-st.title("OpenClaw Agent Ops UI")
+st.title("🧾 ERP-X AI Kế toán")
+st.caption("OpenClaw — Hỗ trợ đọc, phân loại & đối chiếu chứng từ (READ-ONLY)")
 # Internal endpoint shown only via expander for dev/debug
 with st.expander("⚙️ Dev / Debug info", expanded=False):
     st.caption(f"Agent API: {AGENT_BASE_URL}")
@@ -78,6 +79,8 @@ with col1:
     run_type = st.selectbox(
         "run_type",
         [
+            "journal_suggestion",
+            "bank_reconcile",
             "tax_export",
             "working_papers",
             "soft_checks",
@@ -163,7 +166,7 @@ else:
     st.info("No runs yet. Trigger one above.")
 
 st.divider()
-st.subheader("Contract Obligation Cases / Proposals")
+st.subheader("🧾 Bút toán đề xuất (Journal Proposals)")
 
 # P0 security: current_user_id from env, not editable by user
 _DEMO_USER_ID = os.getenv("OPENCLAW_DEMO_USER_ID", "demo-checker")
@@ -171,196 +174,307 @@ current_user = _DEMO_USER_ID
 st.markdown(f"👤 Người duyệt (demo): **{current_user}**")
 
 try:
-    cases = _get("/agent/v1/contract/cases", params={"limit": 50}).get("items", [])
+    proposals_data = _get("/agent/v1/acct/journal_proposals", params={"limit": 50})
+    proposals_acct = proposals_data.get("items", [])
 except Exception as e:
-    st.error(f"Failed to load contract cases: {e}")
-    cases = []
+    st.error(f"Lỗi tải bút toán đề xuất: {e}")
+    proposals_acct = []
 
-if not cases:
-    st.info("No contract cases yet. Trigger a `contract_obligation` run above.")
+if proposals_acct:
+    for p in proposals_acct:
+        lines_str = " | ".join(
+            f"{'Nợ' if ln.get('debit',0)>0 else 'Có'} TK {ln.get('account_code','')} "
+            f"({ln.get('account_name','')}) {ln.get('debit',0) or ln.get('credit',0):,.0f}"
+            for ln in p.get("lines", [])
+        )
+        status_icon = {"pending": "⏳", "approved": "✅", "rejected": "❌"}.get(p.get("status",""), "❓")
+        col_p1, col_p2 = st.columns([3, 1])
+        with col_p1:
+            st.markdown(
+                f"**{status_icon} {p.get('description', '')}** — "
+                f"Confidence: {p.get('confidence', 0):.0%}  \n"
+                f"📝 {lines_str}"
+            )
+        with col_p2:
+            if p.get("status") == "pending":
+                col_a, col_r = st.columns(2)
+                with col_a:
+                    if st.button("✅ Duyệt", key=f"approve_{p['id']}"):
+                        try:
+                            _post(
+                                f"/agent/v1/acct/journal_proposals/{p['id']}/review",
+                                {"status": "approved", "reviewed_by": current_user},
+                            )
+                            st.success("Đã duyệt")
+                            st.rerun()
+                        except Exception as ex:
+                            st.error(str(ex))
+                with col_r:
+                    if st.button("❌ Từ chối", key=f"reject_{p['id']}"):
+                        try:
+                            _post(
+                                f"/agent/v1/acct/journal_proposals/{p['id']}/review",
+                                {"status": "rejected", "reviewed_by": current_user},
+                            )
+                            st.success("Đã từ chối")
+                            st.rerun()
+                        except Exception as ex:
+                            st.error(str(ex))
+            else:
+                st.caption(f"{p.get('status','')} by {p.get('reviewed_by','')}")
 else:
-    case_labels = {c["case_id"]: f"{c['case_key']} ({c['status']})" for c in cases}
-    case_id = st.selectbox("case_id", list(case_labels.keys()), format_func=lambda cid: case_labels[cid])
+    st.info("Chưa có bút toán đề xuất. Chạy `journal_suggestion` ở trên.")
 
-    # --- Tier B disclaimer (Design Principles §1, §2) ---
-    st.info(
-        "⚠️ **Disclaimer:** Agent chỉ tóm tắt và gom bằng chứng để hỗ trợ đọc hiểu. "
-        "Quyết định kế toán vẫn thuộc về người dùng."
+
+st.divider()
+st.subheader("🔍 Giao dịch bất thường (Anomaly Flags)")
+
+try:
+    anomalies_data = _get("/agent/v1/acct/anomaly_flags", params={"limit": 50})
+    anomalies = anomalies_data.get("items", [])
+except Exception as e:
+    st.error(f"Lỗi tải anomaly flags: {e}")
+    anomalies = []
+
+if anomalies:
+    df_anom = pd.DataFrame(anomalies)
+    severity_colors = {"critical": "🔴", "high": "🟠", "medium": "🟡", "low": "🟢"}
+    df_anom["sev"] = df_anom["severity"].map(lambda s: severity_colors.get(s, "⚪") + " " + s)
+    st.dataframe(
+        df_anom[["sev", "anomaly_type", "description", "resolution", "created_at"]],
+        use_container_width=True,
+        column_config={"sev": "Severity"},
     )
 
-    CONFIDENCE_THRESHOLD = 0.75
-    CANDIDATE_LIMIT = 5
-
-    colC, colD = st.columns(2)
-    with colC:
-        st.markdown("### Obligations — Tier B")
-        try:
-            obligations = _get(f"/agent/v1/contract/cases/{case_id}/obligations").get("items", [])
-            if obligations:
-                high_conf = [o for o in obligations if o.get("confidence", 0) >= CONFIDENCE_THRESHOLD]
-                candidates = [o for o in obligations if o.get("confidence", 0) < CONFIDENCE_THRESHOLD]
-
-                # Sort candidates: payment > penalty > discount > other
-                _type_priority = {"payment": 0, "penalty": 1, "discount": 2}
-                candidates.sort(
-                    key=lambda o: (
-                        _type_priority.get(o.get("obligation_type", ""), 99),
-                        -(o.get("confidence", 0)),
-                    )
-                )
-
-                # --- High-confidence ---
-                st.markdown(f"#### ✅ High-confidence ({len(high_conf)})")
-                if high_conf:
-                    df_high = pd.DataFrame(high_conf)
-                    st.dataframe(
-                        df_high[
-                            [
-                                "obligation_type",
-                                "risk_level",
-                                "confidence",
-                                "amount_value",
-                                "amount_percent",
-                                "due_date",
-                            ]
-                        ],
-                        use_container_width=True,
-                    )
-                else:
-                    st.caption("Không có nghĩa vụ high-confidence.")
-
-                # --- Candidates ---
-                visible_candidates = candidates[:CANDIDATE_LIMIT]
-                hidden_count = max(0, len(candidates) - CANDIDATE_LIMIT)
-                st.markdown(f"#### 🔍 Candidates ({len(candidates)})")
-                if visible_candidates:
-                    df_cand = pd.DataFrame(visible_candidates)
-                    st.dataframe(
-                        df_cand[
-                            [
-                                "obligation_type",
-                                "risk_level",
-                                "confidence",
-                                "amount_value",
-                                "amount_percent",
-                                "due_date",
-                            ]
-                        ],
-                        use_container_width=True,
-                    )
-                    if hidden_count > 0:
-                        with st.expander(f"Xem thêm ({hidden_count})"):
-                            df_rest = pd.DataFrame(candidates[CANDIDATE_LIMIT:])
-                            st.dataframe(
-                                df_rest[
-                                    [
-                                        "obligation_type",
-                                        "risk_level",
-                                        "confidence",
-                                        "amount_value",
-                                        "amount_percent",
-                                        "due_date",
-                                    ]
-                                ],
-                                use_container_width=True,
-                            )
-                else:
-                    st.caption("Không có candidates.")
-
-                # --- Micro-feedback (explicit Đúng/Sai) ---
-                st.markdown("#### 📝 Feedback")
-                all_displayed = high_conf + visible_candidates
-                if all_displayed:
-                    fb_idx = st.selectbox(
-                        "Chọn nghĩa vụ để đánh giá",
-                        range(len(all_displayed)),
-                        format_func=lambda i: (
-                            f"{all_displayed[i]['obligation_type']} "
-                            f"(conf={all_displayed[i].get('confidence', 0):.2f})"
-                        ),
-                        key="fb_select",
-                    )
-                    fb_cols = st.columns(2)
-                    with fb_cols[0]:
-                        if st.button("✅ Đúng", key="fb_yes"):
-                            try:
-                                _post(
-                                    "/agent/v1/tier-b/feedback",
-                                    {
-                                        "obligation_id": all_displayed[fb_idx]["obligation_id"],
-                                        "feedback_type": "explicit_yes",
-                                        "user_id": current_user or None,
-                                    },
-                                )
-                                st.success("Đã ghi feedback: Đúng")
-                            except Exception as ex:
-                                st.error(f"Lỗi ghi feedback: {ex}")
-                    with fb_cols[1]:
-                        if st.button("❌ Sai", key="fb_no"):
-                            try:
-                                _post(
-                                    "/agent/v1/tier-b/feedback",
-                                    {
-                                        "obligation_id": all_displayed[fb_idx]["obligation_id"],
-                                        "feedback_type": "explicit_no",
-                                        "user_id": current_user or None,
-                                    },
-                                )
-                                st.success("Đã ghi feedback: Sai")
-                            except Exception as ex:
-                                st.error(f"Lỗi ghi feedback: {ex}")
-            else:
-                st.info("No obligations yet.")
-        except Exception as e:
-            st.error(f"Failed to load obligations: {e}")
-
-    with colD:
-        st.markdown("### Proposals")
-        try:
-            proposals = _get(f"/agent/v1/contract/cases/{case_id}/proposals").get("items", [])
-            if proposals:
-                df = pd.DataFrame(proposals)
-                cols = [
-                    "proposal_id",
-                    "proposal_type",
-                    "tier",
-                    "risk_level",
-                    "status",
-                    "created_by",
-                    "approvals_approved",
-                    "approvals_required",
-                ]
-                st.dataframe(df[cols], use_container_width=True)
-                proposal_id = st.text_input("proposal_id to act on", value=df.iloc[0]["proposal_id"])
-            else:
-                st.info("No proposals yet.")
-                proposal_id = ""
-        except Exception as e:
-            st.error(f"Failed to load proposals: {e}")
-            proposals = []
-            proposal_id = ""
-
-        if proposal_id:
-            selected = next((p for p in proposals if p["proposal_id"] == proposal_id), None)
-            if selected:
-                st.markdown("#### Proposal Details")
-                st.json(selected)
-
+    open_flags = [a for a in anomalies if a.get("resolution") == "open"]
+    if open_flags:
+        flag_id = st.selectbox(
+            "Flag ID để xử lý",
+            [f["id"] for f in open_flags],
+            format_func=lambda fid: next(
+                (f"{f['anomaly_type']}: {f['description'][:50]}..." for f in open_flags if f["id"] == fid),
+                fid,
+            ),
+        )
+        col_res, col_ign = st.columns(2)
+        with col_res:
+            if st.button("✅ Resolved"):
                 try:
-                    approvals = _get(f"/agent/v1/contract/proposals/{proposal_id}/approvals").get("items", [])
-                except Exception:
-                    approvals = []
-                if approvals:
-                    st.markdown("#### Approvals")
-                    st.dataframe(pd.DataFrame(approvals), use_container_width=True)
+                    _post(f"/agent/v1/acct/anomaly_flags/{flag_id}/resolve",
+                          {"resolution": "resolved", "resolved_by": current_user})
+                    st.success("Đã giải quyết")
+                    st.rerun()
+                except Exception as ex:
+                    st.error(str(ex))
+        with col_ign:
+            if st.button("⏭️ Ignore"):
+                try:
+                    _post(f"/agent/v1/acct/anomaly_flags/{flag_id}/resolve",
+                          {"resolution": "ignored", "resolved_by": current_user})
+                    st.success("Đã bỏ qua")
+                    st.rerun()
+                except Exception as ex:
+                    st.error(str(ex))
+else:
+    st.info("Chưa có anomaly flags. Chạy `bank_reconcile` ở trên.")
 
-                # Check if proposal is already finalized
-                proposal_status = selected.get("status", "")
-                is_finalized = proposal_status in {"approved", "rejected"}
 
-                if is_finalized:
-                    _label = "✅ Đã duyệt" if proposal_status == "approved" else "❌ Đã từ chối"
-                    st.info(f"{_label} — trạng thái: **{proposal_status}**")
+st.divider()
+# Contract review → Labs/Experimental
+with st.expander("🔬 Experimental: Contract Obligation Review (Labs)", expanded=False):
+    st.caption("Module hợp đồng — experimental, không phải core product.")
+
+    try:
+        cases = _get("/agent/v1/contract/cases", params={"limit": 50}).get("items", [])
+    except Exception as e:
+        st.error(f"Failed to load contract cases: {e}")
+        cases = []
+
+    if not cases:
+        st.info("No contract cases yet. Trigger a `contract_obligation` run above.")
+    else:
+        case_labels = {c["case_id"]: f"{c['case_key']} ({c['status']})" for c in cases}
+        case_id = st.selectbox("case_id", list(case_labels.keys()), format_func=lambda cid: case_labels[cid])
+
+        # --- Tier B disclaimer (Design Principles §1, §2) ---
+        st.info(
+            "⚠️ **Disclaimer:** Agent chỉ tóm tắt và gom bằng chứng để hỗ trợ đọc hiểu. "
+            "Quyết định kế toán vẫn thuộc về người dùng."
+        )
+
+        CONFIDENCE_THRESHOLD = 0.75
+        CANDIDATE_LIMIT = 5
+
+        colC, colD = st.columns(2)
+        with colC:
+            st.markdown("### Obligations — Tier B")
+            try:
+                obligations = _get(f"/agent/v1/contract/cases/{case_id}/obligations").get("items", [])
+                if obligations:
+                    high_conf = [o for o in obligations if o.get("confidence", 0) >= CONFIDENCE_THRESHOLD]
+                    candidates = [o for o in obligations if o.get("confidence", 0) < CONFIDENCE_THRESHOLD]
+
+                    # Sort candidates: payment > penalty > discount > other
+                    _type_priority = {"payment": 0, "penalty": 1, "discount": 2}
+                    candidates.sort(
+                        key=lambda o: (
+                            _type_priority.get(o.get("obligation_type", ""), 99),
+                            -(o.get("confidence", 0)),
+                        )
+                    )
+
+                    # --- High-confidence ---
+                    st.markdown(f"#### ✅ High-confidence ({len(high_conf)})")
+                    if high_conf:
+                        df_high = pd.DataFrame(high_conf)
+                        st.dataframe(
+                            df_high[
+                                [
+                                    "obligation_type",
+                                    "risk_level",
+                                    "confidence",
+                                    "amount_value",
+                                    "amount_percent",
+                                    "due_date",
+                                ]
+                            ],
+                            use_container_width=True,
+                        )
+                    else:
+                        st.caption("Không có nghĩa vụ high-confidence.")
+
+                    # --- Candidates ---
+                    visible_candidates = candidates[:CANDIDATE_LIMIT]
+                    hidden_count = max(0, len(candidates) - CANDIDATE_LIMIT)
+                    st.markdown(f"#### 🔍 Candidates ({len(candidates)})")
+                    if visible_candidates:
+                        df_cand = pd.DataFrame(visible_candidates)
+                        st.dataframe(
+                            df_cand[
+                                [
+                                    "obligation_type",
+                                    "risk_level",
+                                    "confidence",
+                                    "amount_value",
+                                    "amount_percent",
+                                    "due_date",
+                                ]
+                            ],
+                            use_container_width=True,
+                        )
+                        if hidden_count > 0:
+                            with st.expander(f"Xem thêm ({hidden_count})"):
+                                df_rest = pd.DataFrame(candidates[CANDIDATE_LIMIT:])
+                                st.dataframe(
+                                    df_rest[
+                                        [
+                                            "obligation_type",
+                                            "risk_level",
+                                            "confidence",
+                                            "amount_value",
+                                            "amount_percent",
+                                            "due_date",
+                                        ]
+                                    ],
+                                    use_container_width=True,
+                                )
+                    else:
+                        st.caption("Không có candidates.")
+
+                    # --- Micro-feedback (explicit Đúng/Sai) ---
+                    st.markdown("#### 📝 Feedback")
+                    all_displayed = high_conf + visible_candidates
+                    if all_displayed:
+                        fb_idx = st.selectbox(
+                            "Chọn nghĩa vụ để đánh giá",
+                            range(len(all_displayed)),
+                            format_func=lambda i: (
+                                f"{all_displayed[i]['obligation_type']} "
+                                f"(conf={all_displayed[i].get('confidence', 0):.2f})"
+                            ),
+                            key="fb_select",
+                        )
+                        fb_cols = st.columns(2)
+                        with fb_cols[0]:
+                            if st.button("✅ Đúng", key="fb_yes"):
+                                try:
+                                    _post(
+                                        "/agent/v1/tier-b/feedback",
+                                        {
+                                            "obligation_id": all_displayed[fb_idx]["obligation_id"],
+                                            "feedback_type": "explicit_yes",
+                                            "user_id": current_user or None,
+                                        },
+                                    )
+                                    st.success("Đã ghi feedback: Đúng")
+                                except Exception as ex:
+                                    st.error(f"Lỗi ghi feedback: {ex}")
+                        with fb_cols[1]:
+                            if st.button("❌ Sai", key="fb_no"):
+                                try:
+                                    _post(
+                                        "/agent/v1/tier-b/feedback",
+                                        {
+                                            "obligation_id": all_displayed[fb_idx]["obligation_id"],
+                                            "feedback_type": "explicit_no",
+                                            "user_id": current_user or None,
+                                        },
+                                    )
+                                    st.success("Đã ghi feedback: Sai")
+                                except Exception as ex:
+                                    st.error(f"Lỗi ghi feedback: {ex}")
+                else:
+                    st.info("No obligations yet.")
+            except Exception as e:
+                st.error(f"Failed to load obligations: {e}")
+
+        with colD:
+            st.markdown("### Proposals")
+            try:
+                proposals = _get(f"/agent/v1/contract/cases/{case_id}/proposals").get("items", [])
+                if proposals:
+                    df = pd.DataFrame(proposals)
+                    cols = [
+                        "proposal_id",
+                        "proposal_type",
+                        "tier",
+                        "risk_level",
+                        "status",
+                        "created_by",
+                        "approvals_approved",
+                        "approvals_required",
+                    ]
+                    st.dataframe(df[cols], use_container_width=True)
+                    proposal_id = st.text_input("proposal_id to act on", value=df.iloc[0]["proposal_id"])
+                else:
+                    st.info("No proposals yet.")
+                    proposal_id = ""
+            except Exception as e:
+                st.error(f"Failed to load proposals: {e}")
+                proposals = []
+                proposal_id = ""
+
+            if proposal_id:
+                selected = next((p for p in proposals if p["proposal_id"] == proposal_id), None)
+                if selected:
+                    st.markdown("#### Proposal Details")
+                    st.json(selected)
+
+                    try:
+                        approvals = _get(f"/agent/v1/contract/proposals/{proposal_id}/approvals").get("items", [])
+                    except Exception:
+                        approvals = []
+                    if approvals:
+                        st.markdown("#### Approvals")
+                        st.dataframe(pd.DataFrame(approvals), use_container_width=True)
+
+                    # Check if proposal is already finalized
+                    proposal_status = selected.get("status", "")
+                    is_finalized = proposal_status in {"approved", "rejected"}
+
+                    if is_finalized:
+                        _label = "✅ Đã duyệt" if proposal_status == "approved" else "❌ Đã từ chối"
+                        st.info(f"{_label} — trạng thái: **{proposal_status}**")
 
                 evidence_ack = st.checkbox("I have reviewed evidence", value=False, disabled=is_finalized)
                 note = st.text_input("note (optional)", value="", disabled=is_finalized)

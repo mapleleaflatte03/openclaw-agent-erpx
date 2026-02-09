@@ -68,9 +68,25 @@ def init_schema(conn: sqlite3.Connection) -> None:
         CREATE TABLE IF NOT EXISTS vouchers (
           voucher_id TEXT PRIMARY KEY,
           voucher_no TEXT NOT NULL,
+          voucher_type TEXT NOT NULL DEFAULT 'other',
           date TEXT NOT NULL,
           amount REAL NOT NULL,
+          currency TEXT NOT NULL DEFAULT 'VND',
+          partner_name TEXT,
+          description TEXT,
           has_attachment INTEGER NOT NULL,
+          updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS bank_transactions (
+          tx_id TEXT PRIMARY KEY,
+          tx_ref TEXT NOT NULL UNIQUE,
+          bank_account TEXT NOT NULL DEFAULT '112-VCB-001',
+          date TEXT NOT NULL,
+          amount REAL NOT NULL,
+          currency TEXT NOT NULL DEFAULT 'VND',
+          counterparty TEXT,
+          memo TEXT,
           updated_at TEXT NOT NULL
         );
 
@@ -187,16 +203,62 @@ def seed_if_empty(conn: sqlite3.Connection, seed_path: str | None = None) -> Non
             }
         )
 
+    v_types = ["sell_invoice", "buy_invoice", "receipt", "payment", "other"]
+    v_partners = ["ACME Supplies LLC", "Sunrise Services Co", "Nguyễn Văn A", None, "TechViet JSC"]
+    v_descs = [
+        "Mua văn phòng phẩm", "Thu tiền bán hàng", "Thanh toán nhà cung cấp",
+        "Hoàn ứng công tác phí", "Tạm ứng lương", "Thu tiền dịch vụ tư vấn",
+        "Phí vận chuyển", "Tiền thuê văn phòng T1", "Mua thiết bị máy tính",
+        "Phí bảo trì phần mềm",
+    ]
     vouchers = []
     for i in range(1, 31):
         v_date = period_first + timedelta(days=min(i, 27))
+        amt = float(500000 + i * 5000)
         vouchers.append(
             {
                 "voucher_id": f"VCH-{i:04d}",
                 "voucher_no": f"PT-{i:06d}",
+                "voucher_type": v_types[i % len(v_types)],
                 "date": v_date.isoformat(),
-                "amount": float(500000 + i * 5000),
+                "amount": amt,
+                "currency": "VND",
+                "partner_name": v_partners[i % len(v_partners)],
+                "description": v_descs[i % len(v_descs)],
                 "has_attachment": 0 if i % 10 == 0 else 1,
+                "updated_at": updated_at,
+            }
+        )
+
+    # Bank transactions — some match vouchers, some don't (for reconciliation demo)
+    bank_txs = []
+    for i in range(1, 26):
+        tx_date = period_first + timedelta(days=min(i, 27))
+        if i <= 20:
+            # First 20 roughly correspond to vouchers (with slight variations)
+            base_amt = float(500000 + i * 5000)
+            # Introduce amount mismatch for items 5, 15; date gap for 10
+            if i == 5:
+                amt = base_amt * 1.02  # 2% mismatch → anomaly
+            elif i == 15:
+                amt = base_amt + 50000  # large mismatch → anomaly
+            else:
+                amt = base_amt
+            if i == 10:
+                tx_date = tx_date + timedelta(days=5)  # date gap > 3 days → anomaly
+        else:
+            # Items 21-25: no matching voucher → unmatched_tx anomaly
+            amt = float(2000000 + i * 10000)
+        bank_txs.append(
+            {
+                "tx_id": f"BTX-{i:04d}",
+                "tx_ref": f"VCB-REF-{i:06d}",
+                "bank_account": "112-VCB-001",
+                "date": tx_date.isoformat(),
+                "amount": amt,
+                "currency": "VND",
+                "counterparty": v_partners[i % len(v_partners)] if i <= 20 else f"Unknown Corp {i}",
+                "memo": f"CK tham chiếu VCH-{i:04d}" if i <= 20 else "Giao dịch không rõ nguồn gốc",
                 "updated_at": updated_at,
             }
         )
@@ -261,6 +323,7 @@ def seed_if_empty(conn: sqlite3.Connection, seed_path: str | None = None) -> Non
             "journals": journals,
             "assets": assets,
             "close_calendar": close_calendar,
+            "bank_transactions": bank_txs,
         },
     )
 
@@ -337,10 +400,15 @@ def _seed_from_json(conn: sqlite3.Connection, seed: dict[str, Any]) -> None:
     for v in seed.get("vouchers", []):
         c.execute(
             """
-            INSERT INTO vouchers (voucher_id, voucher_no, date, amount, has_attachment, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO vouchers (voucher_id, voucher_no, voucher_type, date, amount, currency, partner_name, description, has_attachment, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (v["voucher_id"], v["voucher_no"], v["date"], v["amount"], int(v["has_attachment"]), v["updated_at"]),
+            (
+                v["voucher_id"], v["voucher_no"], v.get("voucher_type", "other"),
+                v["date"], v["amount"], v.get("currency", "VND"),
+                v.get("partner_name"), v.get("description"),
+                int(v["has_attachment"]), v["updated_at"],
+            ),
         )
 
     for j in seed.get("journals", []):
@@ -368,6 +436,19 @@ def _seed_from_json(conn: sqlite3.Connection, seed: dict[str, Any]) -> None:
             VALUES (?, ?, ?, ?, ?, ?)
             """,
             (t["id"], t["period"], t["task_name"], t.get("owner_user_id"), t["due_date"], t["updated_at"]),
+        )
+
+    for btx in seed.get("bank_transactions", []):
+        c.execute(
+            """
+            INSERT INTO bank_transactions (tx_id, tx_ref, bank_account, date, amount, currency, counterparty, memo, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                btx["tx_id"], btx["tx_ref"], btx.get("bank_account", "112-VCB-001"),
+                btx["date"], btx["amount"], btx.get("currency", "VND"),
+                btx.get("counterparty"), btx.get("memo"), btx["updated_at"],
+            ),
         )
 
     conn.commit()

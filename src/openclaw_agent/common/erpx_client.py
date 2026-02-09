@@ -106,5 +106,8 @@ class ErpXClient:
     def get_close_calendar(self, period: str) -> list[dict]:
         return list(self._get("/erp/v1/close/calendar", params={"period": period}))
 
+    def get_bank_transactions(self, updated_after: str | None = None) -> list[dict]:
+        return list(self._get("/erp/v1/bank_transactions", params={"updated_after": updated_after} if updated_after else None))
+
     def close(self) -> None:
         self._client.close()

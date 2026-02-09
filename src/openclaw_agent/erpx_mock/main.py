@@ -178,3 +178,14 @@ def get_assets(updated_after: str | None = None, conn=Depends(get_conn)) -> list
 def get_close_calendar(period: str, conn=Depends(get_conn)) -> list[dict[str, Any]]:
     q = "SELECT * FROM close_calendar WHERE period = ? ORDER BY due_date ASC"
     return rows_to_dicts(conn.execute(q, (period,)).fetchall())
+
+
+@app.get("/erp/v1/bank_transactions", dependencies=[Depends(auth_dep)])
+def get_bank_transactions(updated_after: str | None = None, conn=Depends(get_conn)) -> list[dict[str, Any]]:
+    q = "SELECT * FROM bank_transactions"
+    params: tuple[Any, ...] = ()
+    if updated_after:
+        q += " WHERE updated_at > ?"
+        params = (updated_after,)
+    q += " ORDER BY date DESC"
+    return rows_to_dicts(conn.execute(q, params).fetchall())

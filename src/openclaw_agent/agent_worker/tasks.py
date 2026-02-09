@@ -61,6 +61,8 @@ from openclaw_agent.common.utils import (
     sha256_text,
     utcnow,
 )
+from openclaw_agent.flows.bank_reconcile import flow_bank_reconcile
+from openclaw_agent.flows.journal_suggestion import flow_journal_suggestion
 
 settings = get_settings()
 configure_logging(settings.log_level)
@@ -359,6 +361,10 @@ def dispatch_run(self: Task, run_id: str) -> dict[str, Any]:
             stats = _wf_kb_index(run_id)
         elif run_type == "contract_obligation":
             stats = _wf_contract_obligation(run_id)
+        elif run_type == "journal_suggestion":
+            stats = _wf_journal_suggestion(run_id)
+        elif run_type == "bank_reconcile":
+            stats = _wf_bank_reconcile(run_id)
         else:
             raise RuntimeError(f"unsupported run_type: {run_type}")
 
@@ -2443,3 +2449,60 @@ def _wf_contract_obligation(run_id: str) -> dict[str, Any]:
         }
     finally:
         shutil.rmtree(workdir, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
+# Accounting flows
+# ---------------------------------------------------------------------------
+
+
+def _wf_journal_suggestion(run_id: str) -> dict[str, Any]:
+    """Fetch vouchers from ERP mock → classify → create journal proposals."""
+    _db_log(run_id, None, "info", "journal_suggestion_start", {})
+    _task_start(run_id, "fetch_vouchers", {})
+
+    try:
+        client = ErpXClient(settings)
+        vouchers = client.get_vouchers()
+    except Exception as e:
+        _task_finish(run_id, "fetch_vouchers", "failed", detail=str(e))
+        raise
+    _task_finish(run_id, "fetch_vouchers", "success", detail=f"fetched {len(vouchers)} vouchers")
+
+    _task_start(run_id, "create_journal_proposals", {})
+    try:
+        with db_session(engine) as s:
+            stats = flow_journal_suggestion(s, vouchers, run_id)
+            s.commit()
+    except Exception as e:
+        _task_finish(run_id, "create_journal_proposals", "failed", detail=str(e))
+        raise
+    _task_finish(run_id, "create_journal_proposals", "success", detail=str(stats))
+    return stats
+
+
+def _wf_bank_reconcile(run_id: str) -> dict[str, Any]:
+    """Fetch bank txs + vouchers from ERP mock → match → flag anomalies."""
+    _db_log(run_id, None, "info", "bank_reconcile_start", {})
+    _task_start(run_id, "fetch_bank_data", {})
+
+    try:
+        client = ErpXClient(settings)
+        bank_txs = client.get_bank_transactions()
+        vouchers = client.get_vouchers()
+    except Exception as e:
+        _task_finish(run_id, "fetch_bank_data", "failed", detail=str(e))
+        raise
+    _task_finish(run_id, "fetch_bank_data", "success",
+                 detail=f"fetched {len(bank_txs)} bank txs, {len(vouchers)} vouchers")
+
+    _task_start(run_id, "reconcile_and_flag", {})
+    try:
+        with db_session(engine) as s:
+            stats = flow_bank_reconcile(s, bank_txs, vouchers, run_id)
+            s.commit()
+    except Exception as e:
+        _task_finish(run_id, "reconcile_and_flag", "failed", detail=str(e))
+        raise
+    _task_finish(run_id, "reconcile_and_flag", "success", detail=str(stats))
+    return stats

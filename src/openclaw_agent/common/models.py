@@ -484,3 +484,122 @@ class TierBFeedback(Base):
     created_at: Mapped[sa.DateTime] = mapped_column(
         sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False, index=True
     )
+
+
+# ---------------------------------------------------------------------------
+# Accounting domain  (OpenClaw ERP-X AI Kế toán)
+# ---------------------------------------------------------------------------
+
+class AcctVoucher(Base):
+    """Cached copy of an ERP voucher – READ-ONLY mirror for analysis."""
+    __tablename__ = "acct_vouchers"
+
+    id: Mapped[str] = mapped_column(sa.String(36), primary_key=True)
+    erp_voucher_id: Mapped[str] = mapped_column(sa.String(64), unique=True, index=True)
+    voucher_no: Mapped[str] = mapped_column(sa.String(64), index=True)
+    voucher_type: Mapped[str] = mapped_column(
+        sa.String(32), index=True,
+        comment="sell_invoice|buy_invoice|receipt|payment|other",
+    )
+    date: Mapped[str] = mapped_column(sa.String(10), index=True, comment="YYYY-MM-DD")
+    amount: Mapped[float] = mapped_column(sa.Float, nullable=False)
+    currency: Mapped[str] = mapped_column(sa.String(3), server_default="VND")
+    partner_name: Mapped[str | None] = mapped_column(sa.String(256), nullable=True)
+    description: Mapped[str | None] = mapped_column(sa.Text, nullable=True)
+    has_attachment: Mapped[bool] = mapped_column(sa.Boolean, server_default="0")
+    synced_at: Mapped[sa.DateTime] = mapped_column(
+        sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False,
+    )
+    run_id: Mapped[str | None] = mapped_column(sa.String(36), nullable=True, index=True)
+
+
+class AcctBankTransaction(Base):
+    """Bank statement line – READ-ONLY mirror for reconciliation."""
+    __tablename__ = "acct_bank_transactions"
+
+    id: Mapped[str] = mapped_column(sa.String(36), primary_key=True)
+    bank_tx_ref: Mapped[str] = mapped_column(sa.String(128), unique=True, index=True)
+    bank_account: Mapped[str] = mapped_column(sa.String(64), index=True)
+    date: Mapped[str] = mapped_column(sa.String(10), index=True, comment="YYYY-MM-DD")
+    amount: Mapped[float] = mapped_column(sa.Float, nullable=False)
+    currency: Mapped[str] = mapped_column(sa.String(3), server_default="VND")
+    counterparty: Mapped[str | None] = mapped_column(sa.String(256), nullable=True)
+    memo: Mapped[str | None] = mapped_column(sa.Text, nullable=True)
+    matched_voucher_id: Mapped[str | None] = mapped_column(sa.String(36), nullable=True, index=True)
+    match_status: Mapped[str] = mapped_column(
+        sa.String(16), server_default="unmatched", index=True,
+        comment="unmatched|matched|anomaly",
+    )
+    synced_at: Mapped[sa.DateTime] = mapped_column(
+        sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False,
+    )
+    run_id: Mapped[str | None] = mapped_column(sa.String(36), nullable=True, index=True)
+
+
+class AcctJournalProposal(Base):
+    """AI-suggested journal entry – awaits human approve/reject (READ-ONLY principle)."""
+    __tablename__ = "acct_journal_proposals"
+
+    id: Mapped[str] = mapped_column(sa.String(36), primary_key=True)
+    voucher_id: Mapped[str] = mapped_column(sa.String(36), index=True, comment="FK to acct_vouchers.id")
+    description: Mapped[str | None] = mapped_column(sa.Text, nullable=True)
+    confidence: Mapped[float] = mapped_column(sa.Float, nullable=False, comment="0.0–1.0")
+    reasoning: Mapped[str | None] = mapped_column(sa.Text, nullable=True, comment="LLM reasoning trace")
+    status: Mapped[str] = mapped_column(
+        sa.String(16), server_default="pending", index=True,
+        comment="pending|approved|rejected",
+    )
+    reviewed_by: Mapped[str | None] = mapped_column(sa.String(64), nullable=True)
+    reviewed_at: Mapped[sa.DateTime | None] = mapped_column(sa.DateTime(timezone=True), nullable=True)
+    created_at: Mapped[sa.DateTime] = mapped_column(
+        sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False, index=True,
+    )
+    run_id: Mapped[str | None] = mapped_column(sa.String(36), nullable=True, index=True)
+
+    lines: Mapped[list[AcctJournalLine]] = relationship(
+        "AcctJournalLine", back_populates="proposal", cascade="all, delete-orphan",
+    )
+
+
+class AcctJournalLine(Base):
+    """A single debit/credit line inside a journal proposal."""
+    __tablename__ = "acct_journal_lines"
+
+    id: Mapped[str] = mapped_column(sa.String(36), primary_key=True)
+    proposal_id: Mapped[str] = mapped_column(
+        sa.String(36), sa.ForeignKey("acct_journal_proposals.id"), nullable=False, index=True,
+    )
+    account_code: Mapped[str] = mapped_column(sa.String(20), nullable=False, comment="e.g. 111, 131, 511")
+    account_name: Mapped[str | None] = mapped_column(sa.String(256), nullable=True)
+    debit: Mapped[float] = mapped_column(sa.Float, server_default="0")
+    credit: Mapped[float] = mapped_column(sa.Float, server_default="0")
+
+    proposal: Mapped[AcctJournalProposal] = relationship("AcctJournalProposal", back_populates="lines")
+
+
+class AcctAnomalyFlag(Base):
+    """Anomaly detected during bank reconciliation or soft-checks."""
+    __tablename__ = "acct_anomaly_flags"
+
+    id: Mapped[str] = mapped_column(sa.String(36), primary_key=True)
+    anomaly_type: Mapped[str] = mapped_column(
+        sa.String(32), index=True,
+        comment="amount_mismatch|date_gap|unmatched_tx|duplicate_voucher|other",
+    )
+    severity: Mapped[str] = mapped_column(
+        sa.String(16), server_default="medium", index=True,
+        comment="low|medium|high|critical",
+    )
+    description: Mapped[str | None] = mapped_column(sa.Text, nullable=True)
+    voucher_id: Mapped[str | None] = mapped_column(sa.String(36), nullable=True, index=True)
+    bank_tx_id: Mapped[str | None] = mapped_column(sa.String(36), nullable=True, index=True)
+    resolution: Mapped[str] = mapped_column(
+        sa.String(16), server_default="open", index=True,
+        comment="open|resolved|ignored",
+    )
+    resolved_by: Mapped[str | None] = mapped_column(sa.String(64), nullable=True)
+    resolved_at: Mapped[sa.DateTime | None] = mapped_column(sa.DateTime(timezone=True), nullable=True)
+    created_at: Mapped[sa.DateTime] = mapped_column(
+        sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False, index=True,
+    )
+    run_id: Mapped[str | None] = mapped_column(sa.String(36), nullable=True, index=True)

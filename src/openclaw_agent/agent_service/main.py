@@ -19,6 +19,11 @@ from openclaw_agent.agent_worker.celery_app import celery_app
 from openclaw_agent.common.db import db_session, make_engine
 from openclaw_agent.common.logging import configure_logging, get_logger
 from openclaw_agent.common.models import (
+    AcctAnomalyFlag,
+    AcctBankTransaction,
+    AcctJournalLine,
+    AcctJournalProposal,
+    AcctVoucher,
     AgentApproval,
     AgentAttachment,
     AgentAuditLog,
@@ -1293,6 +1298,191 @@ def list_contract_audit_log(
                 "after": r.after,
                 "run_id": r.run_id,
                 "ts": r.ts,
+            }
+            for r in rows
+        ]
+    }
+
+
+# ---------------------------------------------------------------------------
+# Accounting endpoints  (ERP-X AI Kế toán)
+# ---------------------------------------------------------------------------
+
+
+@app.get("/agent/v1/acct/vouchers", dependencies=[Depends(require_api_key)])
+def list_acct_vouchers(
+    limit: int = 100,
+    voucher_type: str | None = None,
+    session: Session = Depends(get_session),
+) -> dict[str, Any]:
+    q = select(AcctVoucher).order_by(AcctVoucher.synced_at.desc()).limit(min(limit, 500))
+    if voucher_type:
+        q = q.where(AcctVoucher.voucher_type == voucher_type)
+    rows = session.execute(q).scalars().all()
+    return {
+        "items": [
+            {
+                "id": r.id,
+                "erp_voucher_id": r.erp_voucher_id,
+                "voucher_no": r.voucher_no,
+                "voucher_type": r.voucher_type,
+                "date": r.date,
+                "amount": r.amount,
+                "currency": r.currency,
+                "partner_name": r.partner_name,
+                "description": r.description,
+                "has_attachment": r.has_attachment,
+                "synced_at": r.synced_at,
+                "run_id": r.run_id,
+            }
+            for r in rows
+        ]
+    }
+
+
+@app.get("/agent/v1/acct/journal_proposals", dependencies=[Depends(require_api_key)])
+def list_journal_proposals(
+    limit: int = 100,
+    status: str | None = None,
+    session: Session = Depends(get_session),
+) -> dict[str, Any]:
+    q = select(AcctJournalProposal).order_by(AcctJournalProposal.created_at.desc()).limit(min(limit, 500))
+    if status:
+        q = q.where(AcctJournalProposal.status == status)
+    rows = session.execute(q).scalars().all()
+    items = []
+    for r in rows:
+        lines_q = select(AcctJournalLine).where(AcctJournalLine.proposal_id == r.id)
+        lines = session.execute(lines_q).scalars().all()
+        items.append({
+            "id": r.id,
+            "voucher_id": r.voucher_id,
+            "description": r.description,
+            "confidence": r.confidence,
+            "reasoning": r.reasoning,
+            "status": r.status,
+            "reviewed_by": r.reviewed_by,
+            "reviewed_at": r.reviewed_at,
+            "created_at": r.created_at,
+            "run_id": r.run_id,
+            "lines": [
+                {
+                    "id": ln.id,
+                    "account_code": ln.account_code,
+                    "account_name": ln.account_name,
+                    "debit": ln.debit,
+                    "credit": ln.credit,
+                }
+                for ln in lines
+            ],
+        })
+    return {"items": items}
+
+
+class JournalProposalReviewIn(BaseModel):
+    status: Literal["approved", "rejected"]
+    reviewed_by: str
+
+
+@app.post("/agent/v1/acct/journal_proposals/{proposal_id}/review", dependencies=[Depends(require_api_key)])
+def review_journal_proposal(
+    proposal_id: str,
+    body: JournalProposalReviewIn,
+    session: Session = Depends(get_session),
+) -> dict[str, Any]:
+    proposal = session.get(AcctJournalProposal, proposal_id)
+    if not proposal:
+        raise HTTPException(status_code=404, detail="proposal not found")
+    if proposal.status != "pending":
+        raise HTTPException(status_code=409, detail=f"proposal already {proposal.status}")
+    proposal.status = body.status
+    proposal.reviewed_by = body.reviewed_by
+    proposal.reviewed_at = utcnow()
+    session.commit()
+    return {"id": proposal.id, "status": proposal.status, "reviewed_by": proposal.reviewed_by}
+
+
+@app.get("/agent/v1/acct/anomaly_flags", dependencies=[Depends(require_api_key)])
+def list_anomaly_flags(
+    limit: int = 100,
+    resolution: str | None = None,
+    anomaly_type: str | None = None,
+    session: Session = Depends(get_session),
+) -> dict[str, Any]:
+    q = select(AcctAnomalyFlag).order_by(AcctAnomalyFlag.created_at.desc()).limit(min(limit, 500))
+    if resolution:
+        q = q.where(AcctAnomalyFlag.resolution == resolution)
+    if anomaly_type:
+        q = q.where(AcctAnomalyFlag.anomaly_type == anomaly_type)
+    rows = session.execute(q).scalars().all()
+    return {
+        "items": [
+            {
+                "id": r.id,
+                "anomaly_type": r.anomaly_type,
+                "severity": r.severity,
+                "description": r.description,
+                "voucher_id": r.voucher_id,
+                "bank_tx_id": r.bank_tx_id,
+                "resolution": r.resolution,
+                "resolved_by": r.resolved_by,
+                "resolved_at": r.resolved_at,
+                "created_at": r.created_at,
+                "run_id": r.run_id,
+            }
+            for r in rows
+        ]
+    }
+
+
+class AnomalyResolveIn(BaseModel):
+    resolution: Literal["resolved", "ignored"]
+    resolved_by: str
+
+
+@app.post("/agent/v1/acct/anomaly_flags/{flag_id}/resolve", dependencies=[Depends(require_api_key)])
+def resolve_anomaly_flag(
+    flag_id: str,
+    body: AnomalyResolveIn,
+    session: Session = Depends(get_session),
+) -> dict[str, Any]:
+    flag = session.get(AcctAnomalyFlag, flag_id)
+    if not flag:
+        raise HTTPException(status_code=404, detail="anomaly flag not found")
+    if flag.resolution != "open":
+        raise HTTPException(status_code=409, detail=f"flag already {flag.resolution}")
+    flag.resolution = body.resolution
+    flag.resolved_by = body.resolved_by
+    flag.resolved_at = utcnow()
+    session.commit()
+    return {"id": flag.id, "resolution": flag.resolution, "resolved_by": flag.resolved_by}
+
+
+@app.get("/agent/v1/acct/bank_transactions", dependencies=[Depends(require_api_key)])
+def list_bank_transactions(
+    limit: int = 100,
+    match_status: str | None = None,
+    session: Session = Depends(get_session),
+) -> dict[str, Any]:
+    q = select(AcctBankTransaction).order_by(AcctBankTransaction.synced_at.desc()).limit(min(limit, 500))
+    if match_status:
+        q = q.where(AcctBankTransaction.match_status == match_status)
+    rows = session.execute(q).scalars().all()
+    return {
+        "items": [
+            {
+                "id": r.id,
+                "bank_tx_ref": r.bank_tx_ref,
+                "bank_account": r.bank_account,
+                "date": r.date,
+                "amount": r.amount,
+                "currency": r.currency,
+                "counterparty": r.counterparty,
+                "memo": r.memo,
+                "matched_voucher_id": r.matched_voucher_id,
+                "match_status": r.match_status,
+                "synced_at": r.synced_at,
+                "run_id": r.run_id,
             }
             for r in rows
         ]
