@@ -70,7 +70,8 @@ from openclaw_agent.flows.tax_report import flow_tax_report
 
 # LangGraph integration — graceful degradation if not installed
 try:
-    from openclaw_agent.graphs.registry import get_graph, is_available as _graphs_available
+    from openclaw_agent.graphs.registry import get_graph
+    from openclaw_agent.graphs.registry import is_available as _graphs_available
 except ImportError:  # pragma: no cover
     def get_graph(name: str):  # type: ignore[misc]
         raise ImportError("langgraph not installed")

@@ -37,7 +37,7 @@ jobs:
       - name: Install Python deps
         run: |
           python -m pip install -U pip
-          python -m pip install -e '.[dev,ui]'
+          python -m pip install -e '.[dev,ui,graphs,ray]'
 
       - name: Gate (lint/test/openapi)
         run: |

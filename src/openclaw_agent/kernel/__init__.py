@@ -11,7 +11,8 @@ Design:
 
 from openclaw_agent.kernel.registry import Skill, SkillRegistry
 from openclaw_agent.kernel.runner import FlowRunner, FlowStep
-from openclaw_agent.kernel.swarm import RaySwarm, get_swarm, is_available as ray_available
+from openclaw_agent.kernel.swarm import RaySwarm, get_swarm
+from openclaw_agent.kernel.swarm import is_available as ray_available
 
 __all__ = [
     "Skill", "SkillRegistry",

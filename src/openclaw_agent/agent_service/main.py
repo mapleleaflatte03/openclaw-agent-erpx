@@ -1716,9 +1716,9 @@ def get_graph_info(graph_name: str) -> dict[str, Any]:
             "compiled": True,
         }
     except ImportError:
-        raise HTTPException(status_code=501, detail="LangGraph is not installed")
+        raise HTTPException(status_code=501, detail="LangGraph is not installed") from None
     except KeyError:
-        raise HTTPException(status_code=404, detail=f"Graph '{graph_name}' not found")
+        raise HTTPException(status_code=404, detail=f"Graph '{graph_name}' not found") from None
 
 
 # ---------------------------------------------------------------------------
@@ -1729,7 +1729,7 @@ def get_graph_info(graph_name: str) -> dict[str, Any]:
 def ray_status() -> dict[str, Any]:
     """Check Ray availability and cluster resources."""
     try:
-        from openclaw_agent.kernel.swarm import is_available, get_swarm
+        from openclaw_agent.kernel.swarm import get_swarm, is_available
         available = is_available()
         resources = {}
         if available:

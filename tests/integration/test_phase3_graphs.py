@@ -11,6 +11,10 @@ Tests:
 """
 from __future__ import annotations
 
+import pytest
+
+langgraph = pytest.importorskip("langgraph", reason="langgraph not installed")
+
 
 def test_registry_list_graphs():
     """list_graphs() must return all 5 accounting graph names."""
@@ -40,7 +44,6 @@ def test_registry_get_graph_compiles():
 def test_registry_get_graph_unknown_raises():
     """get_graph() should raise KeyError for unknown names."""
     from openclaw_agent.graphs.registry import get_graph
-    import pytest
     with pytest.raises(KeyError):
         get_graph("nonexistent_workflow_xyz")
 
@@ -58,6 +61,7 @@ def test_state_has_expected_keys():
 def test_api_list_graphs():
     """GET /agent/v1/graphs should return langgraph_available + graphs list."""
     from fastapi.testclient import TestClient
+
     from openclaw_agent.agent_service.main import app
 
     client = TestClient(app, raise_server_exceptions=False)
@@ -74,6 +78,7 @@ def test_api_list_graphs():
 def test_api_get_graph_info():
     """GET /agent/v1/graphs/journal_suggestion should return graph info."""
     from fastapi.testclient import TestClient
+
     from openclaw_agent.agent_service.main import app
 
     client = TestClient(app, raise_server_exceptions=False)
@@ -89,6 +94,7 @@ def test_api_get_graph_info():
 def test_api_get_graph_not_found():
     """GET /agent/v1/graphs/nonexistent should return 404."""
     from fastapi.testclient import TestClient
+
     from openclaw_agent.agent_service.main import app
 
     client = TestClient(app, raise_server_exceptions=False)

@@ -12,6 +12,10 @@ Tests:
 """
 from __future__ import annotations
 
+import pytest
+
+ray = pytest.importorskip("ray", reason="ray not installed")
+
 
 def test_swarm_has_ray():
     """_has_ray() should return True when ray is installed."""
@@ -29,7 +33,6 @@ def test_swarm_ray_swarm_instantiate():
 
 def test_swarm_is_available():
     """is_available() should return bool based on USE_RAY env var."""
-    import os
     from openclaw_agent.kernel.swarm import is_available
     # In test env, USE_RAY is typically not set
     result = is_available()
@@ -86,6 +89,7 @@ def test_parallel_map_sequential():
 def test_api_ray_status():
     """GET /agent/v1/ray/status should return valid response."""
     from fastapi.testclient import TestClient
+
     from openclaw_agent.agent_service.main import app
 
     client = TestClient(app, raise_server_exceptions=False)
