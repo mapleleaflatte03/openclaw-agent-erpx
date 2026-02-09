@@ -506,7 +506,21 @@ class AcctVoucher(Base):
     currency: Mapped[str] = mapped_column(sa.String(3), server_default="VND")
     partner_name: Mapped[str | None] = mapped_column(sa.String(256), nullable=True)
     description: Mapped[str | None] = mapped_column(sa.Text, nullable=True)
+    partner_tax_code: Mapped[str | None] = mapped_column(sa.String(32), nullable=True)
     has_attachment: Mapped[bool] = mapped_column(sa.Boolean, server_default="0")
+    raw_payload: Mapped[dict | None] = mapped_column(sa.JSON, nullable=True, comment="Original document JSON")
+    source: Mapped[str | None] = mapped_column(
+        sa.String(64), nullable=True, server_default="erpx",
+        comment="mock_vn_fixture|erpx|ocr_upload",
+    )
+    type_hint: Mapped[str | None] = mapped_column(
+        sa.String(32), nullable=True,
+        comment="invoice_vat|cash_disbursement|cash_receipt|payroll|other",
+    )
+    classification_tag: Mapped[str | None] = mapped_column(
+        sa.String(32), nullable=True, index=True,
+        comment="PURCHASE_INVOICE|SALES_INVOICE|CASH_DISBURSEMENT|CASH_RECEIPT|PAYROLL|FIXED_ASSET|OTHER",
+    )
     synced_at: Mapped[sa.DateTime] = mapped_column(
         sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False,
     )

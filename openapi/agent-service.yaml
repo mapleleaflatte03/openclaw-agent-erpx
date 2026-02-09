@@ -996,24 +996,34 @@ paths:
                 $ref: '#/components/schemas/HTTPValidationError'
   /agent/v1/acct/vouchers:
     get:
-      summary: List Acct Vouchers
-      operationId: list_acct_vouchers_agent_v1_acct_vouchers_get
+      summary: List Vouchers
+      description: List AcctVoucher rows with optional filter by classification_tag
+        or source.
+      operationId: list_vouchers_agent_v1_acct_vouchers_get
       parameters:
-      - name: limit
-        in: query
-        required: false
-        schema:
-          type: integer
-          default: 100
-          title: Limit
-      - name: voucher_type
+      - name: classification_tag
         in: query
         required: false
         schema:
           anyOf:
           - type: string
           - type: 'null'
-          title: Voucher Type
+          title: Classification Tag
+      - name: source
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Source
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          default: 50
+          title: Limit
       - name: X-API-Key
         in: header
         required: false
@@ -1030,7 +1040,7 @@ paths:
               schema:
                 type: object
                 additionalProperties: true
-                title: Response List Acct Vouchers Agent V1 Acct Vouchers Get
+                title: Response List Vouchers Agent V1 Acct Vouchers Get
         '422':
           description: Validation Error
           content:
@@ -1522,6 +1532,73 @@ paths:
                 type: object
                 additionalProperties: true
                 title: Response List Qna Audits Agent V1 Acct Qna Audits Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /agent/v1/acct/voucher_classification_stats:
+    get:
+      summary: Voucher Classification Stats
+      description: Aggregate voucher counts grouped by classification_tag.
+      operationId: voucher_classification_stats_agent_v1_acct_voucher_classification_stats_get
+      parameters:
+      - name: X-API-Key
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Api-Key
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Voucher Classification Stats Agent V1 Acct Voucher
+                  Classification Stats Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /agent/v1/acct/qna:
+    post:
+      summary: Accounting Qna
+      description: Answer an accounting question based on Acct* data.
+      operationId: accounting_qna_agent_v1_acct_qna_post
+      parameters:
+      - name: X-API-Key
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Api-Key
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+              title: Body
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Accounting Qna Agent V1 Acct Qna Post
         '422':
           description: Validation Error
           content:

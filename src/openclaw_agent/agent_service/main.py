@@ -341,6 +341,8 @@ def create_run(
         "journal_suggestion",
         "bank_reconcile",
         "cashflow_forecast",
+        "voucher_ingest",
+        "voucher_classify",
     }
     if run_type not in _VALID_RUN_TYPES:
         raise HTTPException(status_code=400, detail=f"invalid run_type: '{run_type}'. Valid: {sorted(_VALID_RUN_TYPES)}")
@@ -404,6 +406,8 @@ def create_run(
         "journal_suggestion": "default",
         "bank_reconcile": "default",
         "cashflow_forecast": "default",
+        "voucher_ingest": "default",
+        "voucher_classify": "default",
     }
     celery_app.send_task(
         "openclaw_agent.agent_worker.tasks.dispatch_run",
@@ -1680,6 +1684,106 @@ def list_qna_audits(
             }
             for r in rows
         ]
+    }
+
+
+# ---------------------------------------------------------------------------
+# Phase 5 & 6: Voucher listing + classification stats
+# ---------------------------------------------------------------------------
+
+@app.get("/agent/v1/acct/vouchers", dependencies=[Depends(require_api_key)])
+def list_vouchers(
+    classification_tag: str | None = None,
+    source: str | None = None,
+    limit: int = 50,
+    session: Session = Depends(get_session),
+) -> dict[str, Any]:
+    """List AcctVoucher rows with optional filter by classification_tag or source."""
+    q = select(AcctVoucher).order_by(AcctVoucher.synced_at.desc()).limit(min(limit, 200))
+    if classification_tag:
+        q = q.where(AcctVoucher.classification_tag == classification_tag)
+    if source:
+        q = q.where(AcctVoucher.source == source)
+    rows = session.execute(q).scalars().all()
+    return {
+        "items": [
+            {
+                "id": r.id,
+                "voucher_no": r.voucher_no,
+                "voucher_type": r.voucher_type,
+                "date": r.date,
+                "amount": r.amount,
+                "currency": r.currency,
+                "partner_name": r.partner_name,
+                "partner_tax_code": getattr(r, "partner_tax_code", None),
+                "description": r.description,
+                "source": getattr(r, "source", None),
+                "type_hint": getattr(r, "type_hint", None),
+                "classification_tag": getattr(r, "classification_tag", None),
+                "has_attachment": r.has_attachment,
+                "synced_at": r.synced_at,
+                "run_id": r.run_id,
+            }
+            for r in rows
+        ]
+    }
+
+
+@app.get("/agent/v1/acct/voucher_classification_stats", dependencies=[Depends(require_api_key)])
+def voucher_classification_stats(
+    session: Session = Depends(get_session),
+) -> dict[str, Any]:
+    """Aggregate voucher counts grouped by classification_tag."""
+    from sqlalchemy import func
+    q = (
+        select(AcctVoucher.classification_tag, func.count(AcctVoucher.id))
+        .group_by(AcctVoucher.classification_tag)
+    )
+    rows = session.execute(q).all()
+    return {
+        "stats": [
+            {"classification_tag": tag or "UNCLASSIFIED", "count": cnt}
+            for tag, cnt in rows
+        ]
+    }
+
+
+# ---------------------------------------------------------------------------
+# Phase 7: Q&A endpoint
+# ---------------------------------------------------------------------------
+
+@app.post("/agent/v1/acct/qna", dependencies=[Depends(require_api_key)])
+def accounting_qna(
+    body: dict[str, Any],
+    session: Session = Depends(get_session),
+) -> dict[str, Any]:
+    """Answer an accounting question based on Acct* data."""
+    from openclaw_agent.flows.qna_accounting import answer_question
+
+    question = body.get("question", "").strip()
+    if not question:
+        raise HTTPException(status_code=400, detail="question is required")
+
+    result = answer_question(session, question)
+
+    # Persist audit
+    qna_row = AcctQnaAudit(
+        id=new_uuid(),
+        question=question,
+        answer=result["answer"],
+        sources=result.get("meta"),
+        user_id=body.get("user_id"),
+    )
+    session.add(qna_row)
+    session.commit()
+
+    return {
+        "answer": result["answer"],
+        "meta": {
+            "source": "acct_db",
+            "qna_id": qna_row.id,
+            "used_models": result.get("used_models", []),
+        },
     }
 
 

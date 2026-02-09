@@ -67,6 +67,7 @@ from openclaw_agent.flows.cashflow_forecast import flow_cashflow_forecast
 from openclaw_agent.flows.journal_suggestion import flow_journal_suggestion
 from openclaw_agent.flows.soft_checks_acct import flow_soft_checks_acct
 from openclaw_agent.flows.tax_report import flow_tax_report
+from openclaw_agent.flows.voucher_ingest import flow_voucher_ingest
 
 # LangGraph integration — graceful degradation if not installed
 try:
@@ -417,6 +418,10 @@ def dispatch_run(self: Task, run_id: str) -> dict[str, Any]:
             stats = _wf_bank_reconcile(run_id)
         elif run_type == "cashflow_forecast":
             stats = _wf_cashflow_forecast(run_id)
+        elif run_type == "voucher_ingest":
+            stats = _wf_voucher_ingest(run_id)
+        elif run_type == "voucher_classify":
+            stats = _wf_voucher_classify(run_id)
         else:
             raise RuntimeError(f"unsupported run_type: {run_type}")
 
@@ -2631,4 +2636,52 @@ def _wf_cashflow_forecast(run_id: str) -> dict[str, Any]:
         raise
     _task_finish(run_id, "build_forecast", "success", output_ref={"detail": str(stats)})
     _update_run(run_id, cursor_out=stats)
+    return stats
+
+
+# ---------------------------------------------------------------------------
+# Phase 5: Voucher Ingest
+# ---------------------------------------------------------------------------
+
+
+def _wf_voucher_ingest(run_id: str) -> dict[str, Any]:
+    """Ingest VN documents (mock or future OCR) → AcctVoucher mirror."""
+    _db_log(run_id, None, "info", "voucher_ingest_start", {})
+    payload = _run_payload(run_id)
+
+    _task_start(run_id, "ingest_documents", payload)
+    try:
+        with db_session(engine) as s:
+            stats = flow_voucher_ingest(s, run_id, payload)
+            s.commit()
+    except Exception as e:
+        _task_finish(run_id, "ingest_documents", "failed", error=str(e))
+        raise
+    _task_finish(run_id, "ingest_documents", "success",
+                 output_ref={"count_new_vouchers": stats.get("count_new_vouchers", 0)})
+    return stats
+
+
+# ---------------------------------------------------------------------------
+# Phase 6: Voucher Classification
+# ---------------------------------------------------------------------------
+
+
+def _wf_voucher_classify(run_id: str) -> dict[str, Any]:
+    """Classify untagged AcctVouchers with rule-based tags."""
+    from openclaw_agent.flows.voucher_classify import flow_voucher_classify
+
+    _db_log(run_id, None, "info", "voucher_classify_start", {})
+    payload = _run_payload(run_id)
+
+    _task_start(run_id, "classify_vouchers", payload)
+    try:
+        with db_session(engine) as s:
+            stats = flow_voucher_classify(s, run_id, payload)
+            s.commit()
+    except Exception as e:
+        _task_finish(run_id, "classify_vouchers", "failed", error=str(e))
+        raise
+    _task_finish(run_id, "classify_vouchers", "success",
+                 output_ref={"classified": stats.get("classified", 0)})
     return stats

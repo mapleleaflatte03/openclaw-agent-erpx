@@ -105,6 +105,8 @@ with col1:
             "journal_suggestion",
             "bank_reconcile",
             "cashflow_forecast",
+            "voucher_ingest",
+            "voucher_classify",
             "tax_export",
             "working_papers",
             "soft_checks",
@@ -124,6 +126,10 @@ with col1:
     if run_type == "cashflow_forecast":
         payload["period"] = st.text_input("period (YYYY-MM)", value=date.today().strftime("%Y-%m"))
         payload["horizon_days"] = st.number_input("horizon_days", min_value=7, max_value=90, value=30)
+    if run_type == "voucher_ingest":
+        payload["source"] = st.selectbox("source", ["vn_fixtures", "payload", "erpx_mock"])
+    if run_type == "voucher_classify":
+        payload["period"] = st.text_input("period (YYYY-MM, optional)", value="")
     if run_type == "ar_dunning":
         payload["as_of"] = st.text_input("as_of (YYYY-MM-DD)", value=date.today().isoformat())
     if run_type == "evidence_pack":
@@ -683,3 +689,106 @@ if cf_items:
     )
 else:
     st.info("Chưa có dự báo. Hãy chạy 'cashflow_forecast' ở trên.")
+
+
+# ---------------------------------------------------------------------------
+# Phase 5: Voucher Ingest listing
+# ---------------------------------------------------------------------------
+
+st.divider()
+st.subheader("📥 Chứng từ đã ingest (demo VN)")
+
+try:
+    voucher_data = _get("/agent/v1/acct/vouchers", params={"limit": 50})
+    voucher_items = voucher_data.get("items", [])
+except Exception as e:
+    st.error(f"Lỗi tải chứng từ: {e}")
+    voucher_items = []
+
+if voucher_items:
+    df_vouchers = pd.DataFrame(voucher_items)
+    display_cols = ["voucher_no", "date", "partner_name", "amount", "currency", "source", "type_hint"]
+    if "classification_tag" in df_vouchers.columns:
+        display_cols.append("classification_tag")
+    available_cols = [c for c in display_cols if c in df_vouchers.columns]
+    st.dataframe(df_vouchers[available_cols], use_container_width=True)
+else:
+    st.info("Chưa có chứng từ. Hãy chạy 'voucher_ingest' ở trên.")
+
+
+# ---------------------------------------------------------------------------
+# Phase 6: Classification stats
+# ---------------------------------------------------------------------------
+
+st.divider()
+st.subheader("🏷️ Phân loại chứng từ")
+
+try:
+    cls_data = _get("/agent/v1/acct/voucher_classification_stats")
+    cls_stats = cls_data.get("stats", [])
+except Exception as e:
+    st.error(f"Lỗi tải thống kê phân loại: {e}")
+    cls_stats = []
+
+if cls_stats:
+    df_cls = pd.DataFrame(cls_stats)
+    st.dataframe(df_cls, use_container_width=True)
+
+    # Filter vouchers by tag
+    tag_options = ["(tất cả)"] + [s["classification_tag"] for s in cls_stats]
+    selected_tag = st.selectbox("Lọc theo phân loại", tag_options, key="cls_filter")
+    if selected_tag != "(tất cả)":
+        try:
+            filtered = _get("/agent/v1/acct/vouchers", params={"classification_tag": selected_tag, "limit": 50})
+            filtered_items = filtered.get("items", [])
+            if filtered_items:
+                df_f = pd.DataFrame(filtered_items)
+                st.dataframe(
+                    df_f[["voucher_no", "date", "partner_name", "amount", "classification_tag"]],
+                    use_container_width=True,
+                )
+            else:
+                st.info(f"Không có chứng từ với phân loại '{selected_tag}'.")
+        except Exception as e:
+            st.error(f"Lỗi: {e}")
+else:
+    st.info("Chưa có thống kê phân loại. Hãy chạy 'voucher_classify' ở trên.")
+
+
+# ---------------------------------------------------------------------------
+# Phase 7: Q&A Chat
+# ---------------------------------------------------------------------------
+
+st.divider()
+st.subheader("💬 Trợ lý Q&A kế toán (demo)")
+
+qna_question = st.text_input("Nhập câu hỏi kế toán", value="", key="qna_input")
+if st.button("Hỏi", key="qna_ask"):
+    if qna_question.strip():
+        try:
+            qna_res = _post("/agent/v1/acct/qna", {"question": qna_question.strip()})
+            st.success(qna_res.get("answer", ""))
+            with st.expander("Chi tiết"):
+                st.json(qna_res.get("meta", {}))
+        except Exception as e:
+            st.error(f"Lỗi: {e}")
+    else:
+        st.warning("Vui lòng nhập câu hỏi.")
+
+# Q&A history
+with st.expander("📜 Lịch sử hỏi đáp", expanded=False):
+    try:
+        qna_history = _get("/agent/v1/acct/qna_audits", params={"limit": 10})
+        qna_items = qna_history.get("items", [])
+    except Exception as e:
+        st.error(f"Lỗi: {e}")
+        qna_items = []
+
+    if qna_items:
+        for item in qna_items:
+            st.markdown(f"**❓ {item.get('question', '')}**")
+            st.markdown(f"💡 {item.get('answer', '')}")
+            st.caption(f"🕐 {item.get('created_at', '')}")
+            st.divider()
+    else:
+        st.info("Chưa có lịch sử hỏi đáp.")

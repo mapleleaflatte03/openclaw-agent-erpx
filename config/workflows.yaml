@@ -214,3 +214,21 @@ workflows:
       - name: build_forecast
         skill: forecast_cashflow
         queue: default
+
+  voucher_ingest:
+    run_type: voucher_ingest
+    idempotency:
+      run_key_template: "voucher_ingest:{source}"
+    steps:
+      - name: ingest_documents
+        skill: ingest_vn_documents
+        queue: default
+
+  voucher_classify:
+    run_type: voucher_classify
+    idempotency:
+      run_key_template: "voucher_classify:{period}"
+    steps:
+      - name: classify_vouchers
+        skill: classify_voucher_tags
+        queue: default
