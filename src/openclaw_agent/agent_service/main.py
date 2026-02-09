@@ -1681,3 +1681,41 @@ def list_qna_audits(
             for r in rows
         ]
     }
+
+
+# ---------------------------------------------------------------------------
+# LangGraph endpoints
+# ---------------------------------------------------------------------------
+
+@app.get("/agent/v1/graphs", dependencies=[Depends(require_api_key)])
+def list_available_graphs() -> dict[str, Any]:
+    """List all available LangGraph workflow graphs."""
+    try:
+        from openclaw_agent.graphs.registry import is_available, list_graphs
+        return {
+            "langgraph_available": is_available(),
+            "graphs": list_graphs(),
+        }
+    except ImportError:
+        return {"langgraph_available": False, "graphs": []}
+
+
+@app.get("/agent/v1/graphs/{graph_name}", dependencies=[Depends(require_api_key)])
+def get_graph_info(graph_name: str) -> dict[str, Any]:
+    """Get info about a specific LangGraph workflow graph."""
+    try:
+        from openclaw_agent.graphs.registry import get_graph, list_graphs
+        available = list_graphs()
+        if graph_name not in available:
+            raise HTTPException(status_code=404, detail=f"Graph '{graph_name}' not found")
+        graph = get_graph(graph_name)
+        nodes = list(graph.nodes) if hasattr(graph, "nodes") else []
+        return {
+            "name": graph_name,
+            "nodes": nodes,
+            "compiled": True,
+        }
+    except ImportError:
+        raise HTTPException(status_code=501, detail="LangGraph is not installed")
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"Graph '{graph_name}' not found")

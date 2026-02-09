@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import mimetypes
+import os
 import re
 import shutil
 import tempfile
@@ -67,10 +68,55 @@ from openclaw_agent.flows.journal_suggestion import flow_journal_suggestion
 from openclaw_agent.flows.soft_checks_acct import flow_soft_checks_acct
 from openclaw_agent.flows.tax_report import flow_tax_report
 
+# LangGraph integration — graceful degradation if not installed
+try:
+    from openclaw_agent.graphs.registry import get_graph, is_available as _graphs_available
+except ImportError:  # pragma: no cover
+    def get_graph(name: str):  # type: ignore[misc]
+        raise ImportError("langgraph not installed")
+    def _graphs_available() -> bool:  # type: ignore[misc]
+        return False
+
 settings = get_settings()
 configure_logging(settings.log_level)
 log = get_logger("agent-worker")
 engine = make_engine(settings.agent_db_dsn)
+
+# Graph-aware workflows: set USE_LANGGRAPH=1 to prefer graph execution
+_USE_GRAPHS = os.getenv("USE_LANGGRAPH", "").lower() in ("1", "true", "yes")
+
+# Names of run_types that have a corresponding LangGraph definition
+_GRAPH_RUN_TYPES = frozenset({
+    "journal_suggestion", "bank_reconcile", "soft_checks",
+    "cashflow_forecast", "tax_report",
+})
+
+
+def _try_graph_execute(graph_name: str, run_id: str, extra_state: dict | None = None) -> dict[str, Any] | None:
+    """Attempt to execute a workflow via LangGraph.
+
+    Returns the flow_stats dict on success, or None if graphs are not
+    available or USE_LANGGRAPH is not enabled.
+    Falls back silently on error so the sequential _wf_ path can take over.
+    """
+    if not _USE_GRAPHS or not _graphs_available():
+        return None
+    try:
+        graph = get_graph(graph_name)
+        initial: dict[str, Any] = {"run_id": run_id}
+        if extra_state:
+            initial.update(extra_state)
+        result = graph.invoke(initial)
+        errors = result.get("errors", [])
+        if errors:
+            log.warning("graph %s completed with errors: %s", graph_name, errors)
+            return None  # fall back to sequential
+        stats = result.get("flow_stats", {})
+        log.info("graph %s completed: %s", graph_name, stats)
+        return stats
+    except Exception as e:
+        log.warning("graph %s failed, falling back to sequential: %s", graph_name, e)
+        return None
 
 
 def _is_transient_error(e: Exception) -> bool:
@@ -2490,6 +2536,11 @@ def _wf_contract_obligation(run_id: str) -> dict[str, Any]:
 
 def _wf_journal_suggestion(run_id: str) -> dict[str, Any]:
     """Fetch vouchers from ERP mock → classify → create journal proposals."""
+    # Try LangGraph execution first
+    graph_stats = _try_graph_execute("journal_suggestion", run_id)
+    if graph_stats is not None:
+        return graph_stats
+
     _db_log(run_id, None, "info", "journal_suggestion_start", {})
     _task_start(run_id, "fetch_vouchers", {})
 
@@ -2515,6 +2566,11 @@ def _wf_journal_suggestion(run_id: str) -> dict[str, Any]:
 
 def _wf_bank_reconcile(run_id: str) -> dict[str, Any]:
     """Fetch bank txs + vouchers from ERP mock → match → flag anomalies."""
+    # Try LangGraph execution first
+    graph_stats = _try_graph_execute("bank_reconcile", run_id)
+    if graph_stats is not None:
+        return graph_stats
+
     _db_log(run_id, None, "info", "bank_reconcile_start", {})
     _task_start(run_id, "fetch_bank_data", {})
 
@@ -2542,9 +2598,15 @@ def _wf_bank_reconcile(run_id: str) -> dict[str, Any]:
 
 def _wf_cashflow_forecast(run_id: str) -> dict[str, Any]:
     """Fetch invoices + bank txs → build 30-day cash-flow forecast."""
-    _db_log(run_id, None, "info", "cashflow_forecast_start", {})
+    # Try LangGraph execution first
     payload = _run_payload(run_id)
     period = payload.get("period") or datetime.now(timezone.utc).strftime("%Y-%m")
+    graph_stats = _try_graph_execute("cashflow_forecast", run_id, {"period": period})
+    if graph_stats is not None:
+        _update_run(run_id, cursor_out=graph_stats)
+        return graph_stats
+
+    _db_log(run_id, None, "info", "cashflow_forecast_start", {})
     horizon = int(payload.get("horizon_days", 30))
 
     _task_start(run_id, "fetch_data", {"period": period})

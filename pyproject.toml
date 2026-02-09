@@ -47,6 +47,10 @@ ui = [
   "streamlit>=1.31",
   "pandas>=2.2",
 ]
+graphs = [
+  "langgraph>=1.0",
+  "langchain-core>=0.3",
+]
 dev = [
   "pytest>=8.0",
   "pytest-asyncio>=0.23",
