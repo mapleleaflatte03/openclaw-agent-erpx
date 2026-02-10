@@ -85,11 +85,13 @@ def require_api_key(
 
 app = FastAPI(title="OpenClaw Agent Service", version=os.getenv("APP_VERSION", "0.1.0"))
 
-_SANITIZE_PATTERNS = [
-    _re.compile(r'"(?:file_uri|source_uri|stored_uri|pack_uri|text_uri)"\s*:\s*"[^"]*"'),
-    _re.compile(r'https?://(?:agent-service|localhost|minio|redis|postgres)[^"\s,}]*'),
-    _re.compile(r's3://[^"\s,}]*'),
-    _re.compile(r'minio://[^"\s,}]*'),
+_SANITIZE_PATTERNS: list[tuple[_re.Pattern[str], str]] = [
+    # Pattern 1: redact value only (keep key) for internal URI fields
+    (_re.compile(r'("(?:file_uri|source_uri|stored_uri|pack_uri|text_uri)"\s*:\s*)"[^"]*"'), r'\1"***"'),
+    # Patterns 2-4: replace inline URIs inside string values
+    (_re.compile(r'https?://(?:agent-service|localhost|minio|redis|postgres)[^"\s,}]*'), "***"),
+    (_re.compile(r's3://[^"\s,}]*'), "***"),
+    (_re.compile(r'minio://[^"\s,}]*'), "***"),
 ]
 
 
@@ -105,8 +107,8 @@ async def sanitize_response_middleware(request: Request, call_next):  # type: ig
     async for chunk in response.body_iterator:  # type: ignore[attr-defined]
         body_chunks.append(chunk if isinstance(chunk, bytes) else chunk.encode())
     body_text = b"".join(body_chunks).decode()
-    for pat in _SANITIZE_PATTERNS:
-        body_text = pat.sub('"***"', body_text)
+    for pat, repl in _SANITIZE_PATTERNS:
+        body_text = pat.sub(repl, body_text)
     from starlette.responses import Response as StarletteResponse
     # Rebuild headers WITHOUT stale Content-Length (Starlette will
     # set the correct value from the sanitized body automatically).
