@@ -238,9 +238,9 @@ def diagnostics_llm() -> dict[str, Any]:
     return {
         "status": "ok",
         "do_agent": {
-            "base_url": base_url,
-            "model_env": model_env,
-            "health": health,
+            "base_url_masked": "configured",
+            "model_name": model_env or resp.get("model") or "unknown",
+            "health": health.get("status", "unknown") if isinstance(health, dict) else "unknown",
             "latency_ms": {
                 "health": int((t1 - t0) * 1000),
                 "chat": int((t2 - t1) * 1000),
@@ -390,6 +390,34 @@ def create_run(
         raise HTTPException(status_code=400, detail=f"Loại tác vụ không hợp lệ: '{run_type}'. Hợp lệ: {sorted(_VALID_RUN_TYPES)}")
     if trigger_type not in {"schedule", "event", "manual"}:
         raise HTTPException(status_code=400, detail="Nguồn kích hoạt không hợp lệ (chỉ hỗ trợ: schedule, event, manual)")
+
+    # --- DEV-01: period validation for period-bound run types ---
+    _PERIOD_REQUIRED_RUN_TYPES = {
+        "voucher_ingest",
+        "soft_checks",
+        "journal_suggestion",
+        "cashflow_forecast",
+        "tax_export",
+        "bank_reconcile",
+    }
+    if run_type in _PERIOD_REQUIRED_RUN_TYPES:
+        period = (payload.get("period") or "").strip() if isinstance(payload, dict) else ""
+        if not period:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"period là bắt buộc cho run_type={run_type}, "
+                    "định dạng YYYY-MM (ví dụ 2026-01)."
+                ),
+            )
+        if not _re.fullmatch(r"\d{4}-(0[1-9]|1[0-2])", period):
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"period '{period}' không hợp lệ. "
+                    "Định dạng đúng: YYYY-MM (ví dụ 2026-01)."
+                ),
+            )
 
     idem = request.headers.get("Idempotency-Key")
     if not idem:
@@ -1562,6 +1590,7 @@ def list_soft_check_results(
 def list_validation_issues(
     resolution: str | None = None,
     severity: str | None = None,
+    check_result_id: str | None = None,
     limit: int = 100,
     session: Session = Depends(get_session),
 ) -> dict[str, Any]:
@@ -1570,6 +1599,8 @@ def list_validation_issues(
         q = q.where(AcctValidationIssue.resolution == resolution)
     if severity:
         q = q.where(AcctValidationIssue.severity == severity)
+    if check_result_id:
+        q = q.where(AcctValidationIssue.check_result_id == check_result_id)
     rows = session.execute(q).scalars().all()
     return {
         "items": [

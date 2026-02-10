@@ -24,6 +24,7 @@ Future: integrate LangGraph chain for multi-step reasoning.
 """
 from __future__ import annotations
 
+import json as _json
 import logging
 import os
 import re
@@ -43,6 +44,152 @@ from openclaw_agent.common.models import (
 log = logging.getLogger("openclaw.flows.qna_accounting")
 
 _USE_LANGGRAPH = os.getenv("USE_LANGGRAPH", "").lower() in ("1", "true", "yes")
+
+# -- Regex patterns for stripping chain-of-thought noise from LLM output ------
+
+# Broad set of English CoT starters produced by reasoning models.
+_COT_PATTERNS = re.compile(
+    r"(?i)^\s*(?:"
+    # Explicit reasoning markers
+    r"step\s*\d|reasoning[:\s]|chain[- ]of[- ]thought|"
+    # "Let me …" / "Let's …"
+    r"let me\b|let'?s\s|"
+    # "I [verb]" patterns
+    r"i (?:need|recall|think|remember|know|believe|should|must|will|guess|see|am)\b|"
+    # Hesitation / self-correction
+    r"actually[,.\s]|wait[,.\s]|hmm\b|not sure|oh[,.\s]|"
+    # Subject phrases referring to conversation
+    r"the user|they (?:want|ask|need)|we (?:can|must|should|need|know|have)\b|"
+    # Tentative / speculative language
+    r"alternatively\b|maybe\b|perhaps\b|probably\b|possibly\b|"
+    # Account references in English
+    r"account\s*\d|"
+    # Conclusion / summary markers
+    r"so[,.]\s|so the|thus\b|therefore\b|hence\b|in conclusion|to summariz|"
+    # Affirmation / negation at line start
+    r"no[,.]\s|yes[,.]\s|correct\b|exactly\b|right[,.]\s|"
+    # Memory / search actions
+    r"recall[:\s]|search\b|confirm\b|verify\b|"
+    # Generalisations
+    r"in many|in some|in most|in this case|in general|"
+    # Demonstrative + be/modal
+    r"(?:it|that|this) (?:is|could|might|would|should|was|has|seems)\b|"
+    # Other verbosity
+    r"provide\b|refer\b|mention\b|note that|"
+    r"^\?\s|^answer[:\s]"
+    r")",
+)
+
+_JSON_BLOCK_RE = re.compile(r"```(?:json)?\s*\n([\s\S]*?)\n```")
+
+# Vietnamese diacritic characters – presence indicates Vietnamese text.
+_VN_DIACRITIC_RE = re.compile(
+    r"[àáảãạăắằẳẵặâấầẩẫậèéẻẽẹêếềểễệìíỉĩịòóỏõọôốồổỗộơớờởỡợ"
+    r"ùúủũụưứừửữựỳýỷỹỵđÀÁẢÃẠĂẮẰẲẴẶÂẤẦẨẪẬÈÉẺẼẸÊẾỀỂỄỆÌÍỈĨỊ"
+    r"ÒÓỎÕỌÔỐỒỔỖỘƠỚỜỞỠỢÙÚỦŨỤƯỨỪỬỮỰỲÝỶỸỴĐ]"
+)
+
+_FALLBACK_ANSWER = (
+    "Xin lỗi, hệ thống chưa thể đưa ra câu trả lời rõ ràng. "
+    "Vui lòng thử lại hoặc diễn đạt câu hỏi theo cách khác."
+)
+
+# A word that is purely ASCII letters (4+ chars) – likely English.
+# Using 4+ to avoid false positives on short Vietnamese words without
+# diacritics (e.g. thu, ghi, ban, cho, con …).
+_ENG_WORD_RE = re.compile(r"^[a-zA-Z]{4,}$")
+
+
+def _clean_llm_answer(raw: str) -> str:
+    """Post-process LLM output: strip CoT, JSON blobs, and noise.
+
+    Reasoning models (like GPT-oss-120b) put chain-of-thought in
+    ``reasoning_content`` which we fall back to.  This function
+    aggressively strips English-language reasoning and keeps only
+    Vietnamese text suitable for end-user display.
+
+    Strategy (v4):
+    1. Handle raw-JSON responses.
+    2. Remove fenced code blocks.
+    3. Early-exit if >20 % of words are 4+-letter ASCII words
+       (English CoT dominates the response).
+    4. Line-by-line filtering: CoT patterns, Vietnamese diacritics,
+       and per-line English word ratio.
+    5. If nothing survives, return a polite fallback.
+    """
+    text = raw.strip()
+    if not text:
+        return text
+
+    # 1. If entire response looks like JSON → extract meaningful Vietnamese text
+    if text.startswith(("{", "[")):
+        try:
+            parsed = _json.loads(text)
+            if isinstance(parsed, dict):
+                for key in ("answer", "summary", "explanation", "content", "message"):
+                    if key in parsed and isinstance(parsed[key], str) and parsed[key].strip():
+                        return parsed[key].strip()
+                if parsed.get("decision") or parsed.get("tier"):
+                    return (
+                        "Xin lỗi, tôi cần thêm thông tin ngữ cảnh để trả lời "
+                        "câu hỏi này chính xác hơn. Vui lòng cung cấp thêm chi tiết."
+                    )
+        except (ValueError, _json.JSONDecodeError):
+            pass
+
+    # 2. Remove fenced JSON code blocks
+    text = _JSON_BLOCK_RE.sub("", text)
+
+    # 3. Early exit – if >20 % of words are 4+-letter ASCII words,
+    #    the model produced a full English CoT answer.
+    all_words = text.split()
+    if len(all_words) >= 8:
+        eng_count = sum(1 for w in all_words if _ENG_WORD_RE.match(w))
+        if eng_count / len(all_words) > 0.20:
+            return _FALLBACK_ANSWER
+
+    # 4. Line-by-line filtering
+    lines = text.split("\n")
+    cleaned: list[str] = []
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            if cleaned:
+                cleaned.append("")
+            continue
+
+        # Skip lines that match known CoT patterns
+        if _COT_PATTERNS.search(stripped):
+            continue
+
+        # Skip lines without Vietnamese diacritics that are long enough
+        # (likely pure English reasoning even if containing some VN terms)
+        if len(stripped) > 15 and not _VN_DIACRITIC_RE.search(stripped):
+            continue
+
+        # Skip lines with high English word ratio (CoT interleaved with VN terms)
+        if len(stripped) > 25:
+            line_words = stripped.split()
+            if len(line_words) >= 5:
+                line_eng = sum(1 for w in line_words if _ENG_WORD_RE.match(w))
+                if line_eng / len(line_words) > 0.30:
+                    continue
+
+        cleaned.append(line)
+
+    # Trim leading/trailing blank lines
+    while cleaned and not cleaned[0].strip():
+        cleaned.pop(0)
+    while cleaned and not cleaned[-1].strip():
+        cleaned.pop()
+
+    result = "\n".join(cleaned).strip()
+
+    # 5. If nothing meaningful survived, return polite fallback
+    if not result or len(result) < 10:
+        return _FALLBACK_ANSWER
+
+    return result
 
 
 def _is_real_llm_enabled() -> bool:
@@ -514,6 +661,8 @@ def answer_question(session: Session, question: str) -> dict[str, Any]:
         regulation_refs=_cite_regulation(question) or None,
     )
     if llm_result is not None:
+        # DEV-04: post-process LLM answer to strip CoT / JSON noise
+        llm_result["answer"] = _clean_llm_answer(llm_result.get("answer", ""))
         llm_result.setdefault("used_models", [])
         llm_result["reasoning_chain"] = _build_reasoning_chain(
             question,

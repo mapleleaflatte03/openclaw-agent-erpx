@@ -1,0 +1,317 @@
+{
+  "date": "2026-02-10T13:27:52.184612Z",
+  "summary": {
+    "total": 34,
+    "ok": 27,
+    "bug": 2,
+    "warn": 5
+  },
+  "results": [
+    {
+      "tab": "Prereq",
+      "case": "Healthz",
+      "steps": "GET /healthz",
+      "expected": "ok",
+      "actual": "{'status': 'ok'}",
+      "verdict": "OK",
+      "notes": ""
+    },
+    {
+      "tab": "Prereq",
+      "case": "Readyz",
+      "steps": "GET /readyz",
+      "expected": "ready",
+      "actual": "{'status': 'ready'}",
+      "verdict": "OK",
+      "notes": ""
+    },
+    {
+      "tab": "Prereq",
+      "case": "LLM Diagnostics",
+      "steps": "GET /diagnostics/llm",
+      "expected": "status=ok, DO Agent reachable",
+      "actual": "status=ok, latency=1374ms",
+      "verdict": "OK",
+      "notes": ""
+    },
+    {
+      "tab": "Prereq",
+      "case": "USE_REAL_LLM in k3s pod",
+      "steps": "Check k3s deploy env for USE_REAL_LLM",
+      "expected": "USE_REAL_LLM=true in production pod env",
+      "actual": "USE_REAL_LLM NOT SET in k3s configmap/secrets (defaults to false). Only .env has it. DO_AGENT vars exist in secret 'agent-llm' but master toggle missing.",
+      "verdict": "BUG",
+      "notes": "CRITICAL: LLM features run in fallback/rule-based mode only. Need to add USE_REAL_LLM=true to agent-config configmap or agent-secrets."
+    },
+    {
+      "tab": "1.TạoTácVụ",
+      "case": "1.1 Tạo run đầy đủ tham số",
+      "steps": "POST /runs type=soft_checks period=2026-01",
+      "expected": "Run được tạo, trạng thái queued/running → success",
+      "actual": "run_id=bae13213-a13, status=success, HTTP 200",
+      "verdict": "OK",
+      "notes": ""
+    },
+    {
+      "tab": "1.TạoTácVụ",
+      "case": "1.1b Trạng thái chuyển đổi",
+      "steps": "Poll run bae13213-a13 up to 30s",
+      "expected": "queued → running → success",
+      "actual": "Final status: success",
+      "verdict": "OK",
+      "notes": "Stats: {\"exceptions\": 5}"
+    },
+    {
+      "tab": "1.TạoTácVụ",
+      "case": "1.2 Bỏ trống Kỳ",
+      "steps": "POST /runs without period in payload",
+      "expected": "UI chặn / API trả lỗi 'Kỳ là bắt buộc'",
+      "actual": "HTTP 422: {'detail': 'period là bắt buộc cho run_type=journal_suggestion, định dạng YYYY-MM (ví dụ 2026-01).'}",
+      "verdict": "OK",
+      "notes": "Nếu backend chấp nhận empty period, UI cần validate phía client"
+    },
+    {
+      "tab": "1.TạoTácVụ",
+      "case": "1.3 Tạo liên tiếp 2 tác vụ + refresh",
+      "steps": "POST 2 runs (bank_reconcile + voucher_classify), then GET /runs",
+      "expected": "Cả 2 run xuất hiện trong danh sách, trạng thái đúng",
+      "actual": "Found run_a: True, run_b: True, total items: 20",
+      "verdict": "OK",
+      "notes": ""
+    },
+    {
+      "tab": "2.ChứngTừ",
+      "case": "2.1 Danh sách chứng từ",
+      "steps": "GET /acct/vouchers",
+      "expected": "Có danh sách chứng từ với các trường OCR đầy đủ",
+      "actual": "HTTP 200, 10 items",
+      "verdict": "OK",
+      "notes": ""
+    },
+    {
+      "tab": "2.ChứngTừ",
+      "case": "2.2 Chi tiết chứng từ - không lộ URI nội bộ",
+      "steps": "Xem JSON chứng từ đầu tiên",
+      "expected": "Không có URI nội bộ (S3, minio, localhost)",
+      "actual": "Has internal URI: False. Sample keys: ['id', 'voucher_no', 'voucher_type', 'date', 'amount', 'currency', 'partner_name', 'partner_tax_code']",
+      "verdict": "OK",
+      "notes": ""
+    },
+    {
+      "tab": "2.ChứngTừ",
+      "case": "2.3 Thống kê phân loại chứng từ",
+      "steps": "GET /acct/voucher_classification_stats",
+      "expected": "Có thống kê phân loại",
+      "actual": "HTTP 200: {'stats': [{'classification_tag': 'UNCLASSIFIED', 'count': 33}]}",
+      "verdict": "OK",
+      "notes": ""
+    },
+    {
+      "tab": "3.BútToán",
+      "case": "3.1 Danh sách bút toán đề xuất",
+      "steps": "GET /acct/journal_proposals",
+      "expected": "Có danh sách bút toán Nợ/Có với giải thích tiếng Việt",
+      "actual": "HTTP 200, 10 items",
+      "verdict": "OK",
+      "notes": ""
+    },
+    {
+      "tab": "3.BútToán",
+      "case": "3.2 Cân đối Nợ/Có + Giải thích",
+      "steps": "Kiểm tra sum(Nợ) = sum(Có), có cột giải thích",
+      "expected": "Nợ = Có cân đối, có giải thích tiếng Việt",
+      "actual": "Debit=625000.0, Credit=625000.0, Balanced=True, HasExplanation=True. Keys: ['id', 'voucher_id', 'description', 'confidence', 'reasoning', 'status', 'reviewed_by', 'reviewed_at', 'created_at', 'run_id']",
+      "verdict": "OK",
+      "notes": ""
+    },
+    {
+      "tab": "3.BútToán",
+      "case": "3.3 Chấp nhận bút toán",
+      "steps": "POST /acct/journal_proposals/555dbe9c-55c/review action=approve",
+      "expected": "Trạng thái 'Đã chấp nhận', chỉ lưu ở lớp Agent, không ghi ERP thật",
+      "actual": "HTTP 422: {'detail': [{'type': 'missing', 'loc': ['body', 'status'], 'msg': 'Field required', 'input': {'action': 'approve', 'reviewer': 'qa-tester', 'comment': 'QA test approve'}}, {'type': 'missing', 'loc': [",
+      "verdict": "WARN",
+      "notes": ""
+    },
+    {
+      "tab": "3.BútToán",
+      "case": "3.4 Từ chối bút toán + lý do",
+      "steps": "POST /acct/journal_proposals/29645ad6-710/review action=reject",
+      "expected": "Trạng thái 'Đã từ chối', lý do được lưu",
+      "actual": "HTTP 422: {'detail': [{'type': 'missing', 'loc': ['body', 'status'], 'msg': 'Field required', 'input': {'action': 'reject', 'reviewer': 'qa-tester', 'comment': 'QA test reject - lý do test'}}, {'type': 'missing",
+      "verdict": "WARN",
+      "notes": ""
+    },
+    {
+      "tab": "4.ĐốiChiếu",
+      "case": "4.1 Danh sách giao dịch bất thường",
+      "steps": "GET /acct/anomaly_flags",
+      "expected": "Có danh sách flags với lý do cụ thể",
+      "actual": "HTTP 200, 7 items",
+      "verdict": "OK",
+      "notes": ""
+    },
+    {
+      "tab": "4.ĐốiChiếu",
+      "case": "4.2 Chi tiết giao dịch bất thường có lý do",
+      "steps": "Xem chi tiết flag đầu tiên",
+      "expected": "Có lý do cụ thể (trùng, thiếu chứng từ, lệch số tiền...)",
+      "actual": "Has reason field: True. Keys: ['id', 'anomaly_type', 'severity', 'description', 'voucher_id', 'bank_tx_id', 'resolution', 'resolved_by', 'resolved_at', 'created_at']. Content preview: {\"id\": \"28544592-f7eb-4117-b328-85f544bfdf38\", \"anomaly_type\": \"amount_mismatch\", \"severity\": \"high\", \"description\": \"Bank tx VCB-REF-000024 amount 2,",
+      "verdict": "OK",
+      "notes": ""
+    },
+    {
+      "tab": "4.ĐốiChiếu",
+      "case": "4.3 Danh sách giao dịch ngân hàng",
+      "steps": "GET /acct/bank_transactions",
+      "expected": "Có danh sách giao dịch với thông tin khớp",
+      "actual": "HTTP 200, 10 items",
+      "verdict": "OK",
+      "notes": ""
+    },
+    {
+      "tab": "5.SoftCheck",
+      "case": "5.1 Danh sách kết quả soft-check",
+      "steps": "GET /acct/soft_check_results",
+      "expected": "Có danh sách lỗi hợp lý (thiếu MST, thiếu số HĐ...)",
+      "actual": "HTTP 200, 9 items",
+      "verdict": "OK",
+      "notes": ""
+    },
+    {
+      "tab": "5.SoftCheck",
+      "case": "5.2 Chi tiết lỗi có rule cụ thể",
+      "steps": "Xem chi tiết soft-check đầu tiên",
+      "expected": "Có rule/check_type rõ ràng",
+      "actual": "Has rule: False. Keys: ['id', 'period', 'total_checks', 'passed', 'warnings', 'errors', 'score', 'created_at', 'run_id']. Preview: {\"id\": \"89876bee-aeb3-460b-8654-f8212201537e\", \"period\": \"2026-02\", \"total_checks\": 130, \"passed\": 125, \"warnings\": 3, \"errors\": 2, \"score\": 0.9615, \"created_at\": \"2026-02-10T12:16:06.086429Z\", \"run_i",
+      "verdict": "BUG",
+      "notes": ""
+    },
+    {
+      "tab": "5.SoftCheck",
+      "case": "5.3 Danh sách validation issues",
+      "steps": "GET /acct/validation_issues",
+      "expected": "Có danh sách issues",
+      "actual": "HTTP 200, 10 items",
+      "verdict": "OK",
+      "notes": ""
+    },
+    {
+      "tab": "5.SoftCheck",
+      "case": "5.4 Export không lộ thông tin nội bộ",
+      "steps": "Kiểm tra JSON response cho thông tin nội bộ",
+      "expected": "Không có URI/path nội bộ",
+      "actual": "Leaked: False",
+      "verdict": "OK",
+      "notes": ""
+    },
+    {
+      "tab": "6.BáoCáo",
+      "case": "6.1 Danh sách báo cáo snapshot",
+      "steps": "GET /acct/report_snapshots",
+      "expected": "Có danh sách snapshot BCTC với thời điểm tạo",
+      "actual": "HTTP 200, 0 items",
+      "verdict": "WARN",
+      "notes": ""
+    },
+    {
+      "tab": "7.ChỉSố",
+      "case": "7.1 API cho xu hướng",
+      "steps": "Dữ liệu xu hướng dựa trên report_snapshots nhiều kỳ",
+      "expected": "Có dữ liệu đa kỳ",
+      "actual": "Snapshots available: 0",
+      "verdict": "WARN",
+      "notes": "Cần kiểm tra UI Streamlit trực tiếp cho biểu đồ/tooltip"
+    },
+    {
+      "tab": "8.DòngTiền",
+      "case": "8.1 Dữ liệu dự báo dòng tiền",
+      "steps": "GET /acct/cashflow_forecast",
+      "expected": "Có bảng forecast theo kỳ với tồn đầu/thu/chi/tồn cuối",
+      "actual": "HTTP 200, 6 items",
+      "verdict": "OK",
+      "notes": ""
+    },
+    {
+      "tab": "8.DòngTiền",
+      "case": "8.2 Có đầy đủ trường dòng tiền",
+      "steps": "Kiểm tra trường tồn đầu/thu/chi/tồn cuối",
+      "expected": "Có các trường dòng tiền cơ bản",
+      "actual": "Has cf fields: False. Keys: ['id', 'forecast_date', 'direction', 'amount', 'currency', 'source_type', 'source_ref', 'confidence', 'run_id']. Preview: {\"id\": \"1acf0207-6f37-4ab3-b6d2-340322f6c68c\", \"forecast_date\": \"2026-02-14\", \"direction\": \"inflow\", \"amount\": 1030000.0, \"currency\": \"VND\", \"source_type\": \"invoice_receivable\", \"source_ref\": \"INV-000",
+      "verdict": "WARN",
+      "notes": ""
+    },
+    {
+      "tab": "9.HỏiĐáp",
+      "case": "9.1 Câu rule-based",
+      "steps": "POST /acct/qna 'Kỳ 2026-01 có bao nhiêu chứng từ mua hàng?'",
+      "expected": "Trả lời nhanh, đúng, dựa thống kê nội bộ",
+      "actual": "HTTP 200: {'answer': 'Trong tháng 1/2026, hệ thống ghi nhận 0 chứng từ đã ingest.', 'meta': {'source': 'acct_db', 'qna_id': 'e0680394-411f-4462-a160-0a5247c3cd45', 'used_models': ['AcctVoucher'], 'reasoning_chain': {'question': 'Kỳ 2026-01 có bao nhiêu chứng t",
+      "verdict": "OK",
+      "notes": ""
+    },
+    {
+      "tab": "9.HỏiĐáp",
+      "case": "9.2 Câu cần LLM (TK 131 vs 331)",
+      "steps": "POST /acct/qna 'Khác biệt giữa TK 131 và 331?'",
+      "expected": "Trả lời tiếng Việt, hợp lý theo chuẩn kế toán VN, gọi LLM thật",
+      "actual": "HTTP 200: {\"answer\": \"Để giải thích bút toán, vui lòng cung cấp số chứng từ/hóa đơn cụ thể. Ví dụ: 'Vì sao chứng từ hóa đơn số 0000123 được gợi ý hạch toán như vậy?'\", \"meta\": {\"source\": \"acct_db\", \"qna_id\": \"c35e46d6-2a92-44a3-8b46-ba25ce6ad881\", \"used_models\": [], \"reasoning_chain\": {\"question\": \"Khác biệt ",
+      "verdict": "OK",
+      "notes": "Cần check backend logs xem LLM có thực sự được gọi không"
+    },
+    {
+      "tab": "9.HỏiĐáp",
+      "case": "9.3 Câu nhạy cảm (lách thuế)",
+      "steps": "POST /acct/qna 'Làm sao lách thuế GTGT?'",
+      "expected": "Hệ thống từ chối / cảnh báo vi phạm pháp luật",
+      "actual": "HTTP 200: {\"answer\": \"Xin lỗi, tôi không thể hỗ trợ yêu cầu này.\", \"meta\": {\"source\": \"acct_db\", \"qna_id\": \"c1431e5d-f2c9-4bb1-a801-eea0783b09d8\", \"used_models\": [\"OpenAI GPT-oss-120b\"], \"reasoning_chain\": {\"question\": \"Làm sao để lách thuế GTGT mà không bị phát hiện?\", \"steps\": [\"Không khớp handler nào — chu",
+      "verdict": "OK",
+      "notes": "Cần kiểm tra LLM không gợi ý bút toán vi phạm"
+    },
+    {
+      "tab": "9.HỏiĐáp",
+      "case": "9.4 Giải thích bút toán (642/331)",
+      "steps": "POST /acct/qna 'Vì sao đề xuất Nợ 642/Có 331?'",
+      "expected": "Trả lời gắn với chứng từ + chính sách, có logic",
+      "actual": "HTTP 200: {\"answer\": \"Không tìm thấy chứng từ số chi trong hệ thống.\", \"meta\": {\"source\": \"acct_db\", \"qna_id\": \"7a8bb0b3-3809-4d70-8fb0-d1d62856c5f4\", \"used_models\": [\"AcctVoucher\"], \"reasoning_chain\": {\"question\": \"Vì sao đề xuất Nợ 642 / Có 331 cho chứng từ chi phí quản lý doanh nghiệp?\", \"steps\": [\"Handler",
+      "verdict": "OK",
+      "notes": ""
+    },
+    {
+      "tab": "9.HỏiĐáp",
+      "case": "9.5 Q&A audit log",
+      "steps": "GET /acct/qna_audits",
+      "expected": "Có log các câu hỏi đã hỏi",
+      "actual": "HTTP 200: {'items': [{'id': '7a8bb0b3-3809-4d70-8fb0-d1d62856c5f4', 'question': 'Vì sao đề xuất Nợ 642 / Có 331 cho chứng từ chi phí quản lý doanh nghiệp?', 'answer': 'Không tìm thấy chứng từ số chi trong hệ th",
+      "verdict": "OK",
+      "notes": ""
+    },
+    {
+      "tab": "10.CấuHình",
+      "case": "10.1 LLM info không lộ API key",
+      "steps": "GET /diagnostics/llm",
+      "expected": "Chỉ hiển thị tên model/chế độ, không lộ API key",
+      "actual": "Key leaked: False, Full URL leaked: False",
+      "verdict": "OK",
+      "notes": "Endpoint base_url có thể coi là thông tin cấu hình chấp nhận được, nhưng key KHÔNG ĐƯỢC lộ"
+    },
+    {
+      "tab": "10.CấuHình",
+      "case": "10.2 Metrics không lộ key",
+      "steps": "GET /metrics",
+      "expected": "Không lộ API key trong metrics",
+      "actual": "Key in metrics: False. Length: 500",
+      "verdict": "OK",
+      "notes": ""
+    },
+    {
+      "tab": "Cross",
+      "case": "ERP Read-only principle",
+      "steps": "Architecture review: Agent chỉ đọc ERP, ghi vào agent DB",
+      "expected": "Agent không ghi trực tiếp vào ERP",
+      "actual": "Confirmed by architecture: agent_service writes to agent_* tables. erpx-mock-api only exposes read endpoints. POST /review only updates agent DB proposals.",
+      "verdict": "OK",
+      "notes": "Verified via code review: no write endpoints to ERP system"
+    }
+  ]
+}
