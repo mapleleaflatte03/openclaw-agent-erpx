@@ -108,10 +108,16 @@ async def sanitize_response_middleware(request: Request, call_next):  # type: ig
     for pat in _SANITIZE_PATTERNS:
         body_text = pat.sub('"***"', body_text)
     from starlette.responses import Response as StarletteResponse
+    # Rebuild headers WITHOUT stale Content-Length (Starlette will
+    # set the correct value from the sanitized body automatically).
+    new_headers = {
+        k: v for k, v in response.headers.items()
+        if k.lower() != "content-length"
+    }
     return StarletteResponse(
         content=body_text,
         status_code=response.status_code,
-        headers=dict(response.headers),
+        headers=new_headers,
         media_type="application/json",
     )
 
