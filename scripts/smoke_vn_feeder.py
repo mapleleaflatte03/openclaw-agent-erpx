@@ -22,7 +22,7 @@ import requests
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_PROJECT_ROOT / "scripts"))
 
-API_URL = os.getenv("AGENT_API_URL", "http://127.0.0.1:30080")
+_API_URL = os.getenv("AGENT_API_URL", "http://127.0.0.1:30080")
 API_KEY = os.getenv("AGENT_API_KEY", "ak-7e8ed81281a387b88d210759f445863161d07461")
 HEADERS = {"X-API-Key": API_KEY, "Content-Type": "application/json"}
 
@@ -31,14 +31,18 @@ FAIL = "❌"
 WARN = "⚠️"
 
 
+def _api_url() -> str:
+    return _API_URL
+
+
 def _get(path: str):
-    r = requests.get(f"{API_URL}{path}", headers=HEADERS, timeout=15)
+    r = requests.get(f"{_api_url()}{path}", headers=HEADERS, timeout=15)
     r.raise_for_status()
     return r.json()
 
 
 def _post(path: str, body: dict):
-    r = requests.post(f"{API_URL}{path}", headers=HEADERS, json=body, timeout=15)
+    r = requests.post(f"{_api_url()}{path}", headers=HEADERS, json=body, timeout=15)
     r.raise_for_status()
     return r.json()
 
@@ -53,20 +57,21 @@ def step(name: str, ok: bool, detail: str = "") -> bool:
 
 
 def main() -> None:
+    global _API_URL
+
     parser = argparse.ArgumentParser()
-    parser.add_argument("--api-url", default=API_URL)
+    parser.add_argument("--api-url", default=_API_URL)
     parser.add_argument("--max-events", type=int, default=5)
     parser.add_argument("--wait-seconds", type=int, default=120)
     args = parser.parse_args()
 
-    global API_URL
-    API_URL = args.api_url
+    _API_URL = args.api_url
     results: list[bool] = []
 
     print("=" * 60)
     print("  VN Invoice Feeder — Smoke Test")
     print("=" * 60)
-    print(f"API: {API_URL}")
+    print(f"API: {_API_URL}")
     print()
 
     # 1. Check API health
@@ -96,7 +101,7 @@ def main() -> None:
     print(f"\n--- Running feeder with --max-events={args.max_events} ---")
     feeder_script = str(_PROJECT_ROOT / "scripts" / "vn_invoice_feeder.py")
     env = os.environ.copy()
-    env["AGENT_API_URL"] = API_URL
+    env["AGENT_API_URL"] = _API_URL
     env["AGENT_API_KEY"] = API_KEY
 
     try:
