@@ -1819,7 +1819,7 @@ def get_graph_info(graph_name: str) -> dict[str, Any]:
         from openclaw_agent.graphs.registry import get_graph, list_graphs
         available = list_graphs()
         if graph_name not in available:
-            raise HTTPException(status_code=404, detail=f"Graph '{graph_name}' not found")
+            raise HTTPException(status_code=404, detail=f"Không tìm thấy đồ thị '{graph_name}'")
         graph = get_graph(graph_name)
         nodes = list(graph.nodes) if hasattr(graph, "nodes") else []
         return {
@@ -1887,6 +1887,12 @@ _GOAL_CHAINS: dict[str, list[str]] = {
         "cashflow_forecast",
     ],
     "hỏi đáp": [],  # special: goes to Q&A, not a run chain
+    "bất thường": [
+        "soft_checks", "anomaly_scan",
+    ],
+    "hợp đồng": [
+        "contract_obligation",
+    ],
 }
 
 _GOAL_CHAIN_LABELS: dict[str, str] = {
@@ -1898,6 +1904,8 @@ _GOAL_CHAIN_LABELS: dict[str, str] = {
     "phân loại": "Phân loại chứng từ",
     "dự báo dòng tiền": "Dự báo dòng tiền",
     "hỏi đáp": "Hỏi đáp kế toán",
+    "bất thường": "Phát hiện bất thường",
+    "hợp đồng": "Rà soát hợp đồng",
 }
 
 

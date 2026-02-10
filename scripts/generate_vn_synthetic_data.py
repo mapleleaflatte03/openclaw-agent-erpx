@@ -92,7 +92,7 @@ _VN_DATA_SOURCES: list[dict[str, str]] = [
         "name": "OCR image data of Vietnamese language documents",
         "url": "https://www.kaggle.com/datasets/appenlimited/ocr-image-data-of-vietnamese-language-documents",
         "size": "17.06 MB",
-        "files": "111 (2080 images)",
+        "files": "111 (2080 images across 11 categories: RECEIPT, BILLS, CONTRACTS, FORMS, IDCARD, TRADE, TABLE, WHITEBOARD, NEWSPAPER, NOTES, BOOKCONTENT)",
         "license": "CC BY-SA 4.0",
         "use_case": "ocr_document_classify",
     },
