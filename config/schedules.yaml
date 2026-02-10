@@ -52,3 +52,20 @@ schedules:
     payload:
       period: "this_month"
 
+  # P2: Observe pipeline — auto-ingest + classify new documents
+  observe_ingest_classify:
+    enabled: false
+    cron: "*/15 * * * *"
+    run_type: "voucher_ingest"
+    payload:
+      source: "vn_fixtures"
+    chain:
+      - "voucher_classify"
+
+  # P2: Daily anomaly scan
+  daily_anomaly_scan:
+    enabled: false
+    cron: "0 22 * * *"
+    run_type: "anomaly_detect"
+    payload:
+      period: "today"
