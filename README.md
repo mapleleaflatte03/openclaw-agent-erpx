@@ -53,6 +53,50 @@ python3 -m pip install -U pip
 python3 -m pip install -e '.[dev,ui]'
 ```
 
+### LLM Integration (Optional)
+
+The agent flows (Q&A, journal suggestion, soft-checks) support real LLM
+calls via the DigitalOcean OpenAI-compatible endpoint.  By default,
+`USE_REAL_LLM=false` and all flows use rule-based logic.
+
+To enable:
+```bash
+# In .env
+USE_REAL_LLM=true
+DO_AGENT_BASE_URL=https://your-agent.agents.do-ai.run
+DO_AGENT_API_KEY=your-api-key
+DO_AGENT_MODEL=OpenAI GPT-oss-120b
+```
+
+### Using Real VN Data (Optional)
+
+The pipeline can process real Vietnamese accounting documents alongside
+the built-in synthetic data generator.
+
+```bash
+# 1. Prepare: generate fixtures + convert downloaded Kaggle data
+python scripts/prepare_real_vn_data.py \
+  --source-dir data/real_vn/mc_ocr/ \
+  --output-dir data/real_vn/prepared/ \
+  --max-files 20
+
+# 2. Upload to MinIO in real or mix mode
+python scripts/upload_minio_simulate_erp.py \
+  --mode real --real-data-dir data/real_vn/prepared/ \
+  --interval 30 --cycles 5
+
+# 3. Observe in UI: Agent Command Center, Chứng từ, Bút toán tabs
+```
+
+Supported data sources (see `scripts/prepare_real_vn_data.py` for details):
+- Kaggle MC_OCR 2021 (Vietnamese receipts)
+- Kaggle Receipt OCR VN
+- Kaggle Appen VN OCR (11 doc categories, CC BY-SA 4.0)
+- GDT e-invoices (NĐ 123/2020)
+- TT133/2016 regulation excerpts
+
+> **⚠️ Never commit real data files to the repo.**
+
 ### Lint/Test
 ```bash
 make lint

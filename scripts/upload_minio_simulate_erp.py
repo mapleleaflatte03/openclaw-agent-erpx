@@ -8,7 +8,16 @@ the `attachments_drop` poller defined in config/schedules.yaml.
 The poller detects new files and auto-runs: ingest → classify → suggest chain.
 
 Usage:
+    # Synthetic mode (default — faker JSON documents)
     python scripts/upload_minio_simulate_erp.py [--interval SEC] [--cycles N]
+
+    # Real mode (pre-converted JSON from prepare_real_vn_data.py)
+    python scripts/upload_minio_simulate_erp.py \\
+        --mode real --real-data-dir data/real_vn/prepared/ --cycles 5
+
+    # Mix mode (randomly interleave synthetic + real)
+    python scripts/upload_minio_simulate_erp.py \\
+        --mode mix --real-data-dir data/real_vn/prepared/
 
 Example:
     # Upload 1-5 docs every 20 seconds, 10 cycles
@@ -32,6 +41,7 @@ import os
 import random
 import time
 from datetime import date, timedelta
+from pathlib import Path
 
 import boto3
 from botocore.exceptions import ClientError
@@ -94,7 +104,7 @@ def _gen_invoice_no() -> str:
 
 
 def _gen_doc() -> dict:
-    """Generate a single random VN accounting document."""
+    """Generate a single random VN accounting document (synthetic)."""
     doc_type = random.choice([
         "invoice_vat", "invoice_vat", "invoice_vat",
         "cash_disbursement", "cash_receipt",
@@ -166,21 +176,41 @@ def _ensure_bucket(s3) -> None:
             print(f"  ⚠️ Không tạo được bucket: {e}")
 
 
-def run_cycle(s3, cycle_num: int, doc_count: int) -> int:
-    """Upload `doc_count` random docs. Returns actual upload count."""
+def run_cycle(s3, cycle_num: int, doc_count: int, *, real_docs: list[dict] | None = None, mode: str = "synthetic") -> int:
+    """Upload `doc_count` random docs. Returns actual upload count.
+
+    ``mode`` controls document source:
+      * ``synthetic`` — generate fake VN docs (default)
+      * ``real``      — pick from ``real_docs`` list
+      * ``mix``       — random 50/50 between synthetic and real
+    """
     uploaded = 0
     for i in range(doc_count):
-        doc = _gen_doc()
+        # Pick document source
+        use_real = False
+        if mode == "real" and real_docs:
+            use_real = True
+        elif mode == "mix" and real_docs:
+            use_real = random.random() < 0.5
+
+        if use_real and real_docs:
+            doc = random.choice(real_docs).copy()
+            tag = "real"
+        else:
+            doc = _gen_doc()
+            tag = "synth"
+
         key = (
             f"{DROP_PREFIX}"
             f"{date.today().isoformat()}/"
-            f"cycle{cycle_num:04d}_{i:02d}_{int(time.time())}_{doc.get('doc_type', 'doc')}.json"
+            f"cycle{cycle_num:04d}_{i:02d}_{int(time.time())}_{doc.get('doc_type', 'doc')}_{tag}.json"
         )
         body = json.dumps(doc, ensure_ascii=False, indent=2).encode("utf-8")
         s3.put_object(Bucket=MINIO_BUCKET, Key=key, Body=body, ContentType="application/json")
         amt = doc.get("total_amount") or doc.get("amount", 0)
+        src_label = "[📊 real]" if (use_real and real_docs) else "[🎲 synth]"
         print(
-            f"  📄 [{i+1}/{doc_count}] {doc.get('doc_type', '?'):<20s} "
+            f"  📄 [{i+1}/{doc_count}] {src_label} {doc.get('doc_type', '?'):<20s} "
             f"{'VND':>4s} {amt:>15,}  → {key}"
         )
         uploaded += 1
@@ -193,6 +223,18 @@ def main() -> None:
     parser.add_argument("--cycles", type=int, default=5, help="Số đợt (0 = chạy liên tục)")
     parser.add_argument("--min-docs", type=int, default=1, help="Số chứng từ tối thiểu mỗi đợt")
     parser.add_argument("--max-docs", type=int, default=5, help="Số chứng từ tối đa mỗi đợt")
+    parser.add_argument(
+        "--mode",
+        choices=["synthetic", "real", "mix"],
+        default="synthetic",
+        help="Nguồn chứng từ: synthetic (mặc định), real (đữ liệu thật), mix (trộn)",
+    )
+    parser.add_argument(
+        "--real-data-dir",
+        type=Path,
+        default=None,
+        help="Thư mục chứa JSON đã chuẩn bị bởi prepare_real_vn_data.py",
+    )
     args = parser.parse_args()
 
     print("=" * 60)
@@ -202,7 +244,29 @@ def main() -> None:
     print(f"   Prefix:   {DROP_PREFIX}")
     print(f"   Interval: {args.interval}s  |  Docs/cycle: {args.min_docs}-{args.max_docs}")
     print(f"   Cycles:   {'∞ (liên tục)' if args.cycles == 0 else args.cycles}")
+    print(f"   Mode:     {args.mode}")
     print("=" * 60)
+
+    # --- Load real data JSON files (if applicable) ---
+    real_docs: list[dict] | None = None
+    if args.mode in ("real", "mix"):
+        if not args.real_data_dir or not args.real_data_dir.is_dir():
+            print(
+                f"  \u274c --mode={args.mode} y\u00eau c\u1ea7u --real-data-dir ch\u1ec9 \u0111\u1ebfn th\u01b0 m\u1ee5c ch\u1ee9a JSON.\n"
+                f"  Ch\u1ea1y prepare_real_vn_data.py tr\u01b0\u1edbc \u0111\u1ec3 t\u1ea1o d\u1eef li\u1ec7u."
+            )
+            return
+        json_files = sorted(args.real_data_dir.glob("*.json"))
+        if not json_files:
+            print(f"  \u26a0\ufe0f Kh\u00f4ng t\u00ecm th\u1ea5y file JSON trong {args.real_data_dir}")
+            return
+        real_docs = []
+        for jf in json_files:
+            try:
+                real_docs.append(json.loads(jf.read_text(encoding="utf-8")))
+            except Exception as e:
+                print(f"  \u26a0\ufe0f B\u1ecf qua {jf.name}: {e}")
+        print(f"  \ud83d\udcc2 \u0110\u00e3 t\u1ea3i {len(real_docs)} file th\u1eadt t\u1eeb {args.real_data_dir}")
 
     s3 = _s3_client()
     _ensure_bucket(s3)
@@ -216,7 +280,7 @@ def main() -> None:
             cycle += 1
             n = random.randint(args.min_docs, args.max_docs)
             print(f"\n📦 Đợt {cycle}: tải {n} chứng từ lên MinIO…")
-            uploaded = run_cycle(s3, cycle, n)
+            uploaded = run_cycle(s3, cycle, n, real_docs=real_docs, mode=args.mode)
             total_uploaded += uploaded
             print(f"  ✅ Đã tải {uploaded} chứng từ (tổng: {total_uploaded})")
 
