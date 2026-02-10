@@ -182,5 +182,5 @@ def flow_journal_suggestion(
         created += 1
 
     session.flush()
-    log.info("journal_suggestion_done", extra={"created": created, "skipped": skipped, "run_id": run_id})
+    log.info("journal_suggestion_done", extra={"records_created": created, "skipped": skipped, "run_id": run_id})
     return {"proposals_created": created, "skipped_existing": skipped, "total_vouchers": len(vouchers)}

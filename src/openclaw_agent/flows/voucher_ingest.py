@@ -351,7 +351,7 @@ def flow_voucher_ingest(
     session.flush()
     log.info(
         "voucher_ingest_done",
-        extra={"created": created, "skipped": skipped, "run_id": run_id},
+        extra={"records_created": created, "skipped": skipped, "run_id": run_id},
     )
 
     result: dict[str, Any] = {
