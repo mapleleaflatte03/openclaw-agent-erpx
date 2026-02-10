@@ -1,6 +1,8 @@
 """Flow – Q&A Accounting (Trợ lý hỏi đáp & diễn giải nghiệp vụ kế toán).
 
-Template-based + DB query answering. No LLM required (yet).
+Template-based + DB query answering.
+When ``USE_REAL_LLM=true`` the fallback path invokes the shared LLM client
+for free-form questions that no keyword handler matches.
 Answers are built from real Acct* data — NEVER fabricates numbers.
 
 Fine-tune hooks:
@@ -41,6 +43,7 @@ from openclaw_agent.common.models import (
 log = logging.getLogger("openclaw.flows.qna_accounting")
 
 _USE_LANGGRAPH = os.getenv("USE_LANGGRAPH", "").lower() in ("1", "true", "yes")
+_USE_REAL_LLM = os.getenv("USE_REAL_LLM", "").strip().lower() in ("1", "true", "yes")
 
 
 # ---------------------------------------------------------------------------
@@ -153,6 +156,31 @@ def _graph_reasoning_hook(
         return None
     except Exception as e:
         log.warning("graph_reasoning_hook failed: %s", e)
+        return None
+
+
+def _try_llm_answer(
+    question: str,
+    context_summary: str = "",
+    regulation_refs: list[str] | None = None,
+    existing_reasoning: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    """Attempt an LLM-powered answer (returns ``None`` when disabled / error)."""
+    if not _USE_REAL_LLM:
+        return None
+    try:
+        from openclaw_agent.llm.client import get_llm_client
+        client = get_llm_client()
+        if not client.config.enabled:
+            return None
+        return client.generate_qna_answer(
+            question=question,
+            context_summary=context_summary or "Không có dữ liệu ngữ cảnh bổ sung.",
+            regulation_refs=regulation_refs,
+            existing_reasoning=existing_reasoning,
+        )
+    except Exception:
+        log.exception("_try_llm_answer failed — fallback")
         return None
 
 
@@ -476,7 +504,21 @@ def answer_question(session: Session, question: str) -> dict[str, Any]:
                         chain["regulation_references"] = refs
             return result
 
-    # Default fallback
+    # --- Try LLM for free-form questions when enabled ---
+    llm_result = _try_llm_answer(
+        question,
+        regulation_refs=_cite_regulation(question) or None,
+    )
+    if llm_result is not None:
+        llm_result.setdefault("used_models", [])
+        llm_result["reasoning_chain"] = _build_reasoning_chain(
+            question,
+            ["Không khớp handler nào — chuyển sang LLM", "LLM trả lời thành công"],
+            regulation_refs=_cite_regulation(question) or None,
+        )
+        return llm_result
+
+    # Default fallback (no handler, no LLM)
     return {
         "answer": (
             "Xin lỗi, tôi chưa hiểu câu hỏi này. Bạn có thể hỏi về:\n"

@@ -7,12 +7,13 @@ Steps:
   4. Create AcctJournalProposal + AcctJournalLine rows with confidence score
   5. All proposals start as status="pending" for human review
 
-This is a rule-based classifier (stub for future LLM integration).
-TODO: Replace _classify_voucher() with LangGraph LLM node.
+When ``USE_REAL_LLM=true`` the LLM client refines the rule-based result
+(re-checks account mapping, adds reasoning).  Falls back silently on error.
 """
 from __future__ import annotations
 
 import logging
+import os
 from typing import Any
 
 from sqlalchemy.orm import Session
@@ -21,6 +22,8 @@ from openclaw_agent.common.models import AcctJournalLine, AcctJournalProposal, A
 from openclaw_agent.common.utils import new_uuid
 
 log = logging.getLogger("openclaw.flows.journal")
+
+_USE_REAL_LLM = os.getenv("USE_REAL_LLM", "").strip().lower() in ("1", "true", "yes")
 
 # Vietnamese accounting chart (simplified subset)
 _ACCOUNT_MAP: dict[str, dict[str, Any]] = {
@@ -73,16 +76,38 @@ def _classify_voucher(voucher: dict[str, Any]) -> dict[str, Any]:
         f"Có TK {credit_code} ({credit_name}). "
         f"Rule-based classification."
     )
-    # TODO: reasoning = await llm_classify(voucher)
 
-    return {
+    result = {
         "debit_account": debit_code,
         "debit_name": debit_name,
         "credit_account": credit_code,
         "credit_name": credit_name,
         "confidence": round(confidence, 3),
         "reasoning": reasoning,
+        "llm_used": False,
     }
+
+    # --- LLM refinement (optional) -----------------------------------------
+    if _USE_REAL_LLM:
+        try:
+            from openclaw_agent.llm.client import get_llm_client
+            llm = get_llm_client()
+            refined = llm.refine_journal_suggestion(voucher, result)
+            if refined is not None:
+                # Merge LLM result (keep rule-based as fallback reference)
+                result.update({
+                    "debit_account": refined.get("debit_account", debit_code),
+                    "debit_name": refined.get("debit_name", debit_name),
+                    "credit_account": refined.get("credit_account", credit_code),
+                    "credit_name": refined.get("credit_name", credit_name),
+                    "confidence": round(float(refined.get("confidence", confidence)), 3),
+                    "reasoning": refined.get("reasoning", reasoning),
+                    "llm_used": True,
+                })
+        except Exception:
+            log.exception("LLM refinement failed — keeping rule-based result")
+
+    return result
 
 
 def flow_journal_suggestion(

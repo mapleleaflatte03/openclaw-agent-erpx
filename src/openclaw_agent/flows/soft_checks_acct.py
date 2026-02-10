@@ -2,9 +2,14 @@
 
 Produces AcctSoftCheckResult + AcctValidationIssue rows per period.
 Does NOT modify any ERP data (READ-ONLY principle).
+
+When ``USE_REAL_LLM=true`` the LLM client generates user-friendly
+explanations for each flagged issue.  Falls back silently on error.
 """
 from __future__ import annotations
 
+import logging
+import os
 from collections import Counter
 from datetime import date
 from typing import Any
@@ -16,6 +21,10 @@ from openclaw_agent.common.models import (
     AcctValidationIssue,
 )
 from openclaw_agent.common.utils import new_uuid
+
+log = logging.getLogger("openclaw.flows.soft_checks")
+
+_USE_REAL_LLM = os.getenv("USE_REAL_LLM", "").strip().lower() in ("1", "true", "yes")
 
 # ---------------------------------------------------------------------------
 # Rule definitions
@@ -189,7 +198,20 @@ def flow_soft_checks_acct(
         issue.check_result_id = result.id
     session.add_all(issues)
 
-    return {
+    # --- Optional LLM explanations for flagged issues ----------------------
+    llm_explanations: list[str] | None = None
+    if _USE_REAL_LLM and issues:
+        try:
+            from openclaw_agent.llm.client import get_llm_client
+            llm = get_llm_client()
+            summary = [{"code": iss.rule_code, "message": iss.message} for iss in issues]
+            llm_result = llm.explain_soft_check_issues(summary)
+            if llm_result is not None:
+                llm_explanations = llm_result.get("explanations")
+        except Exception:
+            log.exception("LLM soft-check explanations failed — skipping")
+
+    stats: dict[str, Any] = {
         "period": period,
         "total_checks": total,
         "passed": passed,
@@ -198,3 +220,6 @@ def flow_soft_checks_acct(
         "score": score,
         "issues_created": len(issues),
     }
+    if llm_explanations:
+        stats["llm_explanations"] = llm_explanations
+    return stats
