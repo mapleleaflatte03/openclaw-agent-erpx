@@ -1799,6 +1799,7 @@ def accounting_qna(
             "qna_id": qna_row.id,
             "used_models": result.get("used_models", []),
             "reasoning_chain": result.get("reasoning_chain", []),
+            "llm_used": result.get("llm_used", False),
         },
     }
 

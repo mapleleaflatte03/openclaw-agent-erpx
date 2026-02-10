@@ -1,22 +1,30 @@
 #!/usr/bin/env python3
-"""Randomized system smoke test — 120+ iterations.
+"""Randomized system smoke test — 200+ iterations.
 
 Runs a comprehensive randomized test harness against the agent service,
 exercising ALL accounting flows with random parameters, edge-case inputs,
 and varied env flag configurations.
 
-This script does NOT require external services (no Redis, no PostgreSQL,
-no MinIO).  It spins up the FastAPI app in-process with an in-memory SQLite
-database and calls the dispatch_run worker function directly (bypassing
-Celery), exactly like the golden-path tests.
+Supports two modes:
+  * **--use-real-llm** — sends real LLM calls via DO Agent endpoint
+    (reads ``DO_AGENT_*`` from ``.env``).  Q&A, journal-suggestion and
+    soft-check flows will use the LLM for reasoning.
+  * Default (no flag) — pure mock/rule-based, no network calls.
 
 Usage:
     cd /root/openclaw-agent-erpx
-    .venv/bin/python scripts/randomized_system_smoke.py --iterations 120
+
+    # mock mode (CI-safe, no network)
+    .venv/bin/python scripts/randomized_system_smoke.py --iterations 200
+
+    # real-LLM mode
+    USE_REAL_LLM=1 .venv/bin/python scripts/randomized_system_smoke.py \\
+        --iterations 200 --seed 2025 --use-real-llm
 
 Output:
     logs/randomized_smoke_report.jsonl   — one JSON line per iteration
     logs/randomized_smoke_summary.md     — human-readable summary
+    logs/randomized_llm_report_YYYYMMDD.json — structured JSON report
     stdout                               — compact progress log
 """
 from __future__ import annotations
@@ -41,7 +49,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "src"))
 
 # ---------------------------------------------------------------------------
-# Env defaults — safe offline mode
+# Env defaults — safe offline mode (overridden by --use-real-llm)
 # ---------------------------------------------------------------------------
 os.environ.setdefault("USE_REAL_LLM", "false")
 os.environ.setdefault("USE_LANGGRAPH", "false")
@@ -71,7 +79,7 @@ _INVALID_PERIODS = [
     "2025/01", "2025-13", "abc", "", "2025", "01-2025",
 ]
 
-# Q&A questions to test
+# Q&A questions to test (includes LLM-targeted reasoning questions)
 _QNA_QUESTIONS_VALID = [
     "Tháng 1/2025 có bao nhiêu chứng từ?",
     "Vì sao chứng từ hóa đơn số 0000001 được hạch toán như vậy?",
@@ -81,6 +89,12 @@ _QNA_QUESTIONS_VALID = [
     "Thông tư 200 quy định gì về hạch toán?",
     "Nghị định 123 quy định gì về hóa đơn điện tử?",
     "TK 131 phải thu khách hàng dùng khi nào?",
+    # LLM-targeted reasoning questions (only meaningful with USE_REAL_LLM=1)
+    "Giải thích bút toán cho hóa đơn mua hàng tháng 1/2025?",
+    "Tháng 1/2026 có bao nhiêu chứng từ bất thường?",
+    "Sự khác biệt giữa TK 331 và TK 131 trong hạch toán?",
+    "Khi nào dùng TK 642 chi phí quản lý doanh nghiệp?",
+    "Giải thích quy trình đối chiếu ngân hàng theo chuẩn VAS?",
 ]
 _QNA_QUESTIONS_EDGE = [
     "",         # empty
@@ -107,8 +121,15 @@ _GOAL_COMMANDS = [
 # Setup helpers
 # ---------------------------------------------------------------------------
 
-def _setup_env(tmp_dir: Path, *, use_langgraph: bool = False) -> None:
+def _setup_env(tmp_dir: Path, *, use_langgraph: bool = False, use_real_llm: bool = False) -> None:
     """Set all required env vars for in-process test."""
+    # When real LLM is enabled, load .env to pick up DO_AGENT_* credentials
+    if use_real_llm:
+        env_file = REPO_ROOT / ".env"
+        if env_file.exists():
+            from dotenv import load_dotenv
+            load_dotenv(env_file, override=False)  # don't override explicit env
+
     agent_db = tmp_dir / "agent.sqlite"
     erpx_db = tmp_dir / "erpx_mock.sqlite"
     seed_path = (REPO_ROOT / "samples" / "seed" / "erpx_seed_minimal.json").resolve()
@@ -128,7 +149,7 @@ def _setup_env(tmp_dir: Path, *, use_langgraph: bool = False) -> None:
         "AGENT_AUTH_MODE": "api_key",
         "AGENT_API_KEY": "test-key-smoke",
         "USE_LANGGRAPH": "true" if use_langgraph else "false",
-        "USE_REAL_LLM": "false",
+        "USE_REAL_LLM": "true" if use_real_llm else "false",
     }
     for k, v in env_map.items():
         os.environ[k] = v
@@ -155,6 +176,10 @@ def _bootstrap_services(tmp_dir: Path) -> tuple:
     from openclaw_agent.common.storage import S3ObjectRef
 
     Base.metadata.create_all(worker_tasks.engine)
+
+    # Reset LLM client singleton so it re-reads USE_REAL_LLM from env
+    from openclaw_agent.llm.client import reset_llm_client
+    reset_llm_client()
 
     # Stub S3 upload (no real MinIO)
     def fake_upload_file(_settings, bucket, key, path, content_type=None):
@@ -312,6 +337,8 @@ def _exec_qna_scenario(
     error_msg = None
     status_code = 0
     answer_excerpt = ""
+    llm_used = False
+    has_reasoning = False
 
     try:
         body: dict[str, Any] = {"question": question}
@@ -320,6 +347,9 @@ def _exec_qna_scenario(
         if r.status_code == 200:
             data = r.json()
             answer_excerpt = str(data.get("answer", ""))[:200]
+            meta = data.get("meta", {})
+            llm_used = bool(meta.get("llm_used"))
+            has_reasoning = bool(meta.get("reasoning_chain") or meta.get("llm_used"))
         elif r.status_code >= 500:
             error_msg = f"HTTP {r.status_code}: {r.text[:300]}"
     except Exception as e:
@@ -332,6 +362,8 @@ def _exec_qna_scenario(
         **scenario,
         "status_code": status_code,
         "answer_excerpt": answer_excerpt,
+        "llm_used": llm_used,
+        "has_reasoning": has_reasoning,
         "elapsed_s": elapsed,
         "error": error_msg,
     }
@@ -481,10 +513,15 @@ def _seed_vouchers(worker_tasks: Any, count: int = 20) -> None:
 # ---------------------------------------------------------------------------
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Randomized system smoke test (120+ iterations)")
-    parser.add_argument("--iterations", type=int, default=120, help="Number of iterations (default: 120)")
+    parser = argparse.ArgumentParser(description="Randomized system smoke test (200+ iterations)")
+    parser.add_argument("--iterations", type=int, default=200, help="Number of iterations (default: 200)")
     parser.add_argument("--seed", type=int, default=None, help="Random seed for reproducibility")
+    parser.add_argument("--use-real-llm", action="store_true", default=False,
+                        help="Enable real LLM calls (reads DO_AGENT_* from .env)")
     args = parser.parse_args()
+
+    # --use-real-llm flag OR env var
+    use_real_llm = args.use_real_llm or os.getenv("USE_REAL_LLM", "").strip().lower() in ("1", "true", "yes")
 
     if args.seed is not None:
         random.seed(args.seed)
@@ -495,15 +532,15 @@ def main() -> None:
     print("🎲 Randomized System Smoke Test")
     print(f"   Iterations: {args.iterations}")
     print(f"   Seed: {args.seed or 'random'}")
+    print(f"   USE_REAL_LLM: {use_real_llm}")
     print(f"   USE_LANGGRAPH: {os.getenv('USE_LANGGRAPH', 'false')}")
-    print(f"   USE_REAL_LLM: {os.getenv('USE_REAL_LLM', 'false')}")
     print(f"   Report: {REPORT_FILE}")
     print("=" * 70)
 
     # --- Setup ---
     import tempfile
     tmp_dir = Path(tempfile.mkdtemp(prefix="randomized_smoke_"))
-    _setup_env(tmp_dir)
+    _setup_env(tmp_dir, use_real_llm=use_real_llm)
     worker_tasks, erpx_port, erpx_server, erpx_thread = _bootstrap_services(tmp_dir)
 
     # Seed some vouchers
@@ -589,7 +626,8 @@ def main() -> None:
             if test_type == "run":
                 extra = f" run_type={sc['run_type']} period={sc.get('period')} → {result.get('status', '?')}"
             elif test_type == "qna":
-                extra = f" q={sc.get('question', '')[:40]}… → {result.get('status_code')}"
+                llm_tag = " 🤖LLM" if result.get("llm_used") else ""
+                extra = f" q={sc.get('question', '')[:40]}… → {result.get('status_code')}{llm_tag}"
             elif test_type == "goal":
                 extra = f" cmd={sc.get('command', '')[:30]}… → {result.get('status_code')}"
             elif test_type == "approval":
@@ -610,8 +648,13 @@ def main() -> None:
     failed = counters["fail"]
     pass_rate = round(100 * passed / max(total, 1), 1)
 
+    # Count LLM calls
+    llm_calls = sum(1 for r in results if r.get("llm_used"))
+
     print("\n" + "=" * 70)
     print(f"📊 SUMMARY: {passed}/{total} passed ({pass_rate}%), {failed} failed, {leak_count} leaks")
+    if use_real_llm:
+        print(f"🤖 LLM calls: {llm_calls} (real LLM enabled)")
 
     if errors_by_type:
         print("\n❌ Error groups:")
@@ -683,6 +726,52 @@ def main() -> None:
 
     print(f"\n📄 Full report: {REPORT_FILE}")
     print(f"📄 Summary:     {SUMMARY_FILE}")
+
+    # --- Write structured JSON report (for LLM mode) ---
+    today_str = datetime.utcnow().strftime("%Y%m%d")
+    json_report_path = LOG_DIR / f"randomized_llm_report_{today_str}.json"
+
+    # Collect sample runs for the report
+    sample_runs = []
+    for r in results:
+        if r.get("test_type") == "qna" and r.get("status_code") == 200:
+            sample_runs.append({
+                "run_type": "qna",
+                "question": r.get("question", "")[:100],
+                "llm_used": bool(r.get("llm_used")),
+                "has_reasoning_chain": bool(r.get("has_reasoning")),
+                "answer_excerpt": r.get("answer_excerpt", "")[:120],
+            })
+        elif r.get("test_type") == "run" and r.get("status") == "success":
+            sample_runs.append({
+                "run_type": r.get("run_type"),
+                "period": r.get("period"),
+                "status": r.get("status"),
+                "elapsed_s": r.get("elapsed_s"),
+            })
+        if len(sample_runs) >= 20:
+            break
+
+    validation_failures = sum(
+        1 for r in results
+        if r.get("test_type") == "run" and r.get("status") == "failed"
+    )
+
+    json_report = {
+        "date": datetime.utcnow().isoformat(),
+        "iterations": total,
+        "use_real_llm": use_real_llm,
+        "llm_calls": llm_calls,
+        "success": passed,
+        "hard_failures": failed,
+        "validation_failures": validation_failures,
+        "leaks_detected": leak_count,
+        "sample_runs": sample_runs,
+    }
+
+    with open(json_report_path, "w", encoding="utf-8") as jf:
+        json.dump(json_report, jf, ensure_ascii=False, indent=2)
+    print(f"📄 JSON report: {json_report_path}")
 
     sys.exit(1 if failed > 0 else 0)
 

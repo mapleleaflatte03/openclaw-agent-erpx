@@ -24,7 +24,9 @@ from openclaw_agent.common.utils import new_uuid
 
 log = logging.getLogger("openclaw.flows.soft_checks")
 
-_USE_REAL_LLM = os.getenv("USE_REAL_LLM", "").strip().lower() in ("1", "true", "yes")
+def _is_real_llm_enabled() -> bool:
+    """Read USE_REAL_LLM at call time (not import time)."""
+    return os.getenv("USE_REAL_LLM", "").strip().lower() in ("1", "true", "yes")
 
 # ---------------------------------------------------------------------------
 # Rule definitions
@@ -200,7 +202,7 @@ def flow_soft_checks_acct(
 
     # --- Optional LLM explanations for flagged issues ----------------------
     llm_explanations: list[str] | None = None
-    if _USE_REAL_LLM and issues:
+    if _is_real_llm_enabled() and issues:
         try:
             from openclaw_agent.llm.client import get_llm_client
             llm = get_llm_client()

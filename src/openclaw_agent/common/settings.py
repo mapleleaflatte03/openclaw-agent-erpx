@@ -64,6 +64,16 @@ class Settings(BaseSettings):
     smtp_from: str = Field(default="accounting@example.local", alias="SMTP_FROM")
     smtp_tls: bool = Field(default=True, alias="SMTP_TLS")
 
+    # --- LLM ---
+    use_real_llm: bool = Field(default=False, alias="USE_REAL_LLM")
+    llm_provider: str = Field(default="openai", alias="LLM_PROVIDER")
+    llm_api_key: str = Field(default="", alias="DO_AGENT_API_KEY")
+    llm_base_url: str = Field(default="", alias="DO_AGENT_BASE_URL")
+    llm_model: str = Field(default="gpt-4.1-mini", alias="DO_AGENT_MODEL")
+    llm_timeout: float = Field(default=25.0, alias="LLM_TIMEOUT")
+    llm_max_tokens: int = Field(default=512, alias="LLM_MAX_TOKENS")
+    llm_temperature: float = Field(default=0.1, alias="LLM_TEMPERATURE")
+
 
 @lru_cache
 def get_settings() -> Settings:

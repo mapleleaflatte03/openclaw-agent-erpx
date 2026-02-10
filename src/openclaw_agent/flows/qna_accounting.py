@@ -43,7 +43,11 @@ from openclaw_agent.common.models import (
 log = logging.getLogger("openclaw.flows.qna_accounting")
 
 _USE_LANGGRAPH = os.getenv("USE_LANGGRAPH", "").lower() in ("1", "true", "yes")
-_USE_REAL_LLM = os.getenv("USE_REAL_LLM", "").strip().lower() in ("1", "true", "yes")
+
+
+def _is_real_llm_enabled() -> bool:
+    """Read USE_REAL_LLM at call time (not import time)."""
+    return os.getenv("USE_REAL_LLM", "").strip().lower() in ("1", "true", "yes")
 
 
 # ---------------------------------------------------------------------------
@@ -166,7 +170,7 @@ def _try_llm_answer(
     existing_reasoning: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     """Attempt an LLM-powered answer (returns ``None`` when disabled / error)."""
-    if not _USE_REAL_LLM:
+    if not _is_real_llm_enabled():
         return None
     try:
         from openclaw_agent.llm.client import get_llm_client

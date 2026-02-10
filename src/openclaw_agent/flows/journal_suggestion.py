@@ -23,7 +23,9 @@ from openclaw_agent.common.utils import new_uuid
 
 log = logging.getLogger("openclaw.flows.journal")
 
-_USE_REAL_LLM = os.getenv("USE_REAL_LLM", "").strip().lower() in ("1", "true", "yes")
+def _is_real_llm_enabled() -> bool:
+    """Read USE_REAL_LLM at call time (not import time)."""
+    return os.getenv("USE_REAL_LLM", "").strip().lower() in ("1", "true", "yes")
 
 # Vietnamese accounting chart (simplified subset)
 _ACCOUNT_MAP: dict[str, dict[str, Any]] = {
@@ -88,7 +90,7 @@ def _classify_voucher(voucher: dict[str, Any]) -> dict[str, Any]:
     }
 
     # --- LLM refinement (optional) -----------------------------------------
-    if _USE_REAL_LLM:
+    if _is_real_llm_enabled():
         try:
             from openclaw_agent.llm.client import get_llm_client
             llm = get_llm_client()

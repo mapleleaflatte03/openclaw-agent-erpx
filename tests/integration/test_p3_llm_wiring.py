@@ -173,9 +173,7 @@ class TestQnaLLMWiring:
     def test_qna_llm_fallback_path(self, monkeypatch):
         """When USE_REAL_LLM=false, default fallback is used (no LLM)."""
         monkeypatch.setenv("USE_REAL_LLM", "false")
-        # Force-reload the module-level flag
         import openclaw_agent.flows.qna_accounting as qna_mod
-        monkeypatch.setattr(qna_mod, "_USE_REAL_LLM", False)
 
         mock_session = MagicMock()
         result = qna_mod.answer_question(mock_session, "Câu hỏi ngẫu nhiên không khớp handler nào?")
@@ -184,8 +182,8 @@ class TestQnaLLMWiring:
 
     def test_qna_llm_active_path(self, monkeypatch):
         """When LLM is active and no handler matches → LLM branch fires."""
+        monkeypatch.setenv("USE_REAL_LLM", "true")
         import openclaw_agent.flows.qna_accounting as qna_mod
-        monkeypatch.setattr(qna_mod, "_USE_REAL_LLM", True)
 
         fake_llm_result = {
             "answer": "Theo TT200 điều 42...",
@@ -201,8 +199,8 @@ class TestQnaLLMWiring:
 
     def test_qna_llm_error_falls_through(self, monkeypatch):
         """LLM error → falls through to default help text."""
+        monkeypatch.setenv("USE_REAL_LLM", "true")
         import openclaw_agent.flows.qna_accounting as qna_mod
-        monkeypatch.setattr(qna_mod, "_USE_REAL_LLM", True)
 
         with patch.object(qna_mod, "_try_llm_answer", return_value=None):
             mock_session = MagicMock()
@@ -216,8 +214,8 @@ class TestJournalLLMWiring:
 
     def test_classify_without_llm(self, monkeypatch):
         """Default (USE_REAL_LLM=false) → rule-based, llm_used=False."""
+        monkeypatch.setenv("USE_REAL_LLM", "false")
         import openclaw_agent.flows.journal_suggestion as js_mod
-        monkeypatch.setattr(js_mod, "_USE_REAL_LLM", False)
 
         result = js_mod._classify_voucher({
             "voucher_type": "sell_invoice",
@@ -229,8 +227,8 @@ class TestJournalLLMWiring:
 
     def test_classify_with_llm_refinement(self, monkeypatch):
         """When LLM is enabled + returns valid JSON → merged."""
+        monkeypatch.setenv("USE_REAL_LLM", "true")
         import openclaw_agent.flows.journal_suggestion as js_mod
-        monkeypatch.setattr(js_mod, "_USE_REAL_LLM", True)
 
         refined = {
             "debit_account": "131",

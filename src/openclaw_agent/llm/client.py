@@ -284,3 +284,13 @@ def get_llm_client() -> LLMClient:
     if _DEFAULT_CLIENT is None:
         _DEFAULT_CLIENT = LLMClient()
     return _DEFAULT_CLIENT
+
+
+def reset_llm_client() -> None:
+    """Force re-creation of the singleton on next access.
+
+    Call this after changing env vars (e.g. in test harnesses) so the
+    client re-reads ``USE_REAL_LLM`` / ``DO_AGENT_*`` from the new env.
+    """
+    global _DEFAULT_CLIENT  # noqa: PLW0603
+    _DEFAULT_CLIENT = None

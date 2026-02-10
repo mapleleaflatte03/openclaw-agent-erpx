@@ -1,0 +1,137 @@
+{
+  "date": "2026-02-10T09:07:28.518112",
+  "iterations": 210,
+  "use_real_llm": true,
+  "llm_calls": 9,
+  "success": 210,
+  "hard_failures": 0,
+  "validation_failures": 5,
+  "leaks_detected": 0,
+  "sample_runs": [
+    {
+      "run_type": "qna",
+      "question": "Sự khác biệt giữa TK 331 và TK 131 trong hạch toán?",
+      "llm_used": false,
+      "has_reasoning_chain": true,
+      "answer_excerpt": "Để giải thích bút toán, vui lòng cung cấp số chứng từ/hóa đơn cụ thể. Ví dụ: 'Vì sao chứng từ hóa đơn số 0000123 được gợ"
+    },
+    {
+      "run_type": "close_checklist",
+      "period": "abc",
+      "status": "success",
+      "elapsed_s": 0.112
+    },
+    {
+      "run_type": "cashflow_forecast",
+      "period": "2025",
+      "status": "success",
+      "elapsed_s": 0.201
+    },
+    {
+      "run_type": "journal_suggestion",
+      "period": "2025-03",
+      "status": "success",
+      "elapsed_s": 3.159
+    },
+    {
+      "run_type": "close_checklist",
+      "period": "2025/01",
+      "status": "success",
+      "elapsed_s": 0.11
+    },
+    {
+      "run_type": "soft_checks",
+      "period": "2025-12",
+      "status": "success",
+      "elapsed_s": 3.383
+    },
+    {
+      "run_type": "close_checklist",
+      "period": "2025-03",
+      "status": "success",
+      "elapsed_s": 0.107
+    },
+    {
+      "run_type": "cashflow_forecast",
+      "period": "2025-02",
+      "status": "success",
+      "elapsed_s": 0.201
+    },
+    {
+      "run_type": "journal_suggestion",
+      "period": "2025-12",
+      "status": "success",
+      "elapsed_s": 0.088
+    },
+    {
+      "run_type": "voucher_ingest",
+      "period": "2025-03",
+      "status": "success",
+      "elapsed_s": 0.044
+    },
+    {
+      "run_type": "voucher_classify",
+      "period": "2025-03",
+      "status": "success",
+      "elapsed_s": 0.034
+    },
+    {
+      "run_type": "journal_suggestion",
+      "period": "2025",
+      "status": "success",
+      "elapsed_s": 0.092
+    },
+    {
+      "run_type": "journal_suggestion",
+      "period": "2024-03",
+      "status": "success",
+      "elapsed_s": 0.087
+    },
+    {
+      "run_type": "qna",
+      "question": "Tóm tắt dòng tiền dự báo",
+      "llm_used": false,
+      "has_reasoning_chain": true,
+      "answer_excerpt": "Chưa có dữ liệu dự báo dòng tiền. Hãy chạy 'cashflow_forecast' trước."
+    },
+    {
+      "run_type": "soft_checks",
+      "period": null,
+      "status": "success",
+      "elapsed_s": 2.99
+    },
+    {
+      "run_type": "cashflow_forecast",
+      "period": "2025-12",
+      "status": "success",
+      "elapsed_s": 0.193
+    },
+    {
+      "run_type": "voucher_classify",
+      "period": "2025-03",
+      "status": "success",
+      "elapsed_s": 0.028
+    },
+    {
+      "run_type": "qna",
+      "question": "TK 131 phải thu khách hàng dùng khi nào?",
+      "llm_used": true,
+      "has_reasoning_chain": true,
+      "answer_excerpt": ""
+    },
+    {
+      "run_type": "qna",
+      "question": "Tháng 1/2026 có bao nhiêu chứng từ bất thường?",
+      "llm_used": false,
+      "has_reasoning_chain": true,
+      "answer_excerpt": "Trong tháng 1/2026, hệ thống ghi nhận 1 chứng từ đã ingest."
+    },
+    {
+      "run_type": "qna",
+      "question": "Thông tư 200 quy định gì về hạch toán?",
+      "llm_used": false,
+      "has_reasoning_chain": true,
+      "answer_excerpt": "Để giải thích bút toán, vui lòng cung cấp số chứng từ/hóa đơn cụ thể. Ví dụ: 'Vì sao chứng từ hóa đơn số 0000123 được gợ"
+    }
+  ]
+}
