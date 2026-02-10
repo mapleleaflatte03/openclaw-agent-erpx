@@ -548,6 +548,7 @@ def main() -> None:
 
     # Create TestClient for API-level tests
     from fastapi.testclient import TestClient
+
     from openclaw_agent.agent_service.main import app
     client = TestClient(app, raise_server_exceptions=False)
     headers = {"X-API-Key": "test-key-smoke"}
@@ -670,7 +671,7 @@ def main() -> None:
         f.write(f"**Iterations:** {total}\n\n")
         f.write(f"**Pass / Fail:** {passed} / {failed} ({pass_rate}%)\n\n")
         f.write(f"**Leaks detected:** {leak_count}\n\n")
-        f.write(f"**Env flags:**\n")
+        f.write("**Env flags:**\n")
         f.write(f"- `USE_LANGGRAPH={os.getenv('USE_LANGGRAPH', 'false')}`\n")
         f.write(f"- `USE_REAL_LLM={os.getenv('USE_REAL_LLM', 'false')}`\n\n")
 
