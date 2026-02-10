@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re as _re
 import time
 from datetime import date, datetime
 from typing import Any, Literal
@@ -83,6 +84,36 @@ def require_api_key(
 
 
 app = FastAPI(title="OpenClaw Agent Service", version=os.getenv("APP_VERSION", "0.1.0"))
+
+_SANITIZE_PATTERNS = [
+    _re.compile(r'"(?:file_uri|source_uri|stored_uri|pack_uri|text_uri)"\s*:\s*"[^"]*"'),
+    _re.compile(r'https?://(?:agent-service|localhost|minio|redis|postgres)[^"\s,}]*'),
+    _re.compile(r's3://[^"\s,}]*'),
+    _re.compile(r'minio://[^"\s,}]*'),
+]
+
+
+@app.middleware("http")
+async def sanitize_response_middleware(request: Request, call_next):  # type: ignore[no-untyped-def]
+    """Strip internal URIs from JSON API responses."""
+    response = await call_next(request)
+    ct = response.headers.get("content-type", "")
+    if "application/json" not in ct:
+        return response
+    # Stream body, sanitize, rebuild response
+    body_chunks: list[bytes] = []
+    async for chunk in response.body_iterator:  # type: ignore[attr-defined]
+        body_chunks.append(chunk if isinstance(chunk, bytes) else chunk.encode())
+    body_text = b"".join(body_chunks).decode()
+    for pat in _SANITIZE_PATTERNS:
+        body_text = pat.sub('"***"', body_text)
+    from starlette.responses import Response as StarletteResponse
+    return StarletteResponse(
+        content=body_text,
+        status_code=response.status_code,
+        headers=dict(response.headers),
+        media_type="application/json",
+    )
 
 
 @app.on_event("startup")
@@ -1759,6 +1790,7 @@ def accounting_qna(
             "source": "acct_db",
             "qna_id": qna_row.id,
             "used_models": result.get("used_models", []),
+            "reasoning_chain": result.get("reasoning_chain", []),
         },
     }
 

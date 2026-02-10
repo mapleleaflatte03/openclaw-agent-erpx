@@ -41,6 +41,9 @@ log = logging.getLogger("openclaw.flows.voucher_ingest")
 # Fine-tune flag for enabling OCR pipeline instead of mock
 _USE_OCR = os.getenv("OPENCLAW_USE_OCR", "").lower() in ("1", "true", "yes")
 
+# Ray batch flag (mirrors voucher_classify pattern)
+_USE_RAY = os.getenv("USE_RAY", "").lower() in ("1", "true", "yes")
+
 
 # ---------------------------------------------------------------------------
 # OCR Placeholder Pipeline (Phase 5 fine-tune hooks)
@@ -281,6 +284,15 @@ def flow_voucher_ingest(
     payload = payload or {}
     source = payload.get("source", "vn_fixtures")
     docs = _load_documents(source, payload)
+
+    # Ray batch: normalize OCR documents in parallel when enabled
+    if _USE_RAY and source == "ocr" and len(docs) > 5:
+        try:
+            from openclaw_agent.kernel.batch import parallel_map
+            docs = parallel_map(_normalize_vn_fixture, docs, use_ray=True)
+            log.info("ray_batch_ingest", extra={"doc_count": len(docs)})
+        except ImportError:
+            log.warning("Ray requested but kernel.batch not available, sequential fallback")
 
     created = 0
     skipped = 0

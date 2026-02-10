@@ -305,7 +305,7 @@ with tab_agent:
                             icon = "♻️" if r.get("reused") else "🆕"
                             st.caption(
                                 f"  {icon} {_RUN_TYPE_LABELS.get(r['run_type'], r['run_type'])} "
-                                f"— `{r['run_id'][:12]}…` [{r['status']}]"
+                                f"— `{r['run_id'][:12]}…` [{_STATUS_LABELS.get(r['status'], r['status'])}]"
                             )
                         time.sleep(0.5)
                         st.rerun()
@@ -744,7 +744,20 @@ with tab_check:
             },
         )
     else:
-        st.info("Chưa có kết quả kiểm tra. Chạy **Kiểm tra logic** ở tab Tạo tác vụ để phân tích dữ liệu.")
+        # P0: diagnostic info when runs complete but no results
+        try:
+            recent = _get("/agent/v1/runs", params={"run_type": "soft_checks", "limit": 1})
+            ri = recent.get("items", [])
+            if ri and ri[0].get("status") == "completed":
+                st.info(
+                    "Tác vụ **Kiểm tra logic** đã chạy xong nhưng không tạo kết quả — "
+                    "có thể chưa có chứng từ trong kỳ hoặc dữ liệu mirror Acct* trống.\n\n"
+                    f"Mã tác vụ gần nhất: `{ri[0].get('run_id', '')[:12]}…`"
+                )
+            else:
+                st.info("Chưa có kết quả kiểm tra. Chạy **Kiểm tra logic** ở tab Tạo tác vụ để phân tích dữ liệu.")
+        except Exception:
+            st.info("Chưa có kết quả kiểm tra. Chạy **Kiểm tra logic** ở tab Tạo tác vụ để phân tích dữ liệu.")
 
     with st.expander("🔎 Chi tiết — Vấn đề phát hiện", expanded=bool(scr_items)):
         issue_filter = st.selectbox(
@@ -830,7 +843,20 @@ with tab_check:
             if latest.get("has_file"):
                 st.caption("📎 Có tệp báo cáo đính kèm")
     else:
-        st.info("Chưa có báo cáo. Chạy **Xuất báo cáo thuế** ở tab Tạo tác vụ.")
+        # P0: diagnostic info when tax_export runs complete but no results
+        try:
+            recent_rpt = _get("/agent/v1/runs", params={"run_type": "tax_export", "limit": 1})
+            ri_rpt = recent_rpt.get("items", [])
+            if ri_rpt and ri_rpt[0].get("status") == "completed":
+                st.info(
+                    "Tác vụ **Xuất báo cáo thuế** đã chạy xong nhưng không tạo báo cáo — "
+                    "có thể chưa có dữ liệu bút toán hoặc mirror Acct* trống.\n\n"
+                    f"Mã tác vụ gần nhất: `{ri_rpt[0].get('run_id', '')[:12]}…`"
+                )
+            else:
+                st.info("Chưa có báo cáo. Chạy **Xuất báo cáo thuế** ở tab Tạo tác vụ.")
+        except Exception:
+            st.info("Chưa có báo cáo. Chạy **Xuất báo cáo thuế** ở tab Tạo tác vụ.")
 
 
 # ===== TAB 6: Dòng tiền ===============================================
@@ -930,10 +956,26 @@ with tab_voucher:
 
     if cls_stats:
         df_cls = pd.DataFrame(cls_stats)
+        # VN labels for classification tags
+        _CLS_TAG_VN: dict[str, str] = {
+            "PURCHASE_INVOICE": "Hóa đơn đầu vào",
+            "SALES_INVOICE": "Hóa đơn đầu ra",
+            "CASH_DISBURSEMENT": "Phiếu chi",
+            "CASH_RECEIPT": "Phiếu thu",
+            "PAYROLL": "Lương",
+            "FIXED_ASSET": "Tài sản cố định",
+            "TAX_DECLARATION": "Kê khai thuế",
+            "BANK_TRANSACTION": "Giao dịch ngân hàng",
+            "OTHER": "Khác",
+        }
+        if "classification_tag" in df_cls.columns:
+            df_cls["Phân loại VN"] = df_cls["classification_tag"].map(
+                lambda t: _CLS_TAG_VN.get(t, t)
+            )
         st.dataframe(
             df_cls,
             use_container_width=True,
-            column_config={"classification_tag": "Phân loại", "count": "Số lượng"},
+            column_config={"classification_tag": "Mã phân loại", "Phân loại VN": "Phân loại", "count": "Số lượng"},
         )
 
         tag_options = ["(tất cả)"] + [s["classification_tag"] for s in cls_stats]
@@ -986,7 +1028,15 @@ with tab_qna:
                     qna_res = _post("/agent/v1/acct/qna", {"question": qna_question.strip()})
                     st.success(qna_res.get("answer", "Không có câu trả lời."))
                     with st.expander("📋 Chi tiết xử lý"):
-                        st.json(qna_res.get("meta", {}))
+                        meta = qna_res.get("meta", {})
+                        # Display reasoning chain if available
+                        chain = meta.get("reasoning_chain", [])
+                        if chain:
+                            st.markdown("**Chuỗi lập luận:**")
+                            for i, step in enumerate(chain, 1):
+                                st.markdown(f"{i}. {step}")
+                            st.divider()
+                        st.json({k: v for k, v in meta.items() if k != "reasoning_chain"})
                 except Exception as e:
                     st.error(f"❌ Lỗi: {e}")
         else:
