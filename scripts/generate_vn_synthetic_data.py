@@ -4,6 +4,40 @@
 Creates realistic VN invoices, payment vouchers, and receipts using
 patterns from Nghị định 123/2020/NĐ-CP and Thông tư 200/2014/TT-BTC.
 
+Data Source Research (P2):
+    Sources surveyed (2026-02):
+
+    Kaggle — Vietnamese OCR / Accounting Datasets:
+    1. MC_OCR 2021 (Vietnamese receipts)
+       URL:  https://www.kaggle.com/datasets/domixi1989/vietnamese-receipts-mc-ocr-2021
+       Size: 2.3 GB, 61 326 files (train/val images + mcocr_train_df.csv)
+       Use:  OCR fine-tuning for VN receipt images; annotated bounding boxes.
+    2. Receipt OCR Vietnamese (line-level annotations)
+       URL:  https://www.kaggle.com/datasets/blyatfk/receipt-ocr
+       Size: 76.46 MB, 6 241 files (InkData_line_processed + line_annotation.txt)
+       Use:  Text-line recognition training for VN receipt OCR.
+    3. OCR image data of Vietnamese language documents (Appen)
+       URL:  https://www.kaggle.com/datasets/appenlimited/ocr-image-data-of-vietnamese-language-documents
+       Size: 17.06 MB, 111 files, 2 080 VN images, CC BY-SA 4.0
+       Categories: BILLS, CONTRACTS, FORMS, TRADE_DOC, RECEIPT, IDCARD, etc.
+       Use:  Document classification + OCR for VN business documents.
+
+    Government / Official:
+    4. Portal hóa đơn điện tử (General Department of Taxation)
+       URL:  https://hoadondientu.gdt.gov.vn/
+       Info: Official e-invoice lookup; tools: HTKK, iTaxviewer, eTax Mobile.
+       Use:  Reference format for Nghị định 123 e-invoices.
+    5. Thông tư 133/2016/TT-BTC (SME accounting standards)
+       URL:  https://vbpl.vn/FileData/TW/Lists/vbpq/Attachments/113560/VanBanGoc_133_2016_TT_BTC.pdf
+       Info: Official circular for SME accounting regime (hệ thống kế toán DNNVV).
+       Use:  Account chart template, journal entry rules, report formats.
+
+    → Decision: Generate synthetic data following NĐ123 format patterns
+      with proper MST, invoice numbering, and VN accounting conventions.
+      This is privacy-safe under Vietnam Cybersecurity Law.
+      OCR fine-tuning can use datasets 1-3 above when transitioning from
+      placeholder engine to production Tesseract/Google Vision.
+
 Usage:
     python scripts/generate_vn_synthetic_data.py [--count N] [--output DIR] [--format json|csv]
 
@@ -29,6 +63,58 @@ import os
 import random
 from datetime import date, timedelta
 from typing import Any
+
+# ---------------------------------------------------------------------------
+# VN Data Source Registry — curated datasets for OCR / accounting training
+# ---------------------------------------------------------------------------
+
+_VN_DATA_SOURCES: list[dict[str, str]] = [
+    {
+        "id": "mc_ocr_2021",
+        "name": "Vietnamese Receipts MC_OCR 2021",
+        "url": "https://www.kaggle.com/datasets/domixi1989/vietnamese-receipts-mc-ocr-2021",
+        "size": "2.3 GB",
+        "files": "61326",
+        "license": "Unknown",
+        "use_case": "ocr_receipt",
+    },
+    {
+        "id": "receipt_ocr_vn",
+        "name": "Receipt OCR Vietnamese (line-level)",
+        "url": "https://www.kaggle.com/datasets/blyatfk/receipt-ocr",
+        "size": "76.46 MB",
+        "files": "6241",
+        "license": "Unknown",
+        "use_case": "ocr_line_recognition",
+    },
+    {
+        "id": "appen_vn_docs",
+        "name": "OCR image data of Vietnamese language documents",
+        "url": "https://www.kaggle.com/datasets/appenlimited/ocr-image-data-of-vietnamese-language-documents",
+        "size": "17.06 MB",
+        "files": "111 (2080 images)",
+        "license": "CC BY-SA 4.0",
+        "use_case": "ocr_document_classify",
+    },
+    {
+        "id": "gdt_einvoice",
+        "name": "Portal hóa đơn điện tử (Tổng cục Thuế)",
+        "url": "https://hoadondientu.gdt.gov.vn/",
+        "size": "N/A",
+        "files": "N/A",
+        "license": "Government",
+        "use_case": "einvoice_reference",
+    },
+    {
+        "id": "tt133_2016",
+        "name": "Thông tư 133/2016/TT-BTC (Kế toán DNNVV)",
+        "url": "https://vbpl.vn/FileData/TW/Lists/vbpq/Attachments/113560/VanBanGoc_133_2016_TT_BTC.pdf",
+        "size": "N/A",
+        "files": "1 PDF",
+        "license": "Government",
+        "use_case": "account_chart_template",
+    },
+]
 
 # ---------------------------------------------------------------------------
 # VN-specific data pools

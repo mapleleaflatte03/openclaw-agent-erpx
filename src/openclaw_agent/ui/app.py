@@ -34,10 +34,10 @@ _RUN_TYPE_LABELS: dict[str, str] = {
     "voucher_ingest": "Nhập chứng từ",
     "voucher_classify": "Phân loại chứng từ",
     "tax_export": "Xuất báo cáo thuế",
-    "working_papers": "Working papers",
+    "working_papers": "Bảng tính kiểm toán",
     "soft_checks": "Kiểm tra logic",
-    "ar_dunning": "Nhắc nợ (AR Dunning)",
-    "close_checklist": "Checklist kết kỳ",
+    "ar_dunning": "Nhắc nợ công nợ",
+    "close_checklist": "Danh mục kết kỳ",
     "evidence_pack": "Gói bằng chứng",
     "kb_index": "Cập nhật kho tri thức",
     "contract_obligation": "Nghĩa vụ hợp đồng",
@@ -174,15 +174,15 @@ st.markdown(
     .timeline-step.running { border-color: #fbbc04; }
     </style>
     <!-- Hexagonal Agent Icon — click scrolls to Agent Command Center tab -->
-    <div class="hex-badge" title="Agent Command Center">🤖</div>
+    <div class="hex-badge" title="Trung tâm điều khiển Agent">🤖</div>
     """,
     unsafe_allow_html=True,
 )
 
 st.title("🤖 ERP-X AI Kế toán — Agent")
-st.caption("OpenClaw Agent — Trợ lý kế toán thông minh tự hành (READ-ONLY overlay trên ERP)")
+st.caption("OpenClaw Agent — Trợ lý kế toán thông minh tự hành (chỉ đọc — không ghi vào ERP gốc)")
 if DEBUG_UI:
-    with st.expander("⚙️ Dev / Debug", expanded=False):
+    with st.expander("⚙️ Phát triển / Gỡ lỗi", expanded=False):
         st.caption(f"Agent API: {AGENT_BASE_URL}")
 
 # Auto-refresh state
@@ -192,6 +192,7 @@ if _AUTO_REFRESH_SECONDS > 0:
     _last = st.session_state.get(_auto_key, 0.0)
     if _now - _last >= _AUTO_REFRESH_SECONDS:
         st.session_state[_auto_key] = _now
+        st.rerun()
 
 current_user = _DEMO_USER_ID
 
@@ -210,7 +211,7 @@ current_user = _DEMO_USER_ID
     tab_qna,
     tab_contract,
 ) = st.tabs([
-    "🤖 Agent Command Center",
+    "🤖 Trung tâm điều khiển",
     "📋 Tạo tác vụ",
     "📂 Quản lý tác vụ",
     "🧾 Bút toán đề xuất",
@@ -219,19 +220,27 @@ current_user = _DEMO_USER_ID
     "💰 Dòng tiền",
     "📥 Chứng từ",
     "💬 Hỏi đáp",
-    "🔬 Hợp đồng (Labs)",
+    "🔬 Hợp đồng (Thử nghiệm)",
 ])
 
 
-# ===== TAB 0: Agent Command Center ====================================
+# ===== TAB 0: Trung tâm điều khiển Agent ==============================
 with tab_agent:
-    st.subheader("🤖 Agent Command Center")
+    st.subheader("🤖 Trung tâm điều khiển Agent")
     st.markdown(
         "**Điều khiển Agent bằng mục tiêu** — nhập lệnh tiếng Việt, "
         "Agent tự điều phối chuỗi tác vụ phù hợp."
     )
+    # Agent status badge
+    st.markdown(
+        '<span style="background:#34a853;color:#fff;padding:2px 10px;'
+        'border-radius:12px;font-size:0.85em;">● Trực tuyến</span> '
+        '<span style="color:#999;font-size:0.8em;">v1.0 — 10 nhóm nghiệp vụ</span>',
+        unsafe_allow_html=True,
+    )
+    st.markdown("")
 
-    # --- Goal-centric command input ---
+    # --- Goal-centric command input (CLI-style) ---
     col_cmd, col_period = st.columns([3, 1])
     with col_cmd:
         agent_command = st.text_input(
@@ -247,22 +256,28 @@ with tab_agent:
             key="agent_cmd_period",
         )
 
-    # Available goals
-    with st.expander("📋 Các lệnh mà Agent hiểu", expanded=False):
+    # Available goals — CLI-style skill list
+    with st.expander("📋 Các lệnh mà Agent hiểu (nhấn để xem)", expanded=False):
         st.markdown("""
-| Lệnh | Chuỗi tác vụ Agent sẽ thực hiện |
-|---|---|
-| **Đóng sổ tháng X** | Nhập CT → Phân loại → Đề xuất bút toán → Đối chiếu NH → Kiểm tra → Báo cáo thuế → Dự báo dòng tiền |
-| **Kiểm tra kỳ X** | Nhập CT → Phân loại → Kiểm tra logic |
-| **Đối chiếu ngân hàng** | Đối chiếu NH → Kiểm tra logic |
-| **Báo cáo thuế tháng X** | Nhập CT → Phân loại → Đề xuất bút toán → Xuất báo cáo thuế |
-| **Nhập chứng từ** | Nhập CT → Phân loại |
-| **Dự báo dòng tiền** | Dự báo dòng tiền |
+| Lệnh | Chuỗi tác vụ Agent sẽ thực hiện | Số bước |
+|---|---|---|
+| **Đóng sổ tháng X** | Nhập CT → Phân loại → Bút toán → Đối chiếu → Kiểm tra → Thuế → Dòng tiền | 7 |
+| **Kiểm tra kỳ X** | Nhập CT → Phân loại → Kiểm tra logic | 3 |
+| **Đối chiếu ngân hàng** | Đối chiếu NH → Kiểm tra logic | 2 |
+| **Báo cáo thuế tháng X** | Nhập CT → Phân loại → Bút toán → Xuất báo cáo thuế | 4 |
+| **Nhập chứng từ** | Nhập CT → Phân loại | 2 |
+| **Dự báo dòng tiền** | Dự báo dòng tiền | 1 |
+| **Phát hiện bất thường** | Kiểm tra logic → Phát hiện anomaly | 2 |
+| **Rà soát hợp đồng** | Nghĩa vụ hợp đồng | 1 |
+
+> 💡 **Mẹo:** Bạn có thể nhập lệnh tự do — Agent sẽ cố gắng hiểu và chọn chuỗi tác vụ phù hợp nhất.
         """)
 
     if st.button("🚀 Gửi lệnh cho Agent", key="agent_cmd_go", type="primary"):
         if not agent_command.strip():
             st.warning("⚠️ Vui lòng nhập lệnh cho Agent.")
+        elif agent_period.strip() and not _validate_period(agent_period.strip()):
+            st.error("❌ Kỳ kế toán không đúng định dạng. Vui lòng nhập theo YYYY-MM (ví dụ: 2026-01).")
         else:
             with st.spinner("🤖 Agent đang phân tích lệnh và điều phối tác vụ…"):
                 try:
@@ -411,9 +426,10 @@ with tab_trigger:
         idem = st.text_input("Khóa duy nhất (Idempotency-Key, tùy chọn)", value="", key="trig_idem")
 
         if st.button("▶️ Chạy tác vụ", key="trig_run"):
-            if _period_required and not (payload.get("period") or "").strip():
+            _p = (payload.get("period") or "").strip()
+            if _period_required and not _p:
                 st.error("❌ Vui lòng nhập kỳ kế toán (period) — trường bắt buộc cho loại tác vụ này.")
-            elif _period_required and not _validate_period(payload.get("period", "")):
+            elif _p and not _validate_period(_p):
                 st.error("❌ Kỳ kế toán không đúng định dạng. Vui lòng nhập theo YYYY-MM (ví dụ: 2026-01).")
             else:
                 body: dict[str, Any] = {"run_type": run_type, "trigger_type": "manual", "payload": payload}
@@ -432,7 +448,7 @@ with tab_trigger:
                     st.error(f"❌ Không thể tạo tác vụ: {e}")
 
     with col2:
-        st.subheader("Tải file lên (Event Trigger)")
+        st.subheader("Tải file lên (Kích hoạt sự kiện)")
         mode = st.selectbox(
             "Loại file", ["attachments", "kb"], key="drop_mode",
             format_func=lambda m: "Chứng từ đính kèm" if m == "attachments" else "Tài liệu tri thức",
@@ -1093,7 +1109,10 @@ with tab_contract:
                             key="fb_select",
                         )
                         fb_cols = st.columns(2)
-                        with fb_cols[0]:
+                        if _action_guard("fb_yes") or _action_guard("fb_no"):
+                            st.caption("✔ Đã ghi đánh giá — đang làm mới…")
+                        else:
+                          with fb_cols[0]:
                             if st.button("✅ Đúng", key="fb_yes"):
                                 try:
                                     _post(
@@ -1105,9 +1124,11 @@ with tab_contract:
                                         },
                                     )
                                     st.success("✅ Đã ghi đánh giá: Đúng")
+                                    _mark_done("fb_yes")
+                                    st.rerun()
                                 except Exception as ex:
                                     st.error(f"❌ Lỗi: {ex}")
-                        with fb_cols[1]:
+                          with fb_cols[1]:
                             if st.button("❌ Sai", key="fb_no"):
                                 try:
                                     _post(
@@ -1119,6 +1140,8 @@ with tab_contract:
                                         },
                                     )
                                     st.success("❌ Đã ghi đánh giá: Sai")
+                                    _mark_done("fb_no")
+                                    st.rerun()
                                 except Exception as ex:
                                     st.error(f"❌ Lỗi: {ex}")
                 else:

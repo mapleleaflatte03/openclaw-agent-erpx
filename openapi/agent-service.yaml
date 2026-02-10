@@ -1765,8 +1765,8 @@ paths:
   /agent/v1/agent/timeline:
     get:
       summary: Agent Timeline
-      description: Activity timeline for the Agent Command Center — shows recent agent
-        actions.
+      description: "Activity timeline for the Agent Command Center \u2014 shows recent\
+        \ agent actions."
       operationId: agent_timeline_agent_v1_agent_timeline_get
       parameters:
       - name: limit

@@ -14,6 +14,14 @@ Fine-tune hooks:
 Currently uses mock parser; designed to be plug-compatible with a real
 OCR engine (Tesseract, Google Vision, etc.) in the future.
 
+VN OCR training data (surveyed 2026-02):
+  - MC_OCR 2021: kaggle.com/datasets/domixi1989/vietnamese-receipts-mc-ocr-2021
+    2.3 GB, 61k receipt images with annotations
+  - Receipt OCR VN: kaggle.com/datasets/blyatfk/receipt-ocr
+    76 MB, 6k line-level text annotations
+  - Appen VN docs: kaggle.com/datasets/appenlimited/ocr-image-data-of-vietnamese-language-documents
+    17 MB, 2 080 images across 11 doc categories (CC BY-SA 4.0)
+
 READ-ONLY principle: all writes go to local Acct* mirror tables only.
 """
 from __future__ import annotations

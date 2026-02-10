@@ -60,7 +60,7 @@ def _auth(settings: Settings, api_key: str | None) -> None:
     if settings.agent_auth_mode == "none":
         return
     if not api_key or api_key != settings.agent_api_key:
-        raise HTTPException(status_code=401, detail="unauthorized")
+        raise HTTPException(status_code=401, detail="Không có quyền truy cập")
 
 
 def get_engine_dep(settings: Settings = Depends(get_settings)) -> Engine:
@@ -109,7 +109,8 @@ def readyz(settings: Settings = Depends(get_settings), engine: Engine = Depends(
         r.ping()
         ensure_buckets(settings)
     except Exception as e:
-        raise HTTPException(status_code=503, detail=str(e)) from e
+        log.error("readyz_fail", error=str(e))
+        raise HTTPException(status_code=503, detail="Hệ thống chưa sẵn sàng — kiểm tra kết nối DB/Redis/S3") from e
     return {"status": "ready"}
 
 
@@ -134,9 +135,9 @@ def _do_agent_env() -> tuple[str, str, str | None]:
     api_key = (os.getenv("DO_AGENT_API_KEY") or "").strip()
     model = (os.getenv("DO_AGENT_MODEL") or "").strip() or None
     if not base_url:
-        raise HTTPException(status_code=503, detail="DO_AGENT_BASE_URL is not set")
+        raise HTTPException(status_code=503, detail="Dịch vụ LLM chưa được cấu hình (thiếu URL)")
     if not api_key:
-        raise HTTPException(status_code=503, detail="DO_AGENT_API_KEY is not set")
+        raise HTTPException(status_code=503, detail="Dịch vụ LLM chưa được cấu hình (thiếu API key)")
     return base_url, api_key, model
 
 
@@ -173,7 +174,8 @@ def diagnostics_llm() -> dict[str, Any]:
         with httpx.Client(base_url=base_url, timeout=5.0) as client:
             health = client.get("/health").json()
     except Exception as e:
-        raise HTTPException(status_code=503, detail=f"do-agent health failed: {e}") from e
+        log.error("do_agent_health_fail", error=str(e))
+        raise HTTPException(status_code=503, detail="Kiểm tra sức khỏe dịch vụ LLM thất bại") from e
 
     t1 = time.perf_counter()
     try:
@@ -184,7 +186,8 @@ def diagnostics_llm() -> dict[str, Any]:
             instruction_override="You must respond with ONLY valid JSON. No commentary. Output: {\"ok\": true}",
         )
     except Exception as e:
-        raise HTTPException(status_code=503, detail=f"do-agent chat failed: {e}") from e
+        log.error("do_agent_chat_fail", error=str(e))
+        raise HTTPException(status_code=503, detail="Gọi LLM thất bại — kiểm tra dịch vụ LLM") from e
     t2 = time.perf_counter()
 
     choices = resp.get("choices") or []
@@ -345,9 +348,9 @@ def create_run(
         "voucher_classify",
     }
     if run_type not in _VALID_RUN_TYPES:
-        raise HTTPException(status_code=400, detail=f"invalid run_type: '{run_type}'. Valid: {sorted(_VALID_RUN_TYPES)}")
+        raise HTTPException(status_code=400, detail=f"Loại tác vụ không hợp lệ: '{run_type}'. Hợp lệ: {sorted(_VALID_RUN_TYPES)}")
     if trigger_type not in {"schedule", "event", "manual"}:
-        raise HTTPException(status_code=400, detail="invalid trigger_type")
+        raise HTTPException(status_code=400, detail="Nguồn kích hoạt không hợp lệ (chỉ hỗ trợ: schedule, event, manual)")
 
     idem = request.headers.get("Idempotency-Key")
     if not idem:
@@ -456,7 +459,7 @@ def list_runs(
 def get_run(run_id: str, session: Session = Depends(get_session)) -> dict[str, Any]:
     r = session.get(AgentRun, run_id)
     if not r:
-        raise HTTPException(status_code=404, detail="not found")
+        raise HTTPException(status_code=404, detail="Không tìm thấy tác vụ")
     return {
         "run_id": r.run_id,
         "run_type": r.run_type,
@@ -883,7 +886,7 @@ def list_contract_cases(
 def get_contract_case(case_id: str, session: Session = Depends(get_session)) -> ContractCaseOut:
     r = session.get(AgentContractCase, case_id)
     if not r:
-        raise HTTPException(status_code=404, detail="not found")
+        raise HTTPException(status_code=404, detail="Không tìm thấy hồ sơ hợp đồng")
     return {
         "case_id": r.case_id,
         "case_key": r.case_key,
@@ -1106,21 +1109,21 @@ def post_contract_approval(
 ) -> ContractApprovalCreateResponse:
     proposal = session.get(AgentProposal, proposal_id)
     if not proposal:
-        raise HTTPException(status_code=404, detail="not found")
+        raise HTTPException(status_code=404, detail="Không tìm thấy đề xuất")
 
     decision = body.decision
     approver_id = (body.approver_id or body.actor_user_id or "").strip()
     if not approver_id:
-        raise HTTPException(status_code=400, detail="approver_id is required")
+        raise HTTPException(status_code=400, detail="Cần có mã người duyệt (approver_id)")
     if approver_id == "system":
-        raise HTTPException(status_code=400, detail="approver_id cannot be 'system'")
+        raise HTTPException(status_code=400, detail="Mã người duyệt không được là 'system'")
 
     maker = (proposal.created_by or "").strip()
     if maker and maker == approver_id:
-        raise HTTPException(status_code=409, detail="maker-checker violation: creator cannot approve")
+        raise HTTPException(status_code=409, detail="Vi phạm maker-checker: người tạo không được tự duyệt")
 
     if body.evidence_ack is not True:
-        raise HTTPException(status_code=400, detail="evidence_ack=true is required")
+        raise HTTPException(status_code=400, detail="Cần xác nhận đã xem bằng chứng (evidence_ack=true)")
 
     approvals_required = _approvals_required(proposal.risk_level)
 
@@ -1142,7 +1145,7 @@ def post_contract_approval(
         }
 
     if proposal.status in {"approved", "rejected"}:
-        raise HTTPException(status_code=409, detail=f"proposal already finalized: {proposal.status}")
+        raise HTTPException(status_code=409, detail=f"Đề xuất đã hoàn tất ({proposal.status}). Không thể thay đổi.")
 
     # Enforce single decision per approver per proposal.
     prior = session.execute(
@@ -1151,7 +1154,7 @@ def post_contract_approval(
         )
     ).scalar_one_or_none()
     if prior:
-        raise HTTPException(status_code=409, detail="duplicate approver: approver already decided")
+        raise HTTPException(status_code=409, detail="Người duyệt đã ra quyết định trước đó")
 
     before_status = proposal.status
 
@@ -1381,7 +1384,7 @@ def review_journal_proposal(
 ) -> dict[str, Any]:
     proposal = session.get(AcctJournalProposal, proposal_id)
     if not proposal:
-        raise HTTPException(status_code=404, detail="proposal not found")
+        raise HTTPException(status_code=404, detail="Không tìm thấy bút toán đề xuất")
     if proposal.status != "pending":
         raise HTTPException(
             status_code=409,
@@ -1440,11 +1443,11 @@ def resolve_anomaly_flag(
 ) -> dict[str, Any]:
     flag = session.get(AcctAnomalyFlag, flag_id)
     if not flag:
-        raise HTTPException(status_code=404, detail="anomaly flag not found")
+        raise HTTPException(status_code=404, detail="Không tìm thấy cảnh báo bất thường")
     if flag.resolution != "open":
         raise HTTPException(
             status_code=409,
-            detail=f"Anomaly đã được xử lý (trạng thái: {flag.resolution}). Không thể thay đổi.",
+            detail=f"Giao dịch bất thường đã được xử lý (trạng thái: {flag.resolution}). Không thể thay đổi.",
         )
     flag.resolution = body.resolution
     flag.resolved_by = body.resolved_by
@@ -1556,7 +1559,7 @@ def resolve_validation_issue(
 ) -> dict[str, Any]:
     issue = session.get(AcctValidationIssue, issue_id)
     if not issue:
-        raise HTTPException(status_code=404, detail="validation issue not found")
+        raise HTTPException(status_code=404, detail="Không tìm thấy vấn đề cần kiểm tra")
     if issue.resolution != "open":
         raise HTTPException(
             status_code=409,
@@ -1564,7 +1567,7 @@ def resolve_validation_issue(
         )
     action = body.get("action", "resolved")
     if action not in ("resolved", "ignored"):
-        raise HTTPException(status_code=400, detail="action must be 'resolved' or 'ignored'")
+        raise HTTPException(status_code=400, detail="Hành động phải là 'resolved' hoặc 'ignored'")
     issue.resolution = action
     issue.resolved_by = body.get("resolved_by", "user")
     issue.resolved_at = utcnow()
@@ -1735,7 +1738,7 @@ def accounting_qna(
 
     question = body.get("question", "").strip()
     if not question:
-        raise HTTPException(status_code=400, detail="question is required")
+        raise HTTPException(status_code=400, detail="Vui lòng nhập câu hỏi")
 
     result = answer_question(session, question)
 
@@ -1793,9 +1796,9 @@ def get_graph_info(graph_name: str) -> dict[str, Any]:
             "compiled": True,
         }
     except ImportError:
-        raise HTTPException(status_code=501, detail="LangGraph is not installed") from None
+        raise HTTPException(status_code=501, detail="LangGraph chưa được cài đặt") from None
     except KeyError:
-        raise HTTPException(status_code=404, detail=f"Graph '{graph_name}' not found") from None
+        raise HTTPException(status_code=404, detail=f"Không tìm thấy đồ thị '{graph_name}'") from None
 
 
 # ---------------------------------------------------------------------------
@@ -2014,10 +2017,10 @@ def agent_timeline(
         "voucher_ingest": "Nhập chứng từ",
         "voucher_classify": "Phân loại chứng từ",
         "tax_export": "Xuất báo cáo thuế",
-        "working_papers": "Working papers",
+        "working_papers": "Bảng tính kiểm toán",
         "soft_checks": "Kiểm tra logic",
-        "ar_dunning": "Nhắc nợ",
-        "close_checklist": "Checklist kết kỳ",
+        "ar_dunning": "Nhắc nợ công nợ",
+        "close_checklist": "Danh mục kết kỳ",
         "evidence_pack": "Gói bằng chứng",
         "kb_index": "Cập nhật kho tri thức",
         "contract_obligation": "Nghĩa vụ hợp đồng",

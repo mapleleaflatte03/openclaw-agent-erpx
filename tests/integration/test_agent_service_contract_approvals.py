@@ -134,7 +134,8 @@ def test_agent_service_contract_approvals_high_risk(tmp_path: Path, monkeypatch)
             json={"decision": "approve", "approver_id": "approver3", "evidence_ack": True},
         )
         assert r.status_code == 409
-        assert "already finalized" in r.json()["detail"]
+        detail = r.json()["detail"]
+        assert "hoàn tất" in detail or "already finalized" in detail
 
         # Re-fetch proposal list: status must reflect approved
         r = client.get(f"/agent/v1/contract/cases/{case_id}/proposals")
@@ -201,5 +202,6 @@ def test_agent_service_contract_reject_finalizes(tmp_path: Path, monkeypatch):
             json={"decision": "approve", "approver_id": "approver2", "evidence_ack": True},
         )
         assert r.status_code == 409
-        assert "already finalized" in r.json()["detail"]
+        detail = r.json()["detail"]
+        assert "hoàn tất" in detail or "already finalized" in detail
 
