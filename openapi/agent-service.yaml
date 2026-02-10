@@ -1698,8 +1698,139 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /agent/v1/agent/commands:
+    post:
+      summary: Execute Agent Command
+      description: Parse a Vietnamese goal command and execute the chain of run_types.
+      operationId: execute_agent_command_agent_v1_agent_commands_post
+      parameters:
+      - name: X-API-Key
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Api-Key
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AgentCommandRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Execute Agent Command Agent V1 Agent Commands Post
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /agent/v1/agent/goals:
+    get:
+      summary: List Agent Goals
+      description: Return available goal-centric commands for the Agent Command Center.
+      operationId: list_agent_goals_agent_v1_agent_goals_get
+      parameters:
+      - name: X-API-Key
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Api-Key
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response List Agent Goals Agent V1 Agent Goals Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /agent/v1/agent/timeline:
+    get:
+      summary: Agent Timeline
+      description: Activity timeline for the Agent Command Center — shows recent agent
+        actions.
+      operationId: agent_timeline_agent_v1_agent_timeline_get
+      parameters:
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          default: 50
+          title: Limit
+      - name: run_id
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Run Id
+      - name: X-API-Key
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Api-Key
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Agent Timeline Agent V1 Agent Timeline Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
 components:
   schemas:
+    AgentCommandRequest:
+      properties:
+        command:
+          type: string
+          maxLength: 500
+          minLength: 1
+          title: Command
+        period:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Period
+        payload:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Payload
+      type: object
+      required:
+      - command
+      title: AgentCommandRequest
     AnomalyResolveIn:
       properties:
         resolution:
@@ -2182,14 +2313,15 @@ components:
         source_type:
           type: string
           title: Source Type
-        source_uri:
-          type: string
-          title: Source Uri
-        stored_uri:
+        file_name:
           anyOf:
           - type: string
           - type: 'null'
-          title: Stored Uri
+          title: File Name
+        has_file:
+          type: boolean
+          title: Has File
+          default: false
         file_hash:
           type: string
           title: File Hash
@@ -2217,7 +2349,6 @@ components:
       required:
       - source_id
       - source_type
-      - source_uri
       - file_hash
       - created_at
       title: ContractSourceOut
