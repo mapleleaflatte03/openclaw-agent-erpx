@@ -138,7 +138,14 @@ class LLMClient:
                 data = r.json()
                 choices = data.get("choices") or []
                 if choices:
-                    return (choices[0].get("message") or {}).get("content", "").strip()
+                    msg = choices[0].get("message") or {}
+                    # Reasoning models (e.g. GPT-oss-120b / DeepSeek-R1) may
+                    # put output in ``reasoning_content`` and leave ``content``
+                    # empty.  Prefer ``content``; fall back to ``reasoning_content``.
+                    text = (msg.get("content") or "").strip()
+                    if not text:
+                        text = (msg.get("reasoning_content") or "").strip()
+                    return text or None
                 return None
         except Exception:
             # Log without leaking secrets (no headers / key)
@@ -186,6 +193,7 @@ class LLMClient:
             "answer": answer,
             "llm_used": True,
             "model": self.config.model_label or "unknown",
+            "used_models": [self.config.model_label or "unknown"],
         }
 
     def refine_journal_suggestion(
