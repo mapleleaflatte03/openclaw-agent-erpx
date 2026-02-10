@@ -9,11 +9,8 @@ Usage: python3 tests/manual_qa_test.py
 """
 import json
 import os
-import sys
 import time
-import uuid
 from datetime import datetime
-from typing import Any
 
 import requests
 
@@ -223,8 +220,8 @@ if j_items:
     j0_text = json.dumps(j0, ensure_ascii=False)
     # Check debit/credit balance
     lines = j0.get("lines", j0.get("entries", []))
-    debit_total = sum(float(l.get("debit", 0) or 0) for l in lines) if lines else -1
-    credit_total = sum(float(l.get("credit", 0) or 0) for l in lines) if lines else -1
+    debit_total = sum(float(ln.get("debit", 0) or 0) for ln in lines) if lines else -1
+    credit_total = sum(float(ln.get("credit", 0) or 0) for ln in lines) if lines else -1
     balanced = abs(debit_total - credit_total) < 0.01 if debit_total >= 0 else None
     has_explanation = "giải" in j0_text.lower() or "explain" in j0_text.lower() or "reason" in j0_text.lower() or "lý do" in j0_text.lower()
     record("3.BútToán", "3.2 Cân đối Nợ/Có + Giải thích",
@@ -360,8 +357,8 @@ if rp_items:
     # Consistency check: read same snapshot twice
     rp0_id = rp0.get("id", rp0.get("snapshot_id", ""))
     if rp0_id:
-        rp_a = api("GET", f"/agent/v1/acct/report_snapshots?limit=1")
-        rp_b = api("GET", f"/agent/v1/acct/report_snapshots?limit=1")
+        rp_a = api("GET", "/agent/v1/acct/report_snapshots?limit=1")
+        rp_b = api("GET", "/agent/v1/acct/report_snapshots?limit=1")
         rp_a_data = json.dumps(rp_a["body"], sort_keys=True)
         rp_b_data = json.dumps(rp_b["body"], sort_keys=True)
         consistent = rp_a_data == rp_b_data
