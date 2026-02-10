@@ -2139,3 +2139,55 @@ def agent_timeline(
             })
 
     return {"items": timeline_items[:limit]}
+
+# ---------------------------------------------------------------------------
+# VN Feeder — status & control endpoints
+# ---------------------------------------------------------------------------
+
+_VN_FEEDER_CACHE = os.getenv("VN_FEEDER_CACHE_DIR", "/data/vn_feeder_cache")
+
+
+class VnFeederControlBody(BaseModel):
+    action: Literal["start", "stop", "inject_now"] = "start"
+    target_events_per_min: int | None = Field(None, ge=1, le=10)
+
+
+@app.get("/agent/v1/vn_feeder/status", dependencies=[Depends(require_api_key)])
+def vn_feeder_status() -> dict[str, Any]:
+    """Return current VN feeder status from the status file."""
+    import json as _json
+    status_path = os.path.join(_VN_FEEDER_CACHE, "feeder_status.json")
+    if os.path.isfile(status_path):
+        try:
+            return _json.loads(open(status_path, encoding="utf-8").read())
+        except Exception:
+            pass
+    return {
+        "running": False,
+        "total_events_today": 0,
+        "last_event_at": "",
+        "avg_events_per_min": 0,
+        "sources": [],
+        "updated_at": "",
+    }
+
+
+@app.post("/agent/v1/vn_feeder/control", dependencies=[Depends(require_api_key)])
+def vn_feeder_control(body: VnFeederControlBody) -> dict[str, str]:
+    """Write control command for the VN feeder process."""
+    import json as _json
+    os.makedirs(_VN_FEEDER_CACHE, exist_ok=True)
+    control_path = os.path.join(_VN_FEEDER_CACHE, "feeder_control.json")
+    ctrl: dict[str, Any] = {}
+    if body.action == "start":
+        ctrl["running"] = True
+    elif body.action == "stop":
+        ctrl["running"] = False
+    elif body.action == "inject_now":
+        ctrl["running"] = True
+        ctrl["inject_once"] = True
+    if body.target_events_per_min is not None:
+        ctrl["target_events_per_min"] = body.target_events_per_min
+    with open(control_path, "w", encoding="utf-8") as f:
+        _json.dump(ctrl, f)
+    return {"status": "ok", "action": body.action}

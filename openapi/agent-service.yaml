@@ -1815,6 +1815,71 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /agent/v1/vn_feeder/status:
+    get:
+      summary: Vn Feeder Status
+      description: Return current VN feeder status from the status file.
+      operationId: vn_feeder_status_agent_v1_vn_feeder_status_get
+      parameters:
+      - name: X-API-Key
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Api-Key
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Vn Feeder Status Agent V1 Vn Feeder Status Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /agent/v1/vn_feeder/control:
+    post:
+      summary: Vn Feeder Control
+      description: Write control command for the VN feeder process.
+      operationId: vn_feeder_control_agent_v1_vn_feeder_control_post
+      parameters:
+      - name: X-API-Key
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Api-Key
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VnFeederControlBody'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties:
+                  type: string
+                title: Response Vn Feeder Control Agent V1 Vn Feeder Control Post
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
 components:
   schemas:
     AgentCommandRequest:
@@ -2496,3 +2561,22 @@ components:
       - msg
       - type
       title: ValidationError
+    VnFeederControlBody:
+      properties:
+        action:
+          type: string
+          enum:
+          - start
+          - stop
+          - inject_now
+          title: Action
+          default: start
+        target_events_per_min:
+          anyOf:
+          - type: integer
+            maximum: 10.0
+            minimum: 1.0
+          - type: 'null'
+          title: Target Events Per Min
+      type: object
+      title: VnFeederControlBody

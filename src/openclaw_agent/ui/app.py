@@ -210,6 +210,7 @@ current_user = _DEMO_USER_ID
     tab_voucher,
     tab_qna,
     tab_contract,
+    tab_command_center,
 ) = st.tabs([
     "🤖 Trung tâm điều khiển",
     "📋 Tạo tác vụ",
@@ -221,6 +222,7 @@ current_user = _DEMO_USER_ID
     "📥 Chứng từ",
     "💬 Hỏi đáp",
     "🔬 Hợp đồng (Thử nghiệm)",
+    "🎛️ Command Center (VN Agent)",
 ])
 
 
@@ -1309,3 +1311,117 @@ with tab_contract:
                                     st.rerun()
                                 except Exception as e:
                                     st.error(f"❌ {e}")
+
+
+# ===== TAB 10: Command Center (VN Agent) ==================================
+with tab_command_center:
+    st.subheader("🎛️ Command Center — VN Invoice Data Stream")
+    st.caption("Quản lý nguồn dữ liệu hoá đơn VN — Kaggle + Synthetic → Agent Pipeline")
+
+    # --- Feeder Status ---
+    _cc_status: dict = {}
+    try:
+        _cc_status = _get("/agent/v1/vn_feeder/status")
+    except Exception:
+        _cc_status = {"running": False, "total_events_today": 0, "sources": []}
+
+    _cc_running = _cc_status.get("running", False)
+    _cc_badge_color = "#34a853" if _cc_running else "#ea4335"
+    _cc_badge_text = "● Đang chạy" if _cc_running else "● Đã dừng"
+
+    col_st1, col_st2, col_st3, col_st4 = st.columns(4)
+    with col_st1:
+        st.markdown(
+            f'<span style="background:{_cc_badge_color};color:#fff;padding:4px 12px;'
+            f'border-radius:12px;font-size:0.9em;">{_cc_badge_text}</span>',
+            unsafe_allow_html=True,
+        )
+    with col_st2:
+        st.metric("Tổng sự kiện hôm nay", _cc_status.get("total_events_today", 0))
+    with col_st3:
+        st.metric("Trung bình sự kiện/phút", _cc_status.get("avg_events_per_min", 0))
+    with col_st4:
+        _last_ev = _cc_status.get("last_event_at", "")
+        st.metric("Sự kiện gần nhất", _last_ev[:19] if _last_ev else "—")
+
+    st.divider()
+
+    # --- Source Statistics ---
+    st.markdown("##### 📊 Nguồn dữ liệu")
+    _cc_sources = _cc_status.get("sources", [])
+    if _cc_sources:
+        _src_df = pd.DataFrame(_cc_sources)
+        _src_df.columns = ["Nguồn", "Tổng bản ghi", "Đã gửi", "% đã dùng"]
+        st.dataframe(_src_df, use_container_width=True, hide_index=True)
+    else:
+        st.info("Chưa có dữ liệu nguồn. Khởi động Feeder để bắt đầu.")
+
+    st.divider()
+
+    # --- Controls ---
+    st.markdown("##### 🎮 Điều khiển Feeder")
+    col_c1, col_c2, col_c3 = st.columns(3)
+
+    with col_c1:
+        if st.button("▶️ Khởi động", key="cc_start", disabled=_cc_running):
+            try:
+                _post("/agent/v1/vn_feeder/control", {"action": "start"})
+                st.success("✅ Feeder đã khởi động")
+                st.rerun()
+            except Exception as e:
+                st.error(f"❌ {e}")
+
+    with col_c2:
+        if st.button("⏹️ Dừng", key="cc_stop", disabled=not _cc_running):
+            try:
+                _post("/agent/v1/vn_feeder/control", {"action": "stop"})
+                st.success("✅ Feeder đã dừng")
+                st.rerun()
+            except Exception as e:
+                st.error(f"❌ {e}")
+
+    with col_c3:
+        if st.button("⚡ Inject ngay", key="cc_inject"):
+            try:
+                _post("/agent/v1/vn_feeder/control", {"action": "inject_now"})
+                st.success("✅ Đã gửi lệnh inject")
+                st.rerun()
+            except Exception as e:
+                st.error(f"❌ {e}")
+
+    # Speed slider
+    _cc_epm = st.slider(
+        "Tốc độ (sự kiện/phút)",
+        min_value=1,
+        max_value=10,
+        value=3,
+        key="cc_epm_slider",
+    )
+    if st.button("💾 Áp dụng tốc độ", key="cc_apply_epm"):
+        try:
+            _post(
+                "/agent/v1/vn_feeder/control",
+                {"action": "start", "target_events_per_min": _cc_epm},
+            )
+            st.success(f"✅ Đã đặt tốc độ = {_cc_epm} sự kiện/phút")
+        except Exception as e:
+            st.error(f"❌ {e}")
+
+    st.divider()
+
+    # --- TT133 Quick Lookup ---
+    st.markdown("##### 📖 Tra cứu TT133/2016/TT-BTC")
+    _tt_query = st.text_input(
+        "Từ khoá tài khoản / bút toán",
+        placeholder="Ví dụ: tiền mặt, mua hàng, 156, VAT...",
+        key="cc_tt133_query",
+    )
+    if _tt_query:
+        try:
+            from openclaw_agent.regulations.tt133_index import (
+                get_regulation_context,
+            )
+            _tt_ctx = get_regulation_context(_tt_query)
+            st.code(_tt_ctx, language="text")
+        except Exception as e:
+            st.error(f"Lỗi tra cứu TT133: {e}")
