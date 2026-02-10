@@ -548,7 +548,7 @@ def post_attachment(body: dict[str, Any], session: Session = Depends(get_session
         & (AgentAttachment.erp_object_id == att.erp_object_id),
         att,
     )
-    return {"id": out.id, "file_uri": out.file_uri}
+    return {"id": out.id, "has_file": bool(out.file_uri)}
 
 
 @app.post("/agent/v1/exports", dependencies=[Depends(require_api_key)])
@@ -570,7 +570,7 @@ def post_export(body: dict[str, Any], session: Session = Depends(get_session)) -
         & (AgentExport.version == exp.version),
         exp,
     )
-    return {"id": out.id, "file_uri": out.file_uri}
+    return {"id": out.id, "has_file": bool(out.file_uri)}
 
 
 @app.post("/agent/v1/exceptions", dependencies=[Depends(require_api_key)])
@@ -722,8 +722,8 @@ class ContractSourceOut(BaseModel):
     source_id: str
     case_id: str | None = None
     source_type: str
-    source_uri: str
-    stored_uri: str | None = None
+    file_name: str | None = None
+    has_file: bool = False
     file_hash: str
     size_bytes: int | None = None
     content_type: str | None = None
@@ -912,8 +912,8 @@ def list_contract_case_sources(case_id: str, session: Session = Depends(get_sess
                 "source_id": r.source_id,
                 "case_id": r.case_id,
                 "source_type": r.source_type,
-                "source_uri": r.source_uri,
-                "stored_uri": r.stored_uri,
+                "file_name": (r.source_uri or "").rsplit("/", 1)[-1] if r.source_uri else None,
+                "has_file": bool(r.stored_uri),
                 "file_hash": r.file_hash,
                 "size_bytes": r.size_bytes,
                 "content_type": r.content_type,
@@ -1820,3 +1820,239 @@ def ray_status() -> dict[str, Any]:
         }
     except ImportError:
         return {"ray_available": False, "initialized": False, "resources": {}}
+
+
+# ---------------------------------------------------------------------------
+# Agent Command Center endpoints (P1)
+# ---------------------------------------------------------------------------
+
+# Goal → chain mapping: Vietnamese goal phrases → ordered run_types
+_GOAL_CHAINS: dict[str, list[str]] = {
+    "đóng sổ": [
+        "voucher_ingest", "voucher_classify", "journal_suggestion",
+        "bank_reconcile", "soft_checks", "tax_export", "cashflow_forecast",
+    ],
+    "kiểm tra kỳ": [
+        "voucher_ingest", "voucher_classify", "soft_checks",
+    ],
+    "đối chiếu": [
+        "bank_reconcile", "soft_checks",
+    ],
+    "báo cáo thuế": [
+        "voucher_ingest", "voucher_classify", "journal_suggestion",
+        "tax_export",
+    ],
+    "nhập chứng từ": [
+        "voucher_ingest", "voucher_classify",
+    ],
+    "phân loại": [
+        "voucher_classify",
+    ],
+    "dự báo dòng tiền": [
+        "cashflow_forecast",
+    ],
+    "hỏi đáp": [],  # special: goes to Q&A, not a run chain
+}
+
+_GOAL_CHAIN_LABELS: dict[str, str] = {
+    "đóng sổ": "Đóng sổ cuối kỳ",
+    "kiểm tra kỳ": "Kiểm tra kỳ kế toán",
+    "đối chiếu": "Đối chiếu ngân hàng",
+    "báo cáo thuế": "Báo cáo thuế",
+    "nhập chứng từ": "Nhập & phân loại chứng từ",
+    "phân loại": "Phân loại chứng từ",
+    "dự báo dòng tiền": "Dự báo dòng tiền",
+    "hỏi đáp": "Hỏi đáp kế toán",
+}
+
+
+def _parse_goal_command(command: str) -> tuple[str, list[str]]:
+    """Parse a Vietnamese goal command → (goal_key, chain of run_types)."""
+    cmd_lower = command.strip().lower()
+    for goal_key, chain in _GOAL_CHAINS.items():
+        if goal_key in cmd_lower:
+            return goal_key, chain
+    # Fallback: try to match common run_type keywords
+    _RT_KEYWORDS: dict[str, str] = {
+        "bút toán": "journal_suggestion",
+        "đề xuất": "journal_suggestion",
+        "ngân hàng": "bank_reconcile",
+        "chứng từ": "voucher_ingest",
+        "hợp đồng": "contract_obligation",
+        "kiểm tra": "soft_checks",
+        "thuế": "tax_export",
+    }
+    for kw, rt in _RT_KEYWORDS.items():
+        if kw in cmd_lower:
+            return rt, [rt]
+    return "unknown", []
+
+
+class AgentCommandRequest(BaseModel):
+    command: str = Field(min_length=1, max_length=500)
+    period: str | None = None
+    payload: dict[str, Any] | None = None
+
+
+@app.post("/agent/v1/agent/commands", dependencies=[Depends(require_api_key)])
+def execute_agent_command(
+    body: AgentCommandRequest,
+    request: Request,
+    session: Session = Depends(get_session),
+    settings: Settings = Depends(get_settings),
+) -> dict[str, Any]:
+    """Parse a Vietnamese goal command and execute the chain of run_types."""
+    goal_key, chain = _parse_goal_command(body.command)
+
+    if not chain:
+        return {
+            "status": "no_chain",
+            "goal": goal_key,
+            "message": "Không nhận diện được mục tiêu. Vui lòng thử lại với mô tả cụ thể hơn.",
+            "available_goals": list(_GOAL_CHAIN_LABELS.values()),
+            "runs": [],
+        }
+
+    runs_created: list[dict[str, Any]] = []
+    payload = body.payload or {}
+    if body.period:
+        payload["period"] = body.period
+
+    for run_type in chain:
+        idem = make_idempotency_key("cmd", goal_key, run_type, body.period or "")
+        existing = session.execute(
+            select(AgentRun).where(AgentRun.idempotency_key == idem)
+        ).scalar_one_or_none()
+        if existing:
+            runs_created.append({
+                "run_id": existing.run_id,
+                "run_type": existing.run_type,
+                "status": existing.status,
+                "reused": True,
+            })
+            continue
+
+        run = AgentRun(
+            run_id=new_uuid(),
+            run_type=run_type,
+            trigger_type="manual",
+            requested_by="agent-command-center",
+            status="queued",
+            idempotency_key=idem,
+            cursor_in=payload,
+            cursor_out=None,
+            started_at=None,
+            finished_at=None,
+            stats=None,
+        )
+        session.add(run)
+        session.flush()
+
+        queue_map = {
+            "attachment": "ocr", "kb_index": "ocr",
+            "tax_export": "export", "working_papers": "export",
+            "soft_checks": "default", "close_checklist": "default",
+            "ar_dunning": "io", "evidence_pack": "io",
+            "contract_obligation": "ocr",
+            "journal_suggestion": "default", "bank_reconcile": "default",
+            "cashflow_forecast": "default",
+            "voucher_ingest": "default", "voucher_classify": "default",
+        }
+        celery_app.send_task(
+            "openclaw_agent.agent_worker.tasks.dispatch_run",
+            args=[run.run_id],
+            queue=queue_map.get(run_type, "default"),
+        )
+        runs_created.append({
+            "run_id": run.run_id,
+            "run_type": run_type,
+            "status": "queued",
+            "reused": False,
+        })
+
+    log.info("agent_command", command=body.command, goal=goal_key, runs=len(runs_created))
+    return {
+        "status": "ok",
+        "goal": goal_key,
+        "goal_label": _GOAL_CHAIN_LABELS.get(goal_key, goal_key),
+        "chain": chain,
+        "runs": runs_created,
+    }
+
+
+@app.get("/agent/v1/agent/goals", dependencies=[Depends(require_api_key)])
+def list_agent_goals() -> dict[str, Any]:
+    """Return available goal-centric commands for the Agent Command Center."""
+    return {
+        "goals": [
+            {"key": k, "label": _GOAL_CHAIN_LABELS[k], "chain": v}
+            for k, v in _GOAL_CHAINS.items()
+        ]
+    }
+
+
+@app.get("/agent/v1/agent/timeline", dependencies=[Depends(require_api_key)])
+def agent_timeline(
+    limit: int = 50,
+    run_id: str | None = None,
+    session: Session = Depends(get_session),
+) -> dict[str, Any]:
+    """Activity timeline for the Agent Command Center — shows recent agent actions."""
+    # Combine runs + tasks + logs into a unified timeline
+    timeline_items: list[dict[str, Any]] = []
+
+    # Recent runs
+    run_q = select(AgentRun).order_by(AgentRun.created_at.desc()).limit(min(limit, 100))
+    if run_id:
+        run_q = run_q.where(AgentRun.run_id == run_id)
+    runs = session.execute(run_q).scalars().all()
+
+    _RUN_TYPE_VN: dict[str, str] = {
+        "journal_suggestion": "Đề xuất bút toán",
+        "bank_reconcile": "Đối chiếu ngân hàng",
+        "cashflow_forecast": "Dự báo dòng tiền",
+        "voucher_ingest": "Nhập chứng từ",
+        "voucher_classify": "Phân loại chứng từ",
+        "tax_export": "Xuất báo cáo thuế",
+        "working_papers": "Working papers",
+        "soft_checks": "Kiểm tra logic",
+        "ar_dunning": "Nhắc nợ",
+        "close_checklist": "Checklist kết kỳ",
+        "evidence_pack": "Gói bằng chứng",
+        "kb_index": "Cập nhật kho tri thức",
+        "contract_obligation": "Nghĩa vụ hợp đồng",
+    }
+
+    for r in runs:
+        rt_label = _RUN_TYPE_VN.get(r.run_type, r.run_type)
+        status_emoji = {"queued": "⏳", "running": "🔄", "completed": "✅", "failed": "❌"}.get(r.status, "❓")
+
+        timeline_items.append({
+            "ts": str(r.created_at),
+            "type": "run",
+            "icon": status_emoji,
+            "title": f"Agent thực hiện: {rt_label}",
+            "detail": f"Trạng thái: {r.status}",
+            "run_id": r.run_id,
+            "run_type": r.run_type,
+            "status": r.status,
+        })
+
+        # Tasks within this run
+        tasks = session.execute(
+            select(AgentTask).where(AgentTask.run_id == r.run_id).order_by(AgentTask.created_at.asc())
+        ).scalars().all()
+        for t in tasks:
+            t_emoji = {"queued": "⏳", "running": "🔄", "completed": "✅", "failed": "❌"}.get(t.status, "❓")
+            timeline_items.append({
+                "ts": str(t.created_at),
+                "type": "task",
+                "icon": t_emoji,
+                "title": f"  Bước: {t.task_name}",
+                "detail": t.error or "",
+                "run_id": r.run_id,
+                "task_id": t.task_id,
+                "status": t.status,
+            })
+
+    return {"items": timeline_items[:limit]}

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import contextlib
 import os
+import re
 import time
 from datetime import date
 from typing import Any
@@ -19,6 +20,9 @@ MINIO_ENDPOINT = os.getenv("UI_MINIO_ENDPOINT", "http://localhost:9000")
 MINIO_ACCESS_KEY = os.getenv("UI_MINIO_ACCESS_KEY", "minioadmin")
 MINIO_SECRET_KEY = os.getenv("UI_MINIO_SECRET_KEY", "minioadmin")
 MINIO_BUCKET_DROP = os.getenv("UI_MINIO_BUCKET_DROP", os.getenv("MINIO_BUCKET_DROP", "agent-drop"))
+
+# Auto-refresh interval (seconds) — set to 0 to disable
+_AUTO_REFRESH_SECONDS = int(os.getenv("UI_AUTO_REFRESH_SECONDS", "15"))
 
 # ---------------------------------------------------------------------------
 # Vietnamese labels for run_types
@@ -40,6 +44,31 @@ _RUN_TYPE_LABELS: dict[str, str] = {
 }
 
 _RUN_TYPE_ORDER = list(_RUN_TYPE_LABELS.keys())
+
+# Status labels in Vietnamese
+_STATUS_LABELS: dict[str, str] = {
+    "queued": "⏳ Đang chờ",
+    "running": "🔄 Đang chạy",
+    "completed": "✅ Hoàn thành",
+    "failed": "❌ Thất bại",
+    "pending": "⏳ Chờ duyệt",
+    "approved": "✅ Đã duyệt",
+    "rejected": "❌ Đã từ chối",
+    "open": "🔵 Chưa xử lý",
+    "resolved": "✅ Đã xử lý",
+    "ignored": "⏭️ Bỏ qua",
+}
+
+# Severity labels in Vietnamese
+_SEVERITY_LABELS: dict[str, str] = {
+    "critical": "🔴 Nghiêm trọng",
+    "high": "🟠 Cao",
+    "medium": "🟡 Trung bình",
+    "low": "🟢 Thấp",
+    "error": "🔴 Lỗi",
+    "warning": "🟡 Cảnh báo",
+    "info": "🔵 Thông tin",
+}
 
 # P0 security: current_user_id from env, not editable by user
 _DEMO_USER_ID = os.getenv("OPENCLAW_DEMO_USER_ID", "demo-checker")
@@ -63,9 +92,9 @@ def _get(path: str, params: dict[str, Any] | None = None) -> Any:
             detail = e.response.json().get("detail", "")
         raise RuntimeError(detail or f"Lỗi {e.response.status_code} khi tải dữ liệu.") from e
     except requests.exceptions.ConnectionError as e:
-        raise RuntimeError("Không thể kết nối API backend.") from e
+        raise RuntimeError("Không thể kết nối API backend. Vui lòng kiểm tra hệ thống.") from e
     except requests.exceptions.Timeout as e:
-        raise RuntimeError("API backend phản hồi quá chậm (timeout).") from e
+        raise RuntimeError("API backend phản hồi quá chậm (timeout). Thử lại sau.") from e
 
 
 def _post(path: str, json_body: dict[str, Any], idem: str | None = None) -> Any:
@@ -82,9 +111,9 @@ def _post(path: str, json_body: dict[str, Any], idem: str | None = None) -> Any:
             detail = e.response.json().get("detail", "")
         raise RuntimeError(detail or f"Lỗi {e.response.status_code} khi gửi yêu cầu.") from e
     except requests.exceptions.ConnectionError as e:
-        raise RuntimeError("Không thể kết nối API backend.") from e
+        raise RuntimeError("Không thể kết nối API backend. Vui lòng kiểm tra hệ thống.") from e
     except requests.exceptions.Timeout as e:
-        raise RuntimeError("API backend phản hồi quá chậm (timeout).") from e
+        raise RuntimeError("API backend phản hồi quá chậm (timeout). Thử lại sau.") from e
 
 
 def _s3():
@@ -97,12 +126,27 @@ def _s3():
     )
 
 
+def _validate_period(period: str) -> bool:
+    """Validate period format YYYY-MM."""
+    return bool(re.match(r"^\d{4}-(0[1-9]|1[0-2])$", period.strip()))
+
+
+def _action_guard(key: str) -> bool:
+    """Double-click guard: returns True if action was already done."""
+    return bool(st.session_state.get(f"_guard_{key}"))
+
+
+def _mark_done(key: str) -> None:
+    """Mark action as done for double-click guard."""
+    st.session_state[f"_guard_{key}"] = True
+
+
 # ---------------------------------------------------------------------------
 # Page config
 # ---------------------------------------------------------------------------
-st.set_page_config(page_title="ERP-X AI Kế toán – OpenClaw", layout="wide")
+st.set_page_config(page_title="ERP-X AI Kế toán – OpenClaw Agent", layout="wide")
 
-# CSS fix: ensure DataFrame toolbar (Download CSV) is clickable above glide overlay
+# CSS: DataFrame toolbar fix + agent-feel styling + hex icon
 st.markdown(
     """
     <style>
@@ -110,17 +154,44 @@ st.markdown(
         z-index: 100 !important;
         pointer-events: auto !important;
     }
+    @keyframes pulse { 0% { opacity: 1; } 50% { opacity: 0.5; } 100% { opacity: 1; } }
+    .agent-status { animation: pulse 2s infinite; }
+    /* Hexagon agent icon — top-right corner */
+    .hex-badge {
+        position: fixed; top: 12px; right: 18px; z-index: 9999;
+        width: 50px; height: 50px; cursor: pointer;
+        background: linear-gradient(135deg, #1a73e8 0%, #0d47a1 100%);
+        clip-path: polygon(50% 0%, 93% 25%, 93% 75%, 50% 100%, 7% 75%, 7% 25%);
+        display: flex; align-items: center; justify-content: center;
+        color: white; font-size: 22px; font-weight: bold;
+        box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+        transition: transform 0.2s ease;
+    }
+    .hex-badge:hover { transform: scale(1.15); }
+    .timeline-step { border-left: 3px solid #1a73e8; padding: 4px 0 4px 14px; margin-left: 14px; }
+    .timeline-step.completed { border-color: #34a853; }
+    .timeline-step.failed { border-color: #ea4335; }
+    .timeline-step.running { border-color: #fbbc04; }
     </style>
+    <!-- Hexagonal Agent Icon — click scrolls to Agent Command Center tab -->
+    <div class="hex-badge" title="Agent Command Center">🤖</div>
     """,
     unsafe_allow_html=True,
 )
 
-st.title("🧾 ERP-X AI Kế toán")
-st.caption("OpenClaw — Hỗ trợ đọc, phân loại & đối chiếu chứng từ (READ-ONLY)")
-# Internal endpoint shown only when DEBUG_UI=true
+st.title("🤖 ERP-X AI Kế toán — Agent")
+st.caption("OpenClaw Agent — Trợ lý kế toán thông minh tự hành (READ-ONLY overlay trên ERP)")
 if DEBUG_UI:
-    with st.expander("⚙️ Dev / Debug info", expanded=False):
+    with st.expander("⚙️ Dev / Debug", expanded=False):
         st.caption(f"Agent API: {AGENT_BASE_URL}")
+
+# Auto-refresh state
+if _AUTO_REFRESH_SECONDS > 0:
+    _auto_key = "_last_auto_refresh"
+    _now = time.time()
+    _last = st.session_state.get(_auto_key, 0.0)
+    if _now - _last >= _AUTO_REFRESH_SECONDS:
+        st.session_state[_auto_key] = _now
 
 current_user = _DEMO_USER_ID
 
@@ -128,6 +199,7 @@ current_user = _DEMO_USER_ID
 # Tabs
 # ---------------------------------------------------------------------------
 (
+    tab_agent,
     tab_trigger,
     tab_runs,
     tab_journal,
@@ -138,6 +210,7 @@ current_user = _DEMO_USER_ID
     tab_qna,
     tab_contract,
 ) = st.tabs([
+    "🤖 Agent Command Center",
     "📋 Tạo tác vụ",
     "📂 Quản lý tác vụ",
     "🧾 Bút toán đề xuất",
@@ -148,6 +221,132 @@ current_user = _DEMO_USER_ID
     "💬 Hỏi đáp",
     "🔬 Hợp đồng (Labs)",
 ])
+
+
+# ===== TAB 0: Agent Command Center ====================================
+with tab_agent:
+    st.subheader("🤖 Agent Command Center")
+    st.markdown(
+        "**Điều khiển Agent bằng mục tiêu** — nhập lệnh tiếng Việt, "
+        "Agent tự điều phối chuỗi tác vụ phù hợp."
+    )
+
+    # --- Goal-centric command input ---
+    col_cmd, col_period = st.columns([3, 1])
+    with col_cmd:
+        agent_command = st.text_input(
+            "🎯 Nhập lệnh cho Agent",
+            value="",
+            placeholder='Ví dụ: "Đóng sổ tháng 1/2026" hoặc "Kiểm tra kỳ 2026-01"',
+            key="agent_cmd_input",
+        )
+    with col_period:
+        agent_period = st.text_input(
+            "Kỳ (YYYY-MM)",
+            value=date.today().strftime("%Y-%m"),
+            key="agent_cmd_period",
+        )
+
+    # Available goals
+    with st.expander("📋 Các lệnh mà Agent hiểu", expanded=False):
+        st.markdown("""
+| Lệnh | Chuỗi tác vụ Agent sẽ thực hiện |
+|---|---|
+| **Đóng sổ tháng X** | Nhập CT → Phân loại → Đề xuất bút toán → Đối chiếu NH → Kiểm tra → Báo cáo thuế → Dự báo dòng tiền |
+| **Kiểm tra kỳ X** | Nhập CT → Phân loại → Kiểm tra logic |
+| **Đối chiếu ngân hàng** | Đối chiếu NH → Kiểm tra logic |
+| **Báo cáo thuế tháng X** | Nhập CT → Phân loại → Đề xuất bút toán → Xuất báo cáo thuế |
+| **Nhập chứng từ** | Nhập CT → Phân loại |
+| **Dự báo dòng tiền** | Dự báo dòng tiền |
+        """)
+
+    if st.button("🚀 Gửi lệnh cho Agent", key="agent_cmd_go", type="primary"):
+        if not agent_command.strip():
+            st.warning("⚠️ Vui lòng nhập lệnh cho Agent.")
+        else:
+            with st.spinner("🤖 Agent đang phân tích lệnh và điều phối tác vụ…"):
+                try:
+                    cmd_res = _post(
+                        "/agent/v1/agent/commands",
+                        {
+                            "command": agent_command.strip(),
+                            "period": agent_period.strip() or None,
+                        },
+                    )
+                    if cmd_res.get("status") == "no_chain":
+                        st.warning(
+                            f"⚠️ {cmd_res.get('message', 'Không nhận diện được mục tiêu.')}\n\n"
+                            f"**Gợi ý:** {', '.join(cmd_res.get('available_goals', []))}"
+                        )
+                    else:
+                        runs = cmd_res.get("runs", [])
+                        chain = cmd_res.get("chain", [])
+                        st.success(
+                            f"✅ Agent đã tiếp nhận lệnh: **{cmd_res.get('goal_label', '')}**\n\n"
+                            f"📊 Chuỗi tác vụ: {len(chain)} bước  •  "
+                            f"Tác vụ tạo mới: {sum(1 for r in runs if not r.get('reused'))}"
+                        )
+                        for r in runs:
+                            icon = "♻️" if r.get("reused") else "🆕"
+                            st.caption(
+                                f"  {icon} {_RUN_TYPE_LABELS.get(r['run_type'], r['run_type'])} "
+                                f"— `{r['run_id'][:12]}…` [{r['status']}]"
+                            )
+                        time.sleep(0.5)
+                        st.rerun()
+                except Exception as e:
+                    st.error(f"❌ Lỗi gửi lệnh: {e}")
+
+    st.divider()
+
+    # --- Activity Timeline ---
+    st.subheader("📜 Dòng thời gian hoạt động Agent")
+    col_tl_hdr, col_tl_ref = st.columns([3, 1])
+    with col_tl_ref:
+        if st.button("🔄 Làm mới", key="refresh_timeline"):
+            st.rerun()
+
+    try:
+        timeline = _get("/agent/v1/agent/timeline", params={"limit": 30})
+        tl_items = timeline.get("items", [])
+    except Exception as e:
+        st.error(f"Lỗi tải dòng thời gian: {e}")
+        tl_items = []
+
+    if tl_items:
+        for item in tl_items:
+            icon = item.get("icon", "❓")
+            title = item.get("title", "")
+            detail = item.get("detail", "")
+            ts = item.get("ts", "")[:19]
+            item_type = item.get("type", "run")
+            status = item.get("status", "")
+
+            css_class = "completed" if status == "completed" else (
+                "failed" if status == "failed" else (
+                    "running" if status == "running" else ""
+                )
+            )
+
+            if item_type == "run":
+                st.markdown(
+                    f'<div class="timeline-step {css_class}">'
+                    f"<strong>{icon} {title}</strong><br/>"
+                    f"<small>🕐 {ts} — {detail}</small></div>",
+                    unsafe_allow_html=True,
+                )
+            else:
+                st.markdown(
+                    f'<div class="timeline-step {css_class}" style="margin-left: 30px;">'
+                    f"{icon} {title}<br/>"
+                    f"<small>{detail}</small></div>",
+                    unsafe_allow_html=True,
+                )
+    else:
+        st.info(
+            "Chưa có hoạt động nào. Gửi lệnh cho Agent ở trên hoặc "
+            "tạo tác vụ ở tab **📋 Tạo tác vụ** để bắt đầu!"
+        )
 
 
 # ===== TAB 1: Tạo tác vụ =============================================
@@ -186,15 +385,15 @@ with tab_trigger:
         if run_type == "ar_dunning":
             payload["as_of"] = st.text_input("Ngày cắt (YYYY-MM-DD)", value=date.today().isoformat())
         if run_type == "evidence_pack":
-            payload["exception_id"] = st.text_input("exception_id", value="")
-            payload["issue_id"] = st.text_input("issue_id (tùy chọn)", value="")
+            payload["exception_id"] = st.text_input("Mã ngoại lệ (exception_id)", value="")
+            payload["issue_id"] = st.text_input("Mã vấn đề (tùy chọn)", value="")
         if run_type == "kb_index":
             payload["file_uri"] = st.text_input("Đường dẫn file", value="")
             payload["title"] = st.text_input("Tiêu đề (tùy chọn)", value="")
             payload["doc_type"] = st.selectbox("Loại tài liệu", ["process", "law", "template"])
             payload["version"] = st.text_input("Phiên bản", value="v1")
         if run_type == "contract_obligation":
-            payload["case_key"] = st.text_input("case_key (tùy chọn)", value="")
+            payload["case_key"] = st.text_input("Mã hợp đồng (case_key, tùy chọn)", value="")
             payload["partner_name"] = st.text_input("Tên đối tác (tùy chọn)", value="")
             payload["partner_tax_id"] = st.text_input("MST đối tác (tùy chọn)", value="")
             payload["contract_code"] = st.text_input("Mã hợp đồng (tùy chọn)", value="")
@@ -209,12 +408,13 @@ with tab_trigger:
                 if x.strip()
             ]
 
-        idem = st.text_input("Idempotency-Key (tùy chọn)", value="", key="trig_idem")
+        idem = st.text_input("Khóa duy nhất (Idempotency-Key, tùy chọn)", value="", key="trig_idem")
 
         if st.button("▶️ Chạy tác vụ", key="trig_run"):
-            # --- form validation ---
             if _period_required and not (payload.get("period") or "").strip():
-                st.error("❌ Vui lòng nhập kỳ kế toán (period) — trường bắt buộc.")
+                st.error("❌ Vui lòng nhập kỳ kế toán (period) — trường bắt buộc cho loại tác vụ này.")
+            elif _period_required and not _validate_period(payload.get("period", "")):
+                st.error("❌ Kỳ kế toán không đúng định dạng. Vui lòng nhập theo YYYY-MM (ví dụ: 2026-01).")
             else:
                 body: dict[str, Any] = {"run_type": run_type, "trigger_type": "manual", "payload": payload}
                 if requested_by.strip():
@@ -222,17 +422,21 @@ with tab_trigger:
                 try:
                     res = _post("/agent/v1/runs", body, idem or None)
                     st.success(
-                        f"✅ Tác vụ đã được tạo: {res.get('run_id', '')} "
-                        f"(trạng thái: {res.get('status', '')})"
+                        f"✅ Tác vụ **{_RUN_TYPE_LABELS.get(run_type, run_type)}** đã được tạo thành công!\n\n"
+                        f"Mã tác vụ: `{res.get('run_id', '')}`  •  "
+                        f"Trạng thái: {_STATUS_LABELS.get(res.get('status', ''), res.get('status', ''))}"
                     )
                     time.sleep(0.5)
                     st.rerun()
                 except Exception as e:
-                    st.error(f"❌ {e}")
+                    st.error(f"❌ Không thể tạo tác vụ: {e}")
 
     with col2:
         st.subheader("Tải file lên (Event Trigger)")
-        mode = st.selectbox("Loại file", ["attachments", "kb"], key="drop_mode")
+        mode = st.selectbox(
+            "Loại file", ["attachments", "kb"], key="drop_mode",
+            format_func=lambda m: "Chứng từ đính kèm" if m == "attachments" else "Tài liệu tri thức",
+        )
         up = st.file_uploader("Chọn file", type=None, key="drop_file")
         if up is not None and st.button("📤 Tải lên", key="drop_upload"):
             key = f"drop/{mode}/{int(time.time())}_{up.name}"
@@ -250,61 +454,103 @@ with tab_runs:
         if st.button("🔄 Làm mới", key="refresh_runs"):
             st.rerun()
 
+    col_flt_rt, col_flt_st = st.columns(2)
+    with col_flt_rt:
+        _filter_rt = st.selectbox(
+            "Lọc loại tác vụ",
+            ["(tất cả)"] + _RUN_TYPE_ORDER,
+            format_func=lambda rt: _RUN_TYPE_LABELS.get(rt, rt) if rt != "(tất cả)" else "(Tất cả)",
+            key="run_flt_rt",
+        )
+    with col_flt_st:
+        _filter_st = st.selectbox(
+            "Lọc trạng thái",
+            ["(tất cả)", "queued", "running", "completed", "failed"],
+            format_func=lambda s: _STATUS_LABELS.get(s, s) if s != "(tất cả)" else "(Tất cả)",
+            key="run_flt_st",
+        )
+
     try:
-        runs = _get("/agent/v1/runs", params={"limit": 50}).get("items", [])
+        _rp: dict[str, Any] = {"limit": 50}
+        if _filter_rt != "(tất cả)":
+            _rp["run_type"] = _filter_rt
+        if _filter_st != "(tất cả)":
+            _rp["status"] = _filter_st
+        runs = _get("/agent/v1/runs", params=_rp).get("items", [])
     except Exception as e:
         st.error(f"Lỗi tải danh sách tác vụ: {e}")
         runs = []
     if runs:
         df = pd.DataFrame(runs)
-        df["run_type_label"] = df["run_type"].map(lambda rt: _RUN_TYPE_LABELS.get(rt, rt))
+        df["Loại tác vụ"] = df["run_type"].map(lambda rt: _RUN_TYPE_LABELS.get(rt, rt))
+        df["Trạng thái"] = df["status"].map(lambda s: _STATUS_LABELS.get(s, s))
         st.dataframe(
-            df[["run_id", "run_type_label", "status", "trigger_type", "created_at"]],
+            df[["run_id", "Loại tác vụ", "Trạng thái", "trigger_type", "created_at"]],
             use_container_width=True,
-            column_config={"run_type_label": "Loại tác vụ"},
+            column_config={
+                "run_id": "Mã tác vụ",
+                "trigger_type": "Nguồn kích hoạt",
+                "created_at": "Thời gian tạo",
+            },
         )
-        run_id = st.text_input("Run ID xem chi tiết", value=df.iloc[0]["run_id"], key="runs_inspect")
+        run_id = st.text_input("Mã tác vụ xem chi tiết", value=df.iloc[0]["run_id"], key="runs_inspect")
 
         if run_id:
             colA, colB = st.columns(2)
             with colA:
-                st.markdown("### Bước xử lý (Tasks)")
+                st.markdown("### Bước xử lý")
                 try:
                     tasks = _get("/agent/v1/tasks", params={"run_id": run_id}).get("items", [])
                 except Exception as e:
-                    st.error(f"Lỗi tải tasks: {e}")
+                    st.error(f"Lỗi tải bước xử lý: {e}")
                     tasks = []
                 if tasks:
+                    df_t = pd.DataFrame(tasks)
+                    df_t["Trạng thái"] = df_t["status"].map(lambda s: _STATUS_LABELS.get(s, s))
                     st.dataframe(
-                        pd.DataFrame(tasks)[["task_name", "status", "error", "created_at"]],
+                        df_t[["task_name", "Trạng thái", "error", "created_at"]],
                         use_container_width=True,
+                        column_config={
+                            "task_name": "Bước",
+                            "error": "Lỗi",
+                            "created_at": "Thời gian",
+                        },
                     )
+                else:
+                    st.info("Chưa có bước xử lý cho tác vụ này.")
             with colB:
-                st.markdown("### Nhật ký (Logs)")
+                st.markdown("### Nhật ký hoạt động")
                 try:
                     logs = _get("/agent/v1/logs", params={"run_id": run_id, "limit": 200}).get("items", [])
                 except Exception as e:
-                    st.error(f"Lỗi tải logs: {e}")
+                    st.error(f"Lỗi tải nhật ký: {e}")
                     logs = []
                 if logs:
                     st.dataframe(
                         pd.DataFrame(logs)[["ts", "level", "message"]],
                         use_container_width=True,
+                        column_config={
+                            "ts": "Thời gian",
+                            "level": "Mức",
+                            "message": "Nội dung",
+                        },
                     )
+                else:
+                    st.info("Chưa có nhật ký cho tác vụ này.")
     else:
-        st.info("Chưa có tác vụ. Tạo mới ở tab **Tạo tác vụ**.")
+        st.info("Chưa có tác vụ nào. Tạo mới ở tab **📋 Tạo tác vụ**.")
 
 
 # ===== TAB 3: Bút toán đề xuất ========================================
 with tab_journal:
     col_jp_hdr, col_jp_ref = st.columns([3, 1])
     with col_jp_hdr:
-        st.subheader("🧾 Bút toán đề xuất (Journal Proposals)")
+        st.subheader("🧾 Bút toán đề xuất")
     with col_jp_ref:
         if st.button("🔄 Làm mới", key="refresh_journal"):
             st.rerun()
 
-    st.markdown(f"👤 Người duyệt (demo): **{current_user}**")
+    st.markdown(f"👤 Người duyệt hiện tại: **{current_user}**")
 
     try:
         proposals_data = _get("/agent/v1/acct/journal_proposals", params={"limit": 50})
@@ -324,45 +570,47 @@ with tab_journal:
             col_p1, col_p2 = st.columns([3, 1])
             with col_p1:
                 st.markdown(
-                    f"**{status_icon} {p.get('description', '')}** — "
+                    f"**{status_icon} {p.get('description', 'Không có mô tả')}** — "
                     f"Độ tin cậy: {p.get('confidence', 0):.0%}  \n"
                     f"📝 {lines_str}"
                 )
             with col_p2:
                 if p.get("status") == "pending":
-                    _btn_key_a = f"approve_{p['id']}"
-                    _btn_key_r = f"reject_{p['id']}"
-                    # Double-click guard via session_state
-                    if st.session_state.get(f"done_{_btn_key_a}") or st.session_state.get(f"done_{_btn_key_r}"):
+                    _gk_a = f"jp_approve_{p['id']}"
+                    _gk_r = f"jp_reject_{p['id']}"
+                    if _action_guard(_gk_a) or _action_guard(_gk_r):
                         st.caption("✔ Đã xử lý — đang làm mới…")
                     else:
                         col_a, col_r = st.columns(2)
                         with col_a:
-                            if st.button("✅ Duyệt", key=_btn_key_a):
+                            if st.button("✅ Duyệt", key=_gk_a):
                                 try:
                                     _post(
                                         f"/agent/v1/acct/journal_proposals/{p['id']}/review",
                                         {"status": "approved", "reviewed_by": current_user},
                                     )
-                                    st.session_state[f"done_{_btn_key_a}"] = True
-                                    st.success("Đã duyệt")
+                                    _mark_done(_gk_a)
+                                    st.success("✅ Đã duyệt bút toán")
                                     st.rerun()
                                 except Exception as ex:
-                                    st.error(str(ex))
+                                    st.error(f"❌ {ex}")
                         with col_r:
-                            if st.button("❌ Từ chối", key=_btn_key_r):
+                            if st.button("❌ Từ chối", key=_gk_r):
                                 try:
                                     _post(
                                         f"/agent/v1/acct/journal_proposals/{p['id']}/review",
                                         {"status": "rejected", "reviewed_by": current_user},
                                     )
-                                    st.session_state[f"done_{_btn_key_r}"] = True
-                                    st.success("Đã từ chối")
+                                    _mark_done(_gk_r)
+                                    st.success("❌ Đã từ chối bút toán")
                                     st.rerun()
                                 except Exception as ex:
-                                    st.error(str(ex))
+                                    st.error(f"❌ {ex}")
                 else:
-                    st.caption(f"{p.get('status', '')} bởi {p.get('reviewed_by', '')}")
+                    st.caption(
+                        f"{_STATUS_LABELS.get(p.get('status', ''), p.get('status', ''))} "
+                        f"bởi {p.get('reviewed_by', 'N/A')}"
+                    )
     else:
         st.info("Chưa có bút toán đề xuất. Chạy **Đề xuất bút toán** ở tab Tạo tác vụ.")
 
@@ -371,7 +619,7 @@ with tab_journal:
 with tab_anomaly:
     col_an_hdr, col_an_ref = st.columns([3, 1])
     with col_an_hdr:
-        st.subheader("🔍 Giao dịch bất thường (Anomaly Flags)")
+        st.subheader("🔍 Giao dịch bất thường")
     with col_an_ref:
         if st.button("🔄 Làm mới", key="refresh_anomaly"):
             st.rerun()
@@ -380,62 +628,77 @@ with tab_anomaly:
         anomalies_data = _get("/agent/v1/acct/anomaly_flags", params={"limit": 50})
         anomalies = anomalies_data.get("items", [])
     except Exception as e:
-        st.error(f"Lỗi tải anomaly flags: {e}")
+        st.error(f"Lỗi tải dữ liệu giao dịch bất thường: {e}")
         anomalies = []
 
     if anomalies:
         df_anom = pd.DataFrame(anomalies)
-        severity_colors = {"critical": "🔴", "high": "🟠", "medium": "🟡", "low": "🟢"}
-        df_anom["mức_độ"] = df_anom["severity"].map(lambda s: severity_colors.get(s, "⚪") + " " + s)
+        df_anom["Mức độ"] = df_anom["severity"].map(
+            lambda s: _SEVERITY_LABELS.get(s, f"⚪ {s}")
+        )
         st.dataframe(
-            df_anom[["mức_độ", "anomaly_type", "description", "resolution", "created_at"]],
+            df_anom[["Mức độ", "anomaly_type", "description", "resolution", "created_at"]],
             use_container_width=True,
-            column_config={"mức_độ": "Mức độ"},
+            column_config={
+                "anomaly_type": "Loại bất thường",
+                "description": "Mô tả",
+                "resolution": "Trạng thái",
+                "created_at": "Thời gian",
+            },
         )
 
         open_flags = [a for a in anomalies if a.get("resolution") == "open"]
         if open_flags:
             flag_id = st.selectbox(
-                "Chọn flag để xử lý",
+                "Chọn giao dịch bất thường cần xử lý",
                 [f["id"] for f in open_flags],
                 format_func=lambda fid: next(
-                    (f"{f['anomaly_type']}: {f['description'][:50]}..." for f in open_flags if f["id"] == fid),
+                    (f"{f['anomaly_type']}: {f['description'][:60]}..." for f in open_flags if f["id"] == fid),
                     fid,
                 ),
                 key="an_select",
             )
-            col_res, col_ign = st.columns(2)
-            with col_res:
-                if st.button("✅ Đã xử lý", key="an_resolve"):
-                    try:
-                        _post(
-                            f"/agent/v1/acct/anomaly_flags/{flag_id}/resolve",
-                            {"resolution": "resolved", "resolved_by": current_user},
-                        )
-                        st.success("Đã giải quyết")
-                        st.rerun()
-                    except Exception as ex:
-                        st.error(str(ex))
-            with col_ign:
-                if st.button("⏭️ Bỏ qua", key="an_ignore"):
-                    try:
-                        _post(
-                            f"/agent/v1/acct/anomaly_flags/{flag_id}/resolve",
-                            {"resolution": "ignored", "resolved_by": current_user},
-                        )
-                        st.success("Đã bỏ qua")
-                        st.rerun()
-                    except Exception as ex:
-                        st.error(str(ex))
+            _gk_res = f"an_resolve_{flag_id}"
+            _gk_ign = f"an_ignore_{flag_id}"
+            if _action_guard(_gk_res) or _action_guard(_gk_ign):
+                st.caption("✔ Đã xử lý — đang làm mới…")
+            else:
+                col_res, col_ign = st.columns(2)
+                with col_res:
+                    if st.button("✅ Đã xử lý", key=_gk_res):
+                        try:
+                            _post(
+                                f"/agent/v1/acct/anomaly_flags/{flag_id}/resolve",
+                                {"resolution": "resolved", "resolved_by": current_user},
+                            )
+                            _mark_done(_gk_res)
+                            st.success("✅ Đã giải quyết")
+                            st.rerun()
+                        except Exception as ex:
+                            st.error(f"❌ {ex}")
+                with col_ign:
+                    if st.button("⏭️ Bỏ qua", key=_gk_ign):
+                        try:
+                            _post(
+                                f"/agent/v1/acct/anomaly_flags/{flag_id}/resolve",
+                                {"resolution": "ignored", "resolved_by": current_user},
+                            )
+                            _mark_done(_gk_ign)
+                            st.success("⏭️ Đã bỏ qua")
+                            st.rerun()
+                        except Exception as ex:
+                            st.error(f"❌ {ex}")
+        else:
+            st.success("Không có giao dịch bất thường chưa xử lý. 🎉")
     else:
-        st.info("Chưa có anomaly flags. Chạy **Đối chiếu ngân hàng** ở tab Tạo tác vụ.")
+        st.info("Chưa phát hiện giao dịch bất thường. Chạy **Đối chiếu ngân hàng** ở tab Tạo tác vụ.")
 
 
 # ===== TAB 5: Kiểm tra & Báo cáo ======================================
 with tab_check:
     col_ck_hdr, col_ck_ref = st.columns([3, 1])
     with col_ck_hdr:
-        st.subheader("📊 Kiểm tra logic (Soft Check Results)")
+        st.subheader("📊 Kiểm tra logic")
     with col_ck_ref:
         if st.button("🔄 Làm mới", key="refresh_check"):
             st.rerun()
@@ -449,17 +712,30 @@ with tab_check:
 
     if scr_items:
         df_scr = pd.DataFrame(scr_items)
+        df_scr["Điểm"] = df_scr["score"].map(
+            lambda s: f"{'🟢' if s >= 0.8 else '🟡' if s >= 0.5 else '🔴'} {s:.0%}"
+        )
         st.dataframe(
-            df_scr[["period", "total_checks", "passed", "warnings", "errors", "score", "created_at"]],
+            df_scr[["period", "total_checks", "passed", "warnings", "errors", "Điểm", "created_at"]],
             use_container_width=True,
+            column_config={
+                "period": "Kỳ kế toán",
+                "total_checks": "Tổng kiểm tra",
+                "passed": "Đạt",
+                "warnings": "Cảnh báo",
+                "errors": "Lỗi",
+                "created_at": "Thời gian",
+            },
         )
     else:
-        st.info("Chưa có kết quả kiểm tra. Chạy **Kiểm tra logic** ở tab Tạo tác vụ.")
+        st.info("Chưa có kết quả kiểm tra. Chạy **Kiểm tra logic** ở tab Tạo tác vụ để phân tích dữ liệu.")
 
-    # --- Validation Issues ---
-    with st.expander("🔎 Chi tiết — Vấn đề kiểm tra (Validation Issues)", expanded=bool(scr_items)):
+    with st.expander("🔎 Chi tiết — Vấn đề phát hiện", expanded=bool(scr_items)):
         issue_filter = st.selectbox(
-            "Lọc trạng thái", ["open", "resolved", "ignored", "(tất cả)"], key="vi_filter",
+            "Lọc trạng thái",
+            ["open", "resolved", "ignored", "(tất cả)"],
+            format_func=lambda s: _STATUS_LABELS.get(s, s) if s != "(tất cả)" else "(Tất cả)",
+            key="vi_filter",
         )
         try:
             vi_params: dict[str, Any] = {"limit": 50}
@@ -468,32 +744,47 @@ with tab_check:
             vi_data = _get("/agent/v1/acct/validation_issues", params=vi_params)
             vi_items = vi_data.get("items", [])
         except Exception as e:
-            st.error(f"Lỗi tải validation issues: {e}")
+            st.error(f"Lỗi tải vấn đề kiểm tra: {e}")
             vi_items = []
 
         if vi_items:
             df_vi = pd.DataFrame(vi_items)
+            df_vi["Mức độ"] = df_vi["severity"].map(
+                lambda sv: _SEVERITY_LABELS.get(sv, f"⚪ {sv}")
+            )
             st.dataframe(
-                df_vi[["rule_code", "severity", "message", "erp_ref", "resolution", "created_at"]],
+                df_vi[["rule_code", "Mức độ", "message", "erp_ref", "resolution", "created_at"]],
                 use_container_width=True,
+                column_config={
+                    "rule_code": "Mã quy tắc",
+                    "message": "Nội dung",
+                    "erp_ref": "Tham chiếu ERP",
+                    "resolution": "Trạng thái",
+                    "created_at": "Thời gian",
+                },
             )
 
-            resolve_id = st.text_input("Issue ID để xử lý", value="", key="resolve_vi_id")
-            if resolve_id and st.button("✅ Đánh dấu đã xử lý", key="resolve_vi_btn"):
-                try:
-                    _post(
-                        f"/agent/v1/acct/validation_issues/{resolve_id}/resolve",
-                        {"action": "resolved", "resolved_by": current_user},
-                    )
-                    st.success("Đã đánh dấu xử lý")
-                    st.rerun()
-                except Exception as ex:
-                    st.error(f"Lỗi: {ex}")
+            resolve_id = st.text_input("Mã vấn đề (Issue ID) để xử lý", value="", key="resolve_vi_id")
+            if resolve_id:
+                _gk_vi = f"vi_resolve_{resolve_id}"
+                if _action_guard(_gk_vi):
+                    st.caption("✔ Đã xử lý")
+                elif st.button("✅ Đánh dấu đã xử lý", key="resolve_vi_btn"):
+                    try:
+                        _post(
+                            f"/agent/v1/acct/validation_issues/{resolve_id}/resolve",
+                            {"action": "resolved", "resolved_by": current_user},
+                        )
+                        _mark_done(_gk_vi)
+                        st.success("✅ Đã đánh dấu xử lý")
+                        st.rerun()
+                    except Exception as ex:
+                        st.error(f"❌ Lỗi: {ex}")
         else:
-            st.info("Không có vấn đề kiểm tra.")
+            st.info("Không có vấn đề kiểm tra nào.")
 
     st.divider()
-    st.subheader("📈 Báo cáo kế toán (Report Snapshots)")
+    st.subheader("📈 Báo cáo kế toán")
 
     try:
         rpt_data = _get("/agent/v1/acct/report_snapshots", params={"limit": 20})
@@ -506,7 +797,16 @@ with tab_check:
         df_rpt = pd.DataFrame(rpt_items)
         display_rpt_cols = ["report_type", "period", "version", "created_at"]
         available_rpt = [c for c in display_rpt_cols if c in df_rpt.columns]
-        st.dataframe(df_rpt[available_rpt], use_container_width=True)
+        st.dataframe(
+            df_rpt[available_rpt],
+            use_container_width=True,
+            column_config={
+                "report_type": "Loại báo cáo",
+                "period": "Kỳ",
+                "version": "Phiên bản",
+                "created_at": "Thời gian",
+            },
+        )
         with st.expander("📋 Chi tiết báo cáo mới nhất"):
             latest = rpt_items[0]
             if latest.get("summary_json"):
@@ -521,7 +821,7 @@ with tab_check:
 with tab_cashflow:
     col_cf_hdr, col_cf_ref = st.columns([3, 1])
     with col_cf_hdr:
-        st.subheader("💰 Dự báo dòng tiền (Cashflow Forecast)")
+        st.subheader("💰 Dự báo dòng tiền")
     with col_cf_ref:
         if st.button("🔄 Làm mới", key="refresh_cashflow"):
             st.rerun()
@@ -547,9 +847,17 @@ with tab_cashflow:
 
     if cf_items:
         df_cf = pd.DataFrame(cf_items)
+        df_cf["Hướng"] = df_cf["direction"].map(lambda d: "📈 Thu" if d == "inflow" else "📉 Chi")
         st.dataframe(
-            df_cf[["forecast_date", "direction", "amount", "source_type", "source_ref", "confidence"]],
+            df_cf[["forecast_date", "Hướng", "amount", "source_type", "source_ref", "confidence"]],
             use_container_width=True,
+            column_config={
+                "forecast_date": "Ngày dự báo",
+                "amount": "Số tiền (VND)",
+                "source_type": "Nguồn",
+                "source_ref": "Tham chiếu",
+                "confidence": "Độ tin cậy",
+            },
         )
     else:
         st.info("Chưa có dự báo. Chạy **Dự báo dòng tiền** ở tab Tạo tác vụ.")
@@ -559,7 +867,7 @@ with tab_cashflow:
 with tab_voucher:
     col_vc_hdr, col_vc_ref = st.columns([3, 1])
     with col_vc_hdr:
-        st.subheader("📥 Chứng từ đã ingest")
+        st.subheader("📥 Chứng từ đã nhập")
     with col_vc_ref:
         if st.button("🔄 Làm mới", key="refresh_voucher"):
             st.rerun()
@@ -577,9 +885,22 @@ with tab_voucher:
         if "classification_tag" in df_vouchers.columns:
             display_cols.append("classification_tag")
         available_cols = [c for c in display_cols if c in df_vouchers.columns]
-        st.dataframe(df_vouchers[available_cols], use_container_width=True)
+        st.dataframe(
+            df_vouchers[available_cols],
+            use_container_width=True,
+            column_config={
+                "voucher_no": "Số chứng từ",
+                "date": "Ngày",
+                "partner_name": "Đối tác",
+                "amount": "Số tiền",
+                "currency": "Tiền tệ",
+                "source": "Nguồn",
+                "type_hint": "Loại gợi ý",
+                "classification_tag": "Phân loại",
+            },
+        )
     else:
-        st.info("Chưa có chứng từ. Chạy **Nhập chứng từ** ở tab Tạo tác vụ.")
+        st.info("Chưa có chứng từ nào. Chạy **Nhập chứng từ** ở tab Tạo tác vụ.")
 
     st.divider()
     st.subheader("🏷️ Phân loại chứng từ")
@@ -593,7 +914,11 @@ with tab_voucher:
 
     if cls_stats:
         df_cls = pd.DataFrame(cls_stats)
-        st.dataframe(df_cls, use_container_width=True)
+        st.dataframe(
+            df_cls,
+            use_container_width=True,
+            column_config={"classification_tag": "Phân loại", "count": "Số lượng"},
+        )
 
         tag_options = ["(tất cả)"] + [s["classification_tag"] for s in cls_stats]
         selected_tag = st.selectbox("Lọc theo phân loại", tag_options, key="cls_filter")
@@ -609,11 +934,18 @@ with tab_voucher:
                     st.dataframe(
                         df_f[["voucher_no", "date", "partner_name", "amount", "classification_tag"]],
                         use_container_width=True,
+                        column_config={
+                            "voucher_no": "Số chứng từ",
+                            "date": "Ngày",
+                            "partner_name": "Đối tác",
+                            "amount": "Số tiền",
+                            "classification_tag": "Phân loại",
+                        },
                     )
                 else:
                     st.info(f"Không có chứng từ với phân loại '{selected_tag}'.")
             except Exception as e:
-                st.error(f"Lỗi: {e}")
+                st.error(f"❌ Lỗi: {e}")
     else:
         st.info("Chưa có thống kê phân loại. Chạy **Phân loại chứng từ** ở tab Tạo tác vụ.")
 
@@ -622,23 +954,27 @@ with tab_voucher:
 with tab_qna:
     col_qn_hdr, col_qn_ref = st.columns([3, 1])
     with col_qn_hdr:
-        st.subheader("💬 Trợ lý Q&A kế toán")
+        st.subheader("💬 Trợ lý hỏi đáp kế toán")
     with col_qn_ref:
         if st.button("🔄 Làm mới", key="refresh_qna"):
             st.rerun()
 
-    qna_question = st.text_input("Nhập câu hỏi kế toán", value="", key="qna_input")
-    if st.button("Hỏi", key="qna_ask"):
+    qna_question = st.text_input(
+        "Nhập câu hỏi kế toán bằng tiếng Việt", value="", key="qna_input",
+        placeholder="Ví dụ: Tháng 1/2026 có bao nhiêu chứng từ?",
+    )
+    if st.button("📨 Gửi câu hỏi", key="qna_ask"):
         if qna_question.strip():
-            try:
-                qna_res = _post("/agent/v1/acct/qna", {"question": qna_question.strip()})
-                st.success(qna_res.get("answer", ""))
-                with st.expander("Chi tiết"):
-                    st.json(qna_res.get("meta", {}))
-            except Exception as e:
-                st.error(f"Lỗi: {e}")
+            with st.spinner("Đang xử lý câu hỏi…"):
+                try:
+                    qna_res = _post("/agent/v1/acct/qna", {"question": qna_question.strip()})
+                    st.success(qna_res.get("answer", "Không có câu trả lời."))
+                    with st.expander("📋 Chi tiết xử lý"):
+                        st.json(qna_res.get("meta", {}))
+                except Exception as e:
+                    st.error(f"❌ Lỗi: {e}")
         else:
-            st.warning("Vui lòng nhập câu hỏi.")
+            st.warning("⚠️ Vui lòng nhập câu hỏi trước khi gửi.")
 
     with st.expander("📜 Lịch sử hỏi đáp", expanded=False):
         try:
@@ -660,7 +996,7 @@ with tab_qna:
 
 # ===== TAB 9: Hợp đồng (Labs) =========================================
 with tab_contract:
-    st.caption("Module hợp đồng — thử nghiệm, không phải core product.")
+    st.caption("Module hợp đồng — thử nghiệm, không phải chức năng chính.")
     st.info(
         "⚠️ **Lưu ý:** Agent chỉ tóm tắt và gom bằng chứng để hỗ trợ đọc hiểu. "
         "Quyết định kế toán vẫn thuộc về người dùng."
@@ -669,11 +1005,11 @@ with tab_contract:
     try:
         cases = _get("/agent/v1/contract/cases", params={"limit": 50}).get("items", [])
     except Exception as e:
-        st.error(f"Lỗi tải hợp đồng: {e}")
+        st.error(f"Lỗi tải danh sách hợp đồng: {e}")
         cases = []
 
     if not cases:
-        st.info("Chưa có hợp đồng. Chạy **Nghĩa vụ hợp đồng** ở tab Tạo tác vụ.")
+        st.info("Chưa có hợp đồng nào. Chạy **Nghĩa vụ hợp đồng** ở tab Tạo tác vụ.")
     else:
         case_labels = {c["case_id"]: f"{c['case_key']} ({c['status']})" for c in cases}
         case_id = st.selectbox("Chọn hợp đồng", list(case_labels.keys()), format_func=lambda cid: case_labels[cid])
@@ -707,6 +1043,14 @@ with tab_contract:
                                 "amount_value", "amount_percent", "due_date",
                             ]],
                             use_container_width=True,
+                            column_config={
+                                "obligation_type": "Loại nghĩa vụ",
+                                "risk_level": "Mức rủi ro",
+                                "confidence": "Độ tin cậy",
+                                "amount_value": "Giá trị",
+                                "amount_percent": "Tỷ lệ %",
+                                "due_date": "Hạn trả",
+                            },
                         )
                     else:
                         st.caption("Không có nghĩa vụ độ tin cậy cao.")
@@ -724,7 +1068,7 @@ with tab_contract:
                             use_container_width=True,
                         )
                         if hidden_count > 0:
-                            with st.expander(f"Xem thêm ({hidden_count})"):
+                            with st.expander(f"Xem thêm ({hidden_count} ứng viên)"):
                                 df_rest = pd.DataFrame(candidates[CANDIDATE_LIMIT:])
                                 st.dataframe(
                                     df_rest[[
@@ -744,7 +1088,7 @@ with tab_contract:
                             range(len(all_displayed)),
                             format_func=lambda i: (
                                 f"{all_displayed[i]['obligation_type']} "
-                                f"(conf={all_displayed[i].get('confidence', 0):.2f})"
+                                f"(độ tin cậy={all_displayed[i].get('confidence', 0):.2f})"
                             ),
                             key="fb_select",
                         )
@@ -760,9 +1104,9 @@ with tab_contract:
                                             "user_id": current_user or None,
                                         },
                                     )
-                                    st.success("Đã ghi đánh giá: Đúng")
+                                    st.success("✅ Đã ghi đánh giá: Đúng")
                                 except Exception as ex:
-                                    st.error(f"Lỗi: {ex}")
+                                    st.error(f"❌ Lỗi: {ex}")
                         with fb_cols[1]:
                             if st.button("❌ Sai", key="fb_no"):
                                 try:
@@ -774,13 +1118,13 @@ with tab_contract:
                                             "user_id": current_user or None,
                                         },
                                     )
-                                    st.success("Đã ghi đánh giá: Sai")
+                                    st.success("❌ Đã ghi đánh giá: Sai")
                                 except Exception as ex:
-                                    st.error(f"Lỗi: {ex}")
+                                    st.error(f"❌ Lỗi: {ex}")
                 else:
-                    st.info("Chưa có nghĩa vụ.")
+                    st.info("Chưa có dữ liệu nghĩa vụ. Hãy chạy phân tích hợp đồng trước.")
             except Exception as e:
-                st.error(f"Lỗi tải nghĩa vụ: {e}")
+                st.error(f"❌ Lỗi tải nghĩa vụ: {e}")
 
         with colD:
             st.markdown("### Đề xuất")
@@ -792,15 +1136,28 @@ with tab_contract:
                         "proposal_id", "proposal_type", "tier", "risk_level",
                         "status", "created_by", "approvals_approved", "approvals_required",
                     ]
-                    st.dataframe(df_prop[cols], use_container_width=True)
+                    st.dataframe(
+                        df_prop[cols],
+                        use_container_width=True,
+                        column_config={
+                            "proposal_id": "Mã đề xuất",
+                            "proposal_type": "Loại",
+                            "tier": "Cấp",
+                            "risk_level": "Mức rủi ro",
+                            "status": "Trạng thái",
+                            "created_by": "Người tạo",
+                            "approvals_approved": "Đã duyệt",
+                            "approvals_required": "Cần duyệt",
+                        },
+                    )
                     proposal_id = st.text_input(
-                        "Proposal ID xem chi tiết", value=df_prop.iloc[0]["proposal_id"], key="ct_pid",
+                        "Mã đề xuất xem chi tiết", value=df_prop.iloc[0]["proposal_id"], key="ct_pid",
                     )
                 else:
                     st.info("Chưa có đề xuất.")
                     proposal_id = ""
             except Exception as e:
-                st.error(f"Lỗi tải đề xuất: {e}")
+                st.error(f"❌ Lỗi tải đề xuất: {e}")
                 proposals = []
                 proposal_id = ""
 
@@ -834,43 +1191,48 @@ with tab_contract:
 
                     maker = (selected.get("created_by") or "").strip()
                     if maker and maker == current_user:
-                        st.warning("Maker-checker: bạn không thể duyệt đề xuất của chính mình.")
+                        st.warning("⚠️ Maker-checker: bạn không thể duyệt đề xuất do chính mình tạo.")
                         can_act = False
                     else:
                         can_act = not is_finalized
 
-                    colX, colY = st.columns(2)
-                    with colX:
-                        if st.button("✅ Duyệt", disabled=(not can_act) or (not evidence_ack), key="ct_approve"):
-                            try:
-                                res = _post(
-                                    f"/agent/v1/contract/proposals/{proposal_id}/approvals",
-                                    {
-                                        "decision": "approve",
-                                        "approver_id": current_user,
-                                        "evidence_ack": evidence_ack,
-                                        "note": note or None,
-                                    },
-                                )
-                                st.success(res)
-                                st.rerun()
-                            except Exception as e:
-                                st.error(e)
-                    with colY:
-                        if st.button(
-                            "❌ Từ chối", disabled=(not can_act) or (not evidence_ack), key="ct_reject",
-                        ):
-                            try:
-                                res = _post(
-                                    f"/agent/v1/contract/proposals/{proposal_id}/approvals",
-                                    {
-                                        "decision": "reject",
-                                        "approver_id": current_user,
-                                        "evidence_ack": evidence_ack,
-                                        "note": note or None,
-                                    },
-                                )
-                                st.success(res)
-                                st.rerun()
-                            except Exception as e:
-                                st.error(e)
+                    _gk_ct_a = f"ct_approve_{proposal_id}"
+                    _gk_ct_r = f"ct_reject_{proposal_id}"
+                    if _action_guard(_gk_ct_a) or _action_guard(_gk_ct_r):
+                        st.caption("✔ Đã xử lý — đang làm mới…")
+                    else:
+                        colX, colY = st.columns(2)
+                        with colX:
+                            if st.button("✅ Duyệt", disabled=(not can_act) or (not evidence_ack), key=_gk_ct_a):
+                                try:
+                                    _post(
+                                        f"/agent/v1/contract/proposals/{proposal_id}/approvals",
+                                        {
+                                            "decision": "approve",
+                                            "approver_id": current_user,
+                                            "evidence_ack": evidence_ack,
+                                            "note": note or None,
+                                        },
+                                    )
+                                    _mark_done(_gk_ct_a)
+                                    st.success("✅ Đã gửi phê duyệt")
+                                    st.rerun()
+                                except Exception as e:
+                                    st.error(f"❌ {e}")
+                        with colY:
+                            if st.button("❌ Từ chối", disabled=(not can_act) or (not evidence_ack), key=_gk_ct_r):
+                                try:
+                                    _post(
+                                        f"/agent/v1/contract/proposals/{proposal_id}/approvals",
+                                        {
+                                            "decision": "reject",
+                                            "approver_id": current_user,
+                                            "evidence_ack": evidence_ack,
+                                            "note": note or None,
+                                        },
+                                    )
+                                    _mark_done(_gk_ct_r)
+                                    st.success("❌ Đã từ chối đề xuất")
+                                    st.rerun()
+                                except Exception as e:
+                                    st.error(f"❌ {e}")

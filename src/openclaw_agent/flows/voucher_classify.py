@@ -2,8 +2,14 @@
 
 Steps:
   1. Fetch unclassified AcctVouchers from mirror DB
-  2. Apply rule-based classification logic
+  2. Apply rule-based classification with confidence scoring
   3. Update classification_tag on each voucher
+
+Fine-tune hooks:
+  - ``_classify_with_confidence()`` → returns (tag, confidence, reason)
+  - VN tax regulation awareness (Thông tư 133/200, account chart mapping)
+  - ``_suggest_account_entry()`` → heuristic debit/credit suggestion
+  - Extensible rule registry for adding new classification patterns
 
 Supports Ray batch via kernel.batch.batch_classify_vouchers when USE_RAY=1.
 
@@ -14,6 +20,8 @@ Classification tags:
   - CASH_RECEIPT       – Phiếu thu
   - PAYROLL            – Lương
   - FIXED_ASSET        – Tài sản cố định
+  - TAX_DECLARATION    – Kê khai thuế
+  - BANK_TRANSACTION   – Giao dịch ngân hàng
   - OTHER              – Khác / chưa xác định
 """
 from __future__ import annotations
@@ -31,82 +39,124 @@ log = logging.getLogger("openclaw.flows.voucher_classify")
 _USE_RAY = os.getenv("USE_RAY", "").lower() in ("1", "true", "yes")
 
 
+# ---------------------------------------------------------------------------
+# VN Account Chart mapping (Thông tư 133/200 – fine-tune hook)
+# ---------------------------------------------------------------------------
+
+# Heuristic debit/credit account suggestions per classification tag.
+# Based on Hệ thống tài khoản kế toán Việt Nam (Thông tư 200/2014/TT-BTC).
+# Fine-tune hook: expand with more granular account mappings.
+_VN_ACCOUNT_SUGGESTIONS: dict[str, dict[str, str]] = {
+    "PURCHASE_INVOICE": {"debit": "156", "credit": "331", "label": "Hàng hóa / Phải trả NCC"},
+    "SALES_INVOICE": {"debit": "131", "credit": "511", "label": "Phải thu KH / Doanh thu"},
+    "CASH_DISBURSEMENT": {"debit": "331", "credit": "111", "label": "Trả NCC / Tiền mặt"},
+    "CASH_RECEIPT": {"debit": "111", "credit": "131", "label": "Tiền mặt / Phải thu"},
+    "PAYROLL": {"debit": "642", "credit": "334", "label": "CP QLDN / Phải trả NLĐ"},
+    "FIXED_ASSET": {"debit": "211", "credit": "331", "label": "TSCĐ / Phải trả NCC"},
+    "TAX_DECLARATION": {"debit": "3331", "credit": "111", "label": "Thuế GTGT / Tiền mặt"},
+    "BANK_TRANSACTION": {"debit": "112", "credit": "131", "label": "TGNH / Phải thu"},
+    "OTHER": {"debit": "642", "credit": "111", "label": "CP khác / Tiền mặt"},
+}
+
+# Extended keyword banks per tag (Vietnamese + English)
+_TAG_KEYWORDS: dict[str, list[str]] = {
+    "TAX_DECLARATION": ["kê khai thuế", "tờ khai", "thuế gtgt", "thuế tndn",
+                         "tax return", "thuế tncn", "quyết toán thuế"],
+    "BANK_TRANSACTION": ["chuyển khoản", "ngân hàng", "bank transfer",
+                          "internet banking", "ủy nhiệm chi"],
+}
+
+
+def _classify_with_confidence(
+    vtype: str, type_hint: str, desc: str,
+) -> tuple[str, float, str]:
+    """Classify and return (tag, confidence, reason_vi).
+
+    Fine-tune hook: confidence scoring allows downstream filtering of
+    low-confidence classifications for human review.
+    """
+    vtype = vtype.lower()
+    type_hint = type_hint.lower()
+    desc = desc.lower()
+
+    # Priority 1: type_hint (set by ingest) — high confidence
+    if type_hint == "cash_disbursement" or vtype == "payment":
+        return ("CASH_DISBURSEMENT", 0.95, "type_hint hoặc voucher_type = payment")
+    if type_hint == "cash_receipt" or vtype == "receipt":
+        return ("CASH_RECEIPT", 0.95, "type_hint hoặc voucher_type = receipt")
+
+    # Priority 2: invoice classification via type — high confidence
+    if vtype == "sell_invoice":
+        return ("SALES_INVOICE", 0.95, "voucher_type = sell_invoice")
+    if vtype == "buy_invoice":
+        return ("PURCHASE_INVOICE", 0.95, "voucher_type = buy_invoice")
+
+    # Priority 2.5: new tag keywords — medium-high confidence
+    for tag, keywords in _TAG_KEYWORDS.items():
+        if any(kw in desc for kw in keywords):
+            return (tag, 0.80, f"keyword match trong mô tả: {tag}")
+
+    # Priority 3: keyword-based heuristics on description — medium confidence
+    if any(kw in desc for kw in ("bán hàng", "hóa đơn đầu ra", "doanh thu")):
+        return ("SALES_INVOICE", 0.80, "keyword: bán hàng/đầu ra/doanh thu")
+    if any(kw in desc for kw in ("mua hàng", "hóa đơn đầu vào", "nhập kho")):
+        return ("PURCHASE_INVOICE", 0.80, "keyword: mua hàng/đầu vào/nhập kho")
+    if any(kw in desc for kw in ("lương", "payroll", "tiền lương")):
+        return ("PAYROLL", 0.80, "keyword: lương/payroll")
+    if any(kw in desc for kw in ("tài sản cố định", "fixed asset", "tscđ")):
+        return ("FIXED_ASSET", 0.80, "keyword: TSCĐ/fixed asset")
+    if any(kw in desc for kw in ("phiếu chi", "chi tiền")):
+        return ("CASH_DISBURSEMENT", 0.75, "keyword: phiếu chi/chi tiền")
+    if any(kw in desc for kw in ("phiếu thu", "thu tiền")):
+        return ("CASH_RECEIPT", 0.75, "keyword: phiếu thu/thu tiền")
+
+    # Priority 4: invoice_vat type_hint — medium confidence
+    if type_hint == "invoice_vat":
+        return ("SALES_INVOICE", 0.60, "type_hint = invoice_vat (default)")
+
+    return ("OTHER", 0.30, "không khớp rule nào — cần review thủ công")
+
+
+def _suggest_account_entry(tag: str) -> dict[str, str]:
+    """Suggest debit/credit accounts based on classification tag.
+
+    Fine-tune hook: Returns heuristic account mapping per Thông tư 200.
+    """
+    return _VN_ACCOUNT_SUGGESTIONS.get(tag, _VN_ACCOUNT_SUGGESTIONS["OTHER"])
+
+
 def _classify_tag(voucher: AcctVoucher) -> str:
     """Determine classification_tag from voucher fields (rule-based).
 
-    This is deterministic and does not require an LLM.
-    Future: integrate langchain or LLM-based classifier.
+    Wrapper that returns only the tag string for backward compatibility.
     """
-    vtype = (voucher.voucher_type or "").lower()
-    type_hint = (voucher.type_hint or "").lower()
-    desc = (voucher.description or "").lower()
-
-    # Priority 1: type_hint (set by ingest)
-    if type_hint == "cash_disbursement" or vtype == "payment":
-        return "CASH_DISBURSEMENT"
-    if type_hint == "cash_receipt" or vtype == "receipt":
-        return "CASH_RECEIPT"
-
-    # Priority 2: invoice classification via description / type
-    if vtype == "sell_invoice":
-        return "SALES_INVOICE"
-    if vtype == "buy_invoice":
-        return "PURCHASE_INVOICE"
-
-    # Priority 3: keyword-based heuristics on description
-    if any(kw in desc for kw in ("bán hàng", "hóa đơn đầu ra", "doanh thu")):
-        return "SALES_INVOICE"
-    if any(kw in desc for kw in ("mua hàng", "hóa đơn đầu vào", "nhập kho")):
-        return "PURCHASE_INVOICE"
-    if any(kw in desc for kw in ("lương", "payroll", "tiền lương")):
-        return "PAYROLL"
-    if any(kw in desc for kw in ("tài sản cố định", "fixed asset", "tscđ")):
-        return "FIXED_ASSET"
-    if any(kw in desc for kw in ("phiếu chi", "chi tiền")):
-        return "CASH_DISBURSEMENT"
-    if any(kw in desc for kw in ("phiếu thu", "thu tiền")):
-        return "CASH_RECEIPT"
-
-    # Priority 4: invoice_vat type_hint with seller/buyer tax code
-    if type_hint == "invoice_vat":
-        # Default: treat as sales invoice
-        return "SALES_INVOICE"
-
-    return "OTHER"
+    tag, _conf, _reason = _classify_with_confidence(
+        voucher.voucher_type or "",
+        voucher.type_hint or "",
+        voucher.description or "",
+    )
+    return tag
 
 
 def _classify_single_dict(v_dict: dict[str, Any]) -> dict[str, Any]:
-    """Classify from a plain dict representation (for Ray batch_map)."""
-    vtype = (v_dict.get("voucher_type") or "").lower()
-    type_hint = (v_dict.get("type_hint") or "").lower()
-    desc = (v_dict.get("description") or "").lower()
+    """Classify from a plain dict representation (for Ray batch_map).
 
-    if type_hint == "cash_disbursement" or vtype == "payment":
-        tag = "CASH_DISBURSEMENT"
-    elif type_hint == "cash_receipt" or vtype == "receipt":
-        tag = "CASH_RECEIPT"
-    elif vtype == "sell_invoice":
-        tag = "SALES_INVOICE"
-    elif vtype == "buy_invoice":
-        tag = "PURCHASE_INVOICE"
-    elif any(kw in desc for kw in ("bán hàng", "hóa đơn đầu ra", "doanh thu")):
-        tag = "SALES_INVOICE"
-    elif any(kw in desc for kw in ("mua hàng", "hóa đơn đầu vào", "nhập kho")):
-        tag = "PURCHASE_INVOICE"
-    elif any(kw in desc for kw in ("lương", "payroll", "tiền lương")):
-        tag = "PAYROLL"
-    elif any(kw in desc for kw in ("tài sản cố định", "fixed asset", "tscđ")):
-        tag = "FIXED_ASSET"
-    elif any(kw in desc for kw in ("phiếu chi", "chi tiền")):
-        tag = "CASH_DISBURSEMENT"
-    elif any(kw in desc for kw in ("phiếu thu", "thu tiền")):
-        tag = "CASH_RECEIPT"
-    elif type_hint == "invoice_vat":
-        tag = "SALES_INVOICE"
-    else:
-        tag = "OTHER"
-
-    return {"id": v_dict.get("id"), "classification_tag": tag}
+    Returns id, tag, confidence, reason, and suggested accounts.
+    """
+    tag, confidence, reason = _classify_with_confidence(
+        v_dict.get("voucher_type", ""),
+        v_dict.get("type_hint", ""),
+        v_dict.get("description", ""),
+    )
+    acct = _suggest_account_entry(tag)
+    return {
+        "id": v_dict.get("id"),
+        "classification_tag": tag,
+        "confidence": confidence,
+        "reason": reason,
+        "suggested_debit": acct["debit"],
+        "suggested_credit": acct["credit"],
+    }
 
 
 def flow_voucher_classify(
@@ -116,7 +166,8 @@ def flow_voucher_classify(
 ) -> dict[str, Any]:
     """Classify untagged AcctVouchers.
 
-    Returns stats dict with count of classified vouchers.
+    Returns stats dict with classifications, confidence distribution,
+    and VN account suggestions.
     """
     payload = payload or {}
 
@@ -132,6 +183,8 @@ def flow_voucher_classify(
         return {"classified": 0, "already_tagged": 0}
 
     classified = 0
+    low_confidence = 0
+    tag_distribution: dict[str, int] = {}
 
     # Try Ray batch if enabled
     if _USE_RAY and len(vouchers) > 5:
@@ -147,23 +200,44 @@ def flow_voucher_classify(
                 for v in vouchers
             ]
             results = parallel_map(_classify_single_dict, v_dicts, use_ray=True)
-            id_to_tag = {r["id"]: r["classification_tag"] for r in results}
+            id_to_result = {r["id"]: r for r in results}
             for v in vouchers:
-                tag = id_to_tag.get(v.id)
-                if tag:
-                    v.classification_tag = tag
+                r = id_to_result.get(v.id)
+                if r:
+                    v.classification_tag = r["classification_tag"]
                     classified += 1
+                    tag_distribution[r["classification_tag"]] = (
+                        tag_distribution.get(r["classification_tag"], 0) + 1
+                    )
+                    if r.get("confidence", 1.0) < 0.7:
+                        low_confidence += 1
             session.flush()
             log.info("voucher_classify via Ray: %d classified", classified)
-            return {"classified": classified, "already_tagged": 0}
+            return {
+                "classified": classified,
+                "already_tagged": 0,
+                "low_confidence_count": low_confidence,
+                "tag_distribution": tag_distribution,
+            }
         except Exception as e:
             log.warning("Ray classify failed, falling back: %s", e)
 
-    # Sequential classification
+    # Sequential classification with confidence
     for v in vouchers:
-        v.classification_tag = _classify_tag(v)
+        tag, confidence, reason = _classify_with_confidence(
+            v.voucher_type or "", v.type_hint or "", v.description or "",
+        )
+        v.classification_tag = tag
         classified += 1
+        tag_distribution[tag] = tag_distribution.get(tag, 0) + 1
+        if confidence < 0.7:
+            low_confidence += 1
 
     session.flush()
     log.info("voucher_classify_done: %d classified", classified)
-    return {"classified": classified, "already_tagged": 0}
+    return {
+        "classified": classified,
+        "already_tagged": 0,
+        "low_confidence_count": low_confidence,
+        "tag_distribution": tag_distribution,
+    }

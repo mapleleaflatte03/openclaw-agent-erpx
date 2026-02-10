@@ -3,19 +3,27 @@
 Template-based + DB query answering. No LLM required (yet).
 Answers are built from real Acct* data — NEVER fabricates numbers.
 
+Fine-tune hooks:
+  - ``_build_reasoning_chain()`` → step-by-step reasoning for answer transparency
+  - ``_cite_regulation()`` → VN accounting regulation references
+  - ``_graph_reasoning_hook()`` → LangGraph multi-step reasoning integration
+  - All answers include ``reasoning_chain`` for audit trail
+
 Supported question patterns:
   1. Voucher count queries ("bao nhiêu chứng từ", "tháng X có bao nhiêu")
   2. Journal explanation queries ("vì sao", "hạch toán", "tài khoản")
   3. Anomaly summary queries ("bất thường", "anomaly")
   4. Cashflow queries ("dòng tiền", "cashflow")
   5. Classification summary ("phân loại", "classification")
-  6. Default: generic helpful answer
+  6. VN regulation queries ("thông tư", "nghị định", "quy định")
+  7. Default: generic helpful answer
 
 Future: integrate LangGraph chain for multi-step reasoning.
 """
 from __future__ import annotations
 
 import logging
+import os
 import re
 from typing import Any
 
@@ -31,6 +39,121 @@ from openclaw_agent.common.models import (
 )
 
 log = logging.getLogger("openclaw.flows.qna_accounting")
+
+_USE_LANGGRAPH = os.getenv("USE_LANGGRAPH", "").lower() in ("1", "true", "yes")
+
+
+# ---------------------------------------------------------------------------
+# Reasoning chain builder (fine-tune hook for answer transparency)
+# ---------------------------------------------------------------------------
+
+def _build_reasoning_chain(
+    question: str,
+    steps: list[str],
+    regulation_refs: list[str] | None = None,
+) -> dict[str, Any]:
+    """Build structured reasoning chain for audit trail.
+
+    Fine-tune hook: Each answer should include step-by-step reasoning
+    so reviewers can verify the logic path.
+    """
+    chain: dict[str, Any] = {
+        "question": question,
+        "steps": steps,
+        "step_count": len(steps),
+    }
+    if regulation_refs:
+        chain["regulation_references"] = regulation_refs
+    return chain
+
+
+# ---------------------------------------------------------------------------
+# VN Regulation reference database (fine-tune hook)
+# ---------------------------------------------------------------------------
+
+_VN_REGULATIONS: dict[str, dict[str, str]] = {
+    "tt200": {
+        "name": "Thông tư 200/2014/TT-BTC",
+        "subject": "Chế độ kế toán doanh nghiệp",
+        "scope": "Hệ thống tài khoản kế toán, mẫu sổ kế toán, mẫu báo cáo tài chính",
+    },
+    "tt133": {
+        "name": "Thông tư 133/2016/TT-BTC",
+        "subject": "Chế độ kế toán doanh nghiệp nhỏ và vừa",
+        "scope": "DN vốn dưới 100 tỷ, doanh thu dưới 300 tỷ",
+    },
+    "nd123": {
+        "name": "Nghị định 123/2020/NĐ-CP",
+        "subject": "Quy định về hóa đơn, chứng từ",
+        "scope": "Hóa đơn điện tử, quy cách, xử lý sai sót",
+    },
+    "tt78": {
+        "name": "Thông tư 78/2021/TT-BTC",
+        "subject": "Hướng dẫn hóa đơn điện tử theo NĐ 123",
+        "scope": "Đăng ký, phát hành, quản lý hóa đơn điện tử",
+    },
+    "lkt": {
+        "name": "Luật Kế toán 88/2015/QH13",
+        "subject": "Luật Kế toán",
+        "scope": "Nguyên tắc, quy định chung về kế toán doanh nghiệp",
+    },
+}
+
+
+def _cite_regulation(topic: str) -> list[str]:
+    """Return relevant VN regulation references for a topic.
+
+    Fine-tune hook: Expand mappings as more regulations are indexed.
+    """
+    topic_lower = topic.lower()
+    refs: list[str] = []
+
+    mapping = {
+        "hạch toán": ["tt200", "tt133"],
+        "bút toán": ["tt200", "tt133"],
+        "tài khoản": ["tt200", "tt133"],
+        "hóa đơn": ["nd123", "tt78"],
+        "chứng từ": ["nd123", "lkt"],
+        "thuế": ["nd123", "tt78"],
+        "kế toán": ["tt200", "lkt"],
+        "báo cáo": ["tt200", "lkt"],
+    }
+
+    for keyword, reg_keys in mapping.items():
+        if keyword in topic_lower:
+            for rk in reg_keys:
+                reg = _VN_REGULATIONS.get(rk)
+                if reg:
+                    ref = f"{reg['name']} — {reg['subject']}"
+                    if ref not in refs:
+                        refs.append(ref)
+    return refs
+
+
+def _graph_reasoning_hook(
+    question: str,
+    context: dict[str, Any],
+) -> dict[str, Any] | None:
+    """LangGraph multi-step reasoning integration hook.
+
+    Fine-tune hook: When USE_LANGGRAPH=1, this function will invoke
+    the qna_accounting LangGraph for multi-step reasoning.
+
+    Currently returns None (pass-through to template-based handlers).
+    """
+    if not _USE_LANGGRAPH:
+        return None
+    try:
+        from openclaw_agent.graphs.registry import get_graph
+        graph = get_graph("qna_accounting")
+        if graph is None:
+            return None
+        # Future: invoke graph with question + context
+        log.info("graph_reasoning_hook: graph available but not yet wired")
+        return None
+    except Exception as e:
+        log.warning("graph_reasoning_hook failed: %s", e)
+        return None
 
 
 def _extract_period(question: str) -> str | None:
@@ -253,6 +376,10 @@ def _answer_classification_summary(session: Session, question: str) -> dict[str,
         return {
             "answer": "Chưa có dữ liệu phân loại chứng từ.",
             "used_models": ["AcctVoucher"],
+            "reasoning_chain": _build_reasoning_chain(question, [
+                "Truy vấn phân loại chứng từ",
+                "Không tìm thấy dữ liệu",
+            ]),
         }
 
     parts = [f"{tag or 'Chưa phân loại'}: {cnt}" for tag, cnt in rows]
@@ -261,25 +388,92 @@ def _answer_classification_summary(session: Session, question: str) -> dict[str,
     return {
         "answer": answer,
         "used_models": ["AcctVoucher"],
+        "reasoning_chain": _build_reasoning_chain(question, [
+            "Truy vấn bảng AcctVoucher nhóm theo classification_tag",
+            f"Tìm thấy {len(rows)} nhóm phân loại",
+            "Tổng hợp và trả kết quả",
+        ]),
+    }
+
+
+def _answer_regulation_query(session: Session, question: str) -> dict[str, Any] | None:
+    """Answer: VN accounting regulation questions.
+
+    Fine-tune hook: matches regulation-related keywords and provides
+    references to specific Vietnamese accounting standards.
+    """
+    keywords = ["thông tư", "nghị định", "quy định", "luật kế toán",
+                 "regulation", "chuẩn mực", "chế độ kế toán"]
+    if not any(kw in question.lower() for kw in keywords):
+        return None
+
+    refs = _cite_regulation(question)
+
+    if not refs:
+        # Generic regulation answer
+        all_regs = [f"- {r['name']}: {r['subject']}" for r in _VN_REGULATIONS.values()]
+        answer = (
+            "Các văn bản pháp quy kế toán VN quan trọng:\n"
+            + "\n".join(all_regs)
+            + "\n\nBạn muốn tra cứu về nội dung cụ thể nào?"
+        )
+        refs = [r["name"] for r in _VN_REGULATIONS.values()]
+    else:
+        answer = "Các văn bản liên quan đến câu hỏi:\n" + "\n".join(f"- {r}" for r in refs)
+
+    return {
+        "answer": answer,
+        "used_models": [],
+        "reasoning_chain": _build_reasoning_chain(
+            question,
+            ["Phát hiện câu hỏi về quy định pháp lý",
+             f"Tìm thấy {len(refs)} văn bản liên quan"],
+            regulation_refs=refs,
+        ),
     }
 
 
 def answer_question(session: Session, question: str) -> dict[str, Any]:
     """Main Q&A dispatcher — tries each handler in priority order.
 
-    Returns: {"answer": str, "used_models": list[str]}
+    Returns: {"answer": str, "used_models": list[str], "reasoning_chain": dict}
+
+    Fine-tune hooks:
+      - Graph reasoning (LangGraph) is attempted first when USE_LANGGRAPH=1
+      - Each handler returns a reasoning_chain for audit transparency
+      - Regulation references are automatically cited when relevant
     """
+    # Try LangGraph reasoning first (fine-tune hook)
+    graph_result = _graph_reasoning_hook(question, {})
+    if graph_result is not None:
+        return graph_result
+
     handlers = [
         _answer_voucher_count,
         _answer_journal_explanation,
         _answer_anomaly_summary,
         _answer_cashflow_summary,
         _answer_classification_summary,
+        _answer_regulation_query,
     ]
 
     for handler in handlers:
         result = handler(session, question)
         if result is not None:
+            # Ensure reasoning_chain is present
+            if "reasoning_chain" not in result:
+                result["reasoning_chain"] = _build_reasoning_chain(
+                    question,
+                    [f"Handler: {handler.__name__}", "Trả kết quả thành công"],
+                    regulation_refs=_cite_regulation(question) or None,
+                )
+            elif _cite_regulation(question):
+                # Add regulation refs if not already present
+                chain = result["reasoning_chain"]
+                if "regulation_references" not in chain:
+                    refs = _cite_regulation(question)
+                    if refs:
+                        chain["regulation_references"] = refs
             return result
 
     # Default fallback
@@ -290,7 +484,12 @@ def answer_question(session: Session, question: str) -> dict[str, Any]:
             "- Giải thích bút toán (ví dụ: 'Vì sao chứng từ số 0000123 được hạch toán vậy?')\n"
             "- Giao dịch bất thường (ví dụ: 'Có bao nhiêu anomaly chưa xử lý?')\n"
             "- Dòng tiền (ví dụ: 'Tóm tắt dòng tiền dự báo')\n"
-            "- Phân loại chứng từ (ví dụ: 'Thống kê phân loại chứng từ')"
+            "- Phân loại chứng từ (ví dụ: 'Thống kê phân loại chứng từ')\n"
+            "- Quy định kế toán (ví dụ: 'Thông tư 200 quy định gì về hạch toán?')"
         ),
         "used_models": [],
+        "reasoning_chain": _build_reasoning_chain(
+            question,
+            ["Không khớp với handler nào", "Trả hướng dẫn sử dụng"],
+        ),
     }

@@ -2,8 +2,14 @@
 
 Steps:
   1. Load documents from source (mock VN fixtures, ERP API, or payload)
-  2. Parse/normalize each document into AcctVoucher mirror rows
-  3. Store raw_payload for future OCR engine integration
+  2. OCR placeholder pipeline: PDF/image → text → parse structured fields
+  3. Parse/normalize each document into AcctVoucher mirror rows
+  4. Store raw_payload for future OCR engine integration
+
+Fine-tune hooks:
+  - ``_ocr_extract(path)`` → text extraction with confidence scoring
+  - ``_normalize_vn_diacritics(text)`` → fix common Vietnamese diacritic OCR errors
+  - ``_validate_nd123(fields)`` → validate against Nghị định 123 e-invoice format
 
 Currently uses mock parser; designed to be plug-compatible with a real
 OCR engine (Tesseract, Google Vision, etc.) in the future.
@@ -13,6 +19,8 @@ READ-ONLY principle: all writes go to local Acct* mirror tables only.
 from __future__ import annotations
 
 import logging
+import os
+import re
 from typing import Any
 
 from sqlalchemy.orm import Session
@@ -21,6 +29,92 @@ from openclaw_agent.common.models import AcctVoucher
 from openclaw_agent.common.utils import new_uuid
 
 log = logging.getLogger("openclaw.flows.voucher_ingest")
+
+# Fine-tune flag for enabling OCR pipeline instead of mock
+_USE_OCR = os.getenv("OPENCLAW_USE_OCR", "").lower() in ("1", "true", "yes")
+
+
+# ---------------------------------------------------------------------------
+# OCR Placeholder Pipeline (Phase 5 fine-tune hooks)
+# ---------------------------------------------------------------------------
+
+def _ocr_extract(file_path: str) -> dict[str, Any]:
+    """OCR placeholder: extract text from PDF/image file.
+
+    Returns dict with 'text', 'confidence', and 'engine' fields.
+
+    Fine-tune hook: Replace with Tesseract, Google Vision, or similar OCR.
+    When fine-tuning for VN invoices (Nghị định 123), this function should:
+      - Handle Vietnamese diacritics (ă, â, ê, ô, ơ, ư, đ)
+      - Extract structured e-invoice fields (mã hóa đơn, MST, số tiền)
+      - Score confidence vs Thông tư 133 account chart
+    """
+    log.info("ocr_extract_placeholder", extra={"path": file_path})
+    return {
+        "text": f"[OCR placeholder — file: {os.path.basename(file_path)}]",
+        "confidence": 0.0,
+        "engine": "placeholder",
+        "needs_fine_tune": True,
+    }
+
+
+def _normalize_vn_diacritics(text: str) -> str:
+    """Fix common Vietnamese diacritics OCR errors.
+
+    Fine-tune hook: Expand with real error patterns from production OCR.
+    Common issues: ắ→ă, ầ→â, ố→ô, ờ→ơ, ừ→ư, etc.
+    """
+    corrections: dict[str, str] = {
+        "Cong ty": "Công ty",
+        "hoa don": "hóa đơn",
+        "chung tu": "chứng từ",
+        "tien mat": "tiền mặt",
+        "ngan hang": "ngân hàng",
+        "thue GTGT": "thuế GTGT",
+        "mua hang": "mua hàng",
+        "ban hang": "bán hàng",
+    }
+    result = text
+    for wrong, correct in corrections.items():
+        result = result.replace(wrong, correct)
+    return result
+
+
+def _validate_nd123(fields: dict[str, Any]) -> dict[str, Any]:
+    """Validate extracted fields against Nghị định 123 e-invoice format.
+
+    Fine-tune hook: Validate MST format (10 or 13 digits), invoice number
+    format, required fields per Thông tư 78/2021/TT-BTC.
+
+    Returns dict with 'valid', 'errors', and 'warnings'.
+    """
+    errors: list[str] = []
+    warnings: list[str] = []
+
+    # MST validation (10 or 13 digits)
+    tax_code = fields.get("partner_tax_code", "")
+    if tax_code and not re.match(r"^\d{10}(\d{3})?$", tax_code):
+        errors.append(f"MST không hợp lệ: '{tax_code}' (phải 10 hoặc 13 chữ số)")
+
+    # Invoice number required
+    if not fields.get("voucher_no"):
+        errors.append("Thiếu số hóa đơn/chứng từ")
+
+    # Amount must be positive
+    amount = fields.get("amount", 0)
+    if amount and float(amount) <= 0:
+        errors.append(f"Số tiền không hợp lệ: {amount}")
+
+    # Currency check
+    currency = fields.get("currency", "VND")
+    if currency not in ("VND", "USD", "EUR", "JPY", "CNY"):
+        warnings.append(f"Đơn vị tiền tệ ít gặp: '{currency}'")
+
+    return {
+        "valid": len(errors) == 0,
+        "errors": errors,
+        "warnings": warnings,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -123,6 +217,7 @@ def _load_documents(
 
     - ``vn_fixtures``: built-in Vietnamese demo documents
     - ``payload``: use ``payload["documents"]`` directly
+    - ``ocr``: OCR placeholder pipeline (Phase 5 fine-tune)
     - ``erpx_mock`` / ``erpx``: reserved for future ERP integration
     """
     if source == "payload" and "documents" in payload:
@@ -130,6 +225,35 @@ def _load_documents(
 
     if source in ("vn_fixtures", "local_seed", ""):
         return [_normalize_vn_fixture(d) for d in VN_FIXTURES]
+
+    # OCR pipeline placeholder (fine-tune hook)
+    if source == "ocr":
+        file_paths = payload.get("files", [])
+        results = []
+        for fpath in file_paths:
+            ocr_result = _ocr_extract(fpath)
+            text = _normalize_vn_diacritics(ocr_result["text"])
+            # Build minimal doc from OCR text (placeholder parser)
+            doc: dict[str, Any] = {
+                "doc_no": os.path.basename(fpath).split(".")[0],
+                "issue_date": "",
+                "description": text[:200],
+                "amount": 0,
+                "currency": "VND",
+                "doc_type": "other",
+                "_ocr_confidence": ocr_result["confidence"],
+                "_ocr_engine": ocr_result["engine"],
+                "_ocr_needs_fine_tune": ocr_result["needs_fine_tune"],
+            }
+            # Validate NĐ123 format
+            validation = _validate_nd123(doc)
+            doc["_nd123_valid"] = validation["valid"]
+            doc["_nd123_errors"] = validation["errors"]
+            results.append(_normalize_vn_fixture(doc))
+        if not results:
+            log.warning("ocr source but no files provided, fallback to vn_fixtures")
+            return [_normalize_vn_fixture(d) for d in VN_FIXTURES]
+        return results
 
     # Future: fetch from ERP mock
     log.warning("Unknown source '%s', falling back to vn_fixtures", source)
@@ -143,7 +267,8 @@ def flow_voucher_ingest(
 ) -> dict[str, Any]:
     """Execute the voucher ingest flow.
 
-    Returns stats dict with count of newly created vouchers.
+    Returns stats dict with count of newly created vouchers,
+    plus OCR/fine-tune metadata when applicable.
     """
     payload = payload or {}
     source = payload.get("source", "vn_fixtures")
@@ -151,6 +276,8 @@ def flow_voucher_ingest(
 
     created = 0
     skipped = 0
+    ocr_low_confidence = 0
+    nd123_invalid = 0
 
     for doc in docs:
         voucher_no = doc["voucher_no"]
@@ -167,6 +294,20 @@ def flow_voucher_ingest(
 
         erp_voucher_id = f"ingest-{voucher_no}-{new_uuid()[:8]}"
 
+        # Merge OCR/fine-tune metadata into raw_payload if present
+        raw_payload = doc.get("raw_payload", {})
+        if isinstance(raw_payload, dict):
+            for k in ("_ocr_confidence", "_ocr_engine", "_ocr_needs_fine_tune",
+                       "_nd123_valid", "_nd123_errors"):
+                if k in doc:
+                    raw_payload[k] = doc[k]
+
+        # Track OCR quality metrics
+        if doc.get("_ocr_confidence", 1.0) < 0.7:
+            ocr_low_confidence += 1
+        if doc.get("_nd123_valid") is False:
+            nd123_invalid += 1
+
         voucher_row = AcctVoucher(
             id=new_uuid(),
             erp_voucher_id=erp_voucher_id,
@@ -180,7 +321,7 @@ def flow_voucher_ingest(
             description=doc.get("description"),
             has_attachment=doc.get("has_attachment", False),
             type_hint=doc.get("type_hint"),
-            raw_payload=doc.get("raw_payload"),
+            raw_payload=raw_payload,
             source=doc.get("source", "mock_vn_fixture"),
             run_id=run_id,
         )
@@ -192,8 +333,20 @@ def flow_voucher_ingest(
         "voucher_ingest_done",
         extra={"created": created, "skipped": skipped, "run_id": run_id},
     )
-    return {
+
+    result: dict[str, Any] = {
         "count_new_vouchers": created,
         "skipped_existing": skipped,
         "total_documents": len(docs),
     }
+
+    # Add fine-tune quality metrics when OCR source used
+    if source == "ocr":
+        result["ocr_metrics"] = {
+            "low_confidence_count": ocr_low_confidence,
+            "nd123_invalid_count": nd123_invalid,
+            "engine": "placeholder",
+            "fine_tune_needed": ocr_low_confidence > 0,
+        }
+
+    return result
