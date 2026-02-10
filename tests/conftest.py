@@ -8,6 +8,9 @@ from typing import Any
 import httpx
 import uvicorn
 
+# manual_qa_test.py is a standalone script, not a pytest test module.
+collect_ignore = ["manual_qa_test.py"]
+
 
 def get_free_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
