@@ -482,3 +482,201 @@ def generate_audit_pack(
         "cross_checks": checks,
         "all_checks_pass": all(c["pass"] for c in checks),
     }
+
+
+# ------------------------------------------------------------------
+# IFRS Mapping — VAS → IFRS conversion layer  (Spec §7)
+# ------------------------------------------------------------------
+
+# VAS → IFRS mapping for Balance Sheet reclassification
+_VAS_TO_IFRS_MAP: dict[str, dict[str, str]] = {
+    # Current assets
+    "111": {"ifrs_label": "Cash and cash equivalents", "ifrs_code": "IAS7"},
+    "112": {"ifrs_label": "Cash and cash equivalents", "ifrs_code": "IAS7"},
+    "113": {"ifrs_label": "Cash and cash equivalents", "ifrs_code": "IAS7"},
+    "121": {"ifrs_label": "Financial assets at FVTPL", "ifrs_code": "IFRS9"},
+    "131": {"ifrs_label": "Trade receivables", "ifrs_code": "IFRS15"},
+    "133": {"ifrs_label": "Other current assets (VAT recoverable)", "ifrs_code": "IAS12"},
+    "141": {"ifrs_label": "Prepayments", "ifrs_code": "IAS1"},
+    # Inventory
+    "152": {"ifrs_label": "Inventories", "ifrs_code": "IAS2"},
+    "155": {"ifrs_label": "Inventories", "ifrs_code": "IAS2"},
+    "156": {"ifrs_label": "Inventories", "ifrs_code": "IAS2"},
+    # Non-current assets
+    "211": {"ifrs_label": "Property, plant and equipment", "ifrs_code": "IAS16"},
+    "213": {"ifrs_label": "Intangible assets", "ifrs_code": "IAS38"},
+    "214": {"ifrs_label": "Accumulated depreciation", "ifrs_code": "IAS16"},
+    "217": {"ifrs_label": "Investment property", "ifrs_code": "IAS40"},
+    "221": {"ifrs_label": "Investments in subsidiaries", "ifrs_code": "IFRS10"},
+    # Liabilities
+    "331": {"ifrs_label": "Trade payables", "ifrs_code": "IAS1"},
+    "333": {"ifrs_label": "Tax liabilities", "ifrs_code": "IAS12"},
+    "334": {"ifrs_label": "Employee benefit obligations", "ifrs_code": "IAS19"},
+    "341": {"ifrs_label": "Borrowings", "ifrs_code": "IFRS9"},
+    # Equity
+    "411": {"ifrs_label": "Share capital", "ifrs_code": "IAS1"},
+    "421": {"ifrs_label": "Retained earnings", "ifrs_code": "IAS1"},
+    # Revenue / Expense
+    "511": {"ifrs_label": "Revenue from contracts with customers", "ifrs_code": "IFRS15"},
+    "632": {"ifrs_label": "Cost of sales", "ifrs_code": "IAS2"},
+    "641": {"ifrs_label": "Distribution costs", "ifrs_code": "IAS1"},
+    "642": {"ifrs_label": "Administrative expenses", "ifrs_code": "IAS1"},
+    "821": {"ifrs_label": "Income tax expense", "ifrs_code": "IAS12"},
+}
+
+
+def vas_to_ifrs_label(vas_account: str) -> dict[str, str]:
+    """Map a VAS account code to its IFRS equivalent label + standard reference."""
+    prefix = vas_account[:3]
+    mapping = _VAS_TO_IFRS_MAP.get(prefix)
+    if mapping:
+        return {
+            "vas_account": vas_account,
+            "ifrs_label": mapping["ifrs_label"],
+            "ifrs_standard": mapping["ifrs_code"],
+        }
+    return {
+        "vas_account": vas_account,
+        "ifrs_label": f"[Unmapped VAS {vas_account}]",
+        "ifrs_standard": "N/A",
+    }
+
+
+def generate_ifrs_balance_sheet(
+    journals: list[dict[str, Any]],
+    period: str = "",
+    company: str = "",
+) -> FinancialReport:
+    """Generate IFRS-format Balance Sheet by remapping VAS trial balance.
+
+    Uses IAS 1 presentation format with IFRS account labels.
+    """
+    tb = _build_trial_balance(journals)
+
+    # Group by IFRS label
+    ifrs_groups: dict[str, float] = defaultdict(float)
+    for acct, amt in tb.items():
+        prefix = acct[:3]
+        mapping = _VAS_TO_IFRS_MAP.get(prefix, {})
+        label = mapping.get("ifrs_label", f"Other ({acct})")
+        ifrs_groups[label] += amt
+
+    lines = []
+    for label, amount in sorted(ifrs_groups.items()):
+        lines.append({
+            "label_en": label,
+            "label_vi": label,  # IFRS uses English labels
+            "amount": round(amount, 2),
+            "standard": "IFRS",
+        })
+
+    total_assets = sum(v for k, v in ifrs_groups.items() if "asset" in k.lower() or "equip" in k.lower()
+                       or "receiv" in k.lower() or "cash" in k.lower()
+                       or "inventor" in k.lower() or "invest" in k.lower()
+                       or "prepay" in k.lower() or "intangib" in k.lower()
+                       or "property" in k.lower())
+    total_liabilities = sum(abs(v) for k, v in ifrs_groups.items() if "payab" in k.lower()
+                           or "borrow" in k.lower() or "liabilit" in k.lower()
+                           or "obligat" in k.lower() or "tax liab" in k.lower())
+    total_equity = sum(abs(v) for k, v in ifrs_groups.items() if "capital" in k.lower()
+                      or "retained" in k.lower())
+
+    return FinancialReport(
+        report_type="IFRS-BS",
+        period=period,
+        company=company,
+        lines=lines,
+        totals={
+            "total_assets": round(total_assets, 2),
+            "total_liabilities": round(total_liabilities, 2),
+            "total_equity": round(total_equity, 2),
+        },
+        notes=["Prepared under IFRS framework", "Mapped from VAS trial balance"],
+    )
+
+
+def generate_ifrs_income_statement(
+    journals: list[dict[str, Any]],
+    period: str = "",
+    company: str = "",
+) -> FinancialReport:
+    """Generate IFRS-format Income Statement (IAS 1 / IFRS 15)."""
+    tb = _build_trial_balance(journals)
+
+    revenue = abs(_sum_accounts(tb, {"511", "512"}))
+    cogs = abs(_sum_accounts(tb, {"632", "631"}))
+    selling = abs(_sum_accounts(tb, {"641"}))
+    admin = abs(_sum_accounts(tb, {"642"}))
+    finance_income = abs(_sum_accounts(tb, {"515"}))
+    finance_cost = abs(_sum_accounts(tb, {"635"}))
+    tax = abs(_sum_accounts(tb, {"821"}))
+    other_income = abs(_sum_accounts(tb, {"711"}))
+    other_expense = abs(_sum_accounts(tb, {"811"}))
+
+    gross_profit = revenue - cogs
+    operating_profit = gross_profit - selling - admin
+    pbt = operating_profit + finance_income - finance_cost + other_income - other_expense
+    net_income = pbt - tax
+
+    lines = [
+        {"code": "REV", "label_en": "Revenue (IFRS 15)", "amount": round(revenue, 2)},
+        {"code": "COS", "label_en": "Cost of sales (IAS 2)", "amount": round(-cogs, 2)},
+        {"code": "GP", "label_en": "Gross profit", "amount": round(gross_profit, 2)},
+        {"code": "DIST", "label_en": "Distribution costs", "amount": round(-selling, 2)},
+        {"code": "ADM", "label_en": "Administrative expenses", "amount": round(-admin, 2)},
+        {"code": "OP", "label_en": "Operating profit", "amount": round(operating_profit, 2)},
+        {"code": "FIN+", "label_en": "Finance income", "amount": round(finance_income, 2)},
+        {"code": "FIN-", "label_en": "Finance costs", "amount": round(-finance_cost, 2)},
+        {"code": "OTH+", "label_en": "Other income", "amount": round(other_income, 2)},
+        {"code": "OTH-", "label_en": "Other expenses", "amount": round(-other_expense, 2)},
+        {"code": "PBT", "label_en": "Profit before tax", "amount": round(pbt, 2)},
+        {"code": "TAX", "label_en": "Income tax (IAS 12)", "amount": round(-tax, 2)},
+        {"code": "PAT", "label_en": "Profit after tax", "amount": round(net_income, 2)},
+    ]
+
+    return FinancialReport(
+        report_type="IFRS-IS",
+        period=period,
+        company=company,
+        lines=lines,
+        totals={
+            "revenue": round(revenue, 2),
+            "gross_profit": round(gross_profit, 2),
+            "operating_profit": round(operating_profit, 2),
+            "pbt": round(pbt, 2),
+            "net_income": round(net_income, 2),
+        },
+        notes=["Prepared under IFRS framework", "Function of expense method (IAS 1)"],
+    )
+
+
+def generate_dual_report(
+    journals: list[dict[str, Any]],
+    bank_txs: list[dict[str, Any]] | None = None,
+    period: str = "",
+    company: str = "",
+) -> dict[str, Any]:
+    """Generate VAS + IFRS reports simultaneously (Spec §7 dual-standard).
+
+    Returns both VAS (B01/B02/B03) and IFRS equivalents in a single pack.
+    """
+    vas_b01 = generate_b01_dn(journals, period, company)
+    vas_b02 = generate_b02_dn(journals, period, company)
+    vas_b03 = generate_b03_dn(journals, bank_txs, period, company)
+    ifrs_bs = generate_ifrs_balance_sheet(journals, period, company)
+    ifrs_is = generate_ifrs_income_statement(journals, period, company)
+
+    return {
+        "standard": "dual",
+        "period": period,
+        "company": company,
+        "vas": {
+            "B01-DN": {"lines": vas_b01.lines, "totals": vas_b01.totals},
+            "B02-DN": {"lines": vas_b02.lines, "totals": vas_b02.totals},
+            "B03-DN": {"lines": vas_b03.lines, "totals": vas_b03.totals},
+        },
+        "ifrs": {
+            "IFRS-BS": {"lines": ifrs_bs.lines, "totals": ifrs_bs.totals},
+            "IFRS-IS": {"lines": ifrs_is.lines, "totals": ifrs_is.totals},
+        },
+    }

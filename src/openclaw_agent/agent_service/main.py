@@ -1775,6 +1775,31 @@ def list_qna_audits(
     }
 
 
+@app.patch("/agent/v1/acct/qna_feedback/{audit_id}", dependencies=[Depends(require_api_key)])
+def submit_qna_feedback(
+    audit_id: str,
+    payload: dict[str, Any],
+    session: Session = Depends(get_session),
+) -> dict[str, Any]:
+    """Submit feedback (helpful/not_helpful) for a Q&A answer.
+
+    Spec §6.2: Log Q&A + feedback for self-learning pipeline.
+    Body: {"feedback": "helpful" | "not_helpful", "note": "optional text"}
+    """
+    row = session.get(AcctQnaAudit, audit_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="QnA audit not found")
+
+    feedback_val = str(payload.get("feedback", "")).strip()
+    if feedback_val not in ("helpful", "not_helpful"):
+        raise HTTPException(status_code=422, detail="feedback must be 'helpful' or 'not_helpful'")
+
+    row.feedback = feedback_val  # type: ignore[assignment]
+    session.commit()
+
+    return {"id": audit_id, "feedback": feedback_val, "status": "recorded"}
+
+
 # ---------------------------------------------------------------------------
 # Phase 5 & 6: Voucher listing + classification stats
 # ---------------------------------------------------------------------------
