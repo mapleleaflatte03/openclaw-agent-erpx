@@ -1493,6 +1493,52 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /agent/v1/acct/qna_feedback/{audit_id}:
+    patch:
+      summary: Submit Qna Feedback
+      description: "Submit feedback (helpful/not_helpful) for a Q&A answer.\n\nSpec\
+        \ \xA76.2: Log Q&A + feedback for self-learning pipeline.\nBody: {\"feedback\"\
+        : \"helpful\" | \"not_helpful\", \"note\": \"optional text\"}"
+      operationId: submit_qna_feedback_agent_v1_acct_qna_feedback__audit_id__patch
+      parameters:
+      - name: audit_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Audit Id
+      - name: X-API-Key
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Api-Key
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+              title: Payload
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Submit Qna Feedback Agent V1 Acct Qna Feedback  Audit
+                  Id  Patch
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /agent/v1/acct/vouchers:
     get:
       summary: List Vouchers
