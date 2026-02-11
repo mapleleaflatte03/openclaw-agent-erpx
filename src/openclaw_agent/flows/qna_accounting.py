@@ -165,7 +165,11 @@ def _clean_llm_answer(raw: str) -> str:
         # Skip lines without Vietnamese diacritics that are long enough
         # AND don't contain accounting keywords (TK, VND, Nợ, Có, TT200, TT133)
         _ACCT_KEYWORDS = ("TK", "VND", "TT200", "TT133", "TT 200", "TT 133",
-                          "Nợ", "Có", "khấu hao", "tài khoản", "bút toán")
+                          "Nợ", "Có", "khấu hao", "tài khoản", "bút toán",
+                          "131", "331", "511", "641", "642", "111", "112",
+                          "152", "153", "154", "211", "214", "621", "622",
+                          "doanh thu", "chi phí", "nguyên vật liệu",
+                          "phải thu", "phải trả", "tiền mặt", "ngân hàng")
         has_acct_kw = any(kw in stripped for kw in _ACCT_KEYWORDS)
         if len(stripped) > 15 and not _VN_DIACRITIC_RE.search(stripped) and not has_acct_kw:
             continue
@@ -175,7 +179,7 @@ def _clean_llm_answer(raw: str) -> str:
             line_words = stripped.split()
             if len(line_words) >= 5:
                 line_eng = sum(1 for w in line_words if _ENG_WORD_RE.match(w))
-                if line_eng / len(line_words) > 0.50:
+                if line_eng / len(line_words) > 0.60:
                     continue
 
         cleaned.append(line)
@@ -555,10 +559,6 @@ def _answer_classification_summary(session: Session, question: str) -> dict[str,
         return {
             "answer": "Chưa có dữ liệu phân loại chứng từ.",
             "used_models": ["AcctVoucher"],
-            "reasoning_chain": _build_reasoning_chain(question, [
-                "Truy vấn phân loại chứng từ",
-                "Không tìm thấy dữ liệu",
-            ]),
         }
 
     parts = [f"{tag or 'Chưa phân loại'}: {cnt}" for tag, cnt in rows]
@@ -567,11 +567,6 @@ def _answer_classification_summary(session: Session, question: str) -> dict[str,
     return {
         "answer": answer,
         "used_models": ["AcctVoucher"],
-        "reasoning_chain": _build_reasoning_chain(question, [
-            "Truy vấn bảng AcctVoucher nhóm theo classification_tag",
-            f"Tìm thấy {len(rows)} nhóm phân loại",
-            "Tổng hợp và trả kết quả",
-        ]),
     }
 
 
@@ -633,26 +628,13 @@ def answer_question(session: Session, question: str) -> dict[str, Any]:
         _answer_anomaly_summary,
         _answer_cashflow_summary,
         _answer_classification_summary,
-        _answer_regulation_query,
     ]
 
     for handler in handlers:
         result = handler(session, question)
         if result is not None:
-            # Ensure reasoning_chain is present
-            if "reasoning_chain" not in result:
-                result["reasoning_chain"] = _build_reasoning_chain(
-                    question,
-                    [f"Handler: {handler.__name__}", "Trả kết quả thành công"],
-                    regulation_refs=_cite_regulation(question) or None,
-                )
-            elif _cite_regulation(question):
-                # Add regulation refs if not already present
-                chain = result["reasoning_chain"]
-                if "regulation_references" not in chain:
-                    refs = _cite_regulation(question)
-                    if refs:
-                        chain["regulation_references"] = refs
+            # Strip reasoning_chain — internal audit only, not for API/UI
+            result.pop("reasoning_chain", None)
             return result
 
     # --- Try LLM for free-form questions when enabled ---

@@ -12,7 +12,7 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import PlainTextResponse
 from prometheus_client import CONTENT_TYPE_LATEST, CollectorRegistry, Gauge, generate_latest
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
@@ -485,7 +485,22 @@ def create_run(
         queue=queue_map.get(run_type, "default"),
     )
     log.info("run_queued", run_id=run.run_id, run_type=run_type, trigger_type=trigger_type)
-    return {"run_id": run.run_id, "status": run.status, "idempotency_key": run.idempotency_key}
+
+    # Build task preview for immediate UI feedback
+    task_rows = session.execute(
+        select(AgentTask).where(AgentTask.run_id == run.run_id).order_by(AgentTask.created_at.asc())
+    ).scalars().all()
+    task_preview = [{"task_name": t.task_name, "status": t.status} for t in task_rows]
+
+    return {
+        "run_id": run.run_id,
+        "run_type": run.run_type,
+        "status": run.status,
+        "idempotency_key": run.idempotency_key,
+        "created_at": run.created_at,
+        "cursor_in": run.cursor_in,
+        "tasks": task_preview,
+    }
 
 
 @app.get("/agent/v1/runs", dependencies=[Depends(require_api_key)])
@@ -502,7 +517,17 @@ def list_runs(
     if status:
         q = q.where(AgentRun.status == status)
     rows = session.execute(q).scalars().all()
+
+    # Total count for pagination
+    count_q = select(func.count(AgentRun.run_id))
+    if run_type:
+        count_q = count_q.where(AgentRun.run_type == run_type)
+    if status:
+        count_q = count_q.where(AgentRun.status == status)
+    total = session.execute(count_q).scalar() or 0
+
     return {
+        "total": total,
         "items": [
             {
                 "run_id": r.run_id,
@@ -527,6 +552,12 @@ def get_run(run_id: str, session: Session = Depends(get_session)) -> dict[str, A
     r = session.get(AgentRun, run_id)
     if not r:
         raise HTTPException(status_code=404, detail="Không tìm thấy tác vụ")
+
+    # Include tasks for end-to-end chain visibility
+    task_rows = session.execute(
+        select(AgentTask).where(AgentTask.run_id == run_id).order_by(AgentTask.created_at.asc())
+    ).scalars().all()
+
     return {
         "run_id": r.run_id,
         "run_type": r.run_type,
@@ -539,6 +570,17 @@ def get_run(run_id: str, session: Session = Depends(get_session)) -> dict[str, A
         "finished_at": r.finished_at,
         "stats": r.stats,
         "created_at": r.created_at,
+        "tasks": [
+            {
+                "task_id": t.task_id,
+                "task_name": t.task_name,
+                "status": t.status,
+                "started_at": t.started_at,
+                "finished_at": t.finished_at,
+                "error": t.error,
+            }
+            for t in task_rows
+        ],
     }
 
 

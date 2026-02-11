@@ -1,0 +1,7 @@
+2026-02-10 16:58:53,896 [INFO] VN Invoice Feeder starting — loading data catalog…
+2026-02-10 16:58:53,917 [INFO] Loaded 3 records: {'MC_OCR_2021': 1, 'APPEN_VN_OCR': 1, 'RECEIPT_OCR': 1}
+2026-02-10 16:58:53,952 [INFO] Event #1: src=RECEIPT_OCR ext_id=2796ab0be7a0 period=2026-01 run_id=d9e3363b-158
+2026-02-10 16:58:59,975 [INFO] Event #2: src=APPEN_VN_OCR ext_id=363f1860eb6b period=2026-10 run_id=c7a505ed-094
+2026-02-10 16:59:06,002 [INFO] Event #3: src=MC_OCR_2021 ext_id=14f5e46e9d7d period=2026-11 run_id=211979ef-34b
+2026-02-10 16:59:06,016 [INFO] Journal suggestion run: 0b21a288-6fc
+2026-02-10 16:59:12,022 [INFO] Inject-once complete. 3 events sent.

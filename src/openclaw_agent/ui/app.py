@@ -455,10 +455,17 @@ with tab_trigger:
                     body["requested_by"] = requested_by.strip()
                 try:
                     res = _post("/agent/v1/runs", body, idem or None)
+                    _task_preview = res.get("tasks", [])
+                    _steps_text = ""
+                    if _task_preview:
+                        _steps_text = "\n\nChuỗi xử lý: " + " → ".join(
+                            t.get("task_name", "?") for t in _task_preview
+                        )
                     st.success(
                         f"✅ Tác vụ **{_RUN_TYPE_LABELS.get(run_type, run_type)}** đã được tạo thành công!\n\n"
                         f"Mã tác vụ: `{res.get('run_id', '')}`  •  "
                         f"Trạng thái: {_STATUS_LABELS.get(res.get('status', ''), res.get('status', ''))}"
+                        f"{_steps_text}"
                     )
                     time.sleep(0.5)
                     st.rerun()
@@ -530,9 +537,40 @@ with tab_runs:
         run_id = st.text_input("Mã tác vụ xem chi tiết", value=df.iloc[0]["run_id"], key="runs_inspect")
 
         if run_id:
+            # Fetch full run detail (with tasks) for chain trace
+            try:
+                _run_detail = _get(f"/agent/v1/runs/{run_id}")
+            except Exception:
+                _run_detail = {}
+
+            # Show run summary with timing
+            if _run_detail:
+                with st.expander("📌 Thông tin tác vụ", expanded=True):
+                    _rd_cols = st.columns(3)
+                    with _rd_cols[0]:
+                        st.markdown(f"**Loại:** {_RUN_TYPE_LABELS.get(_run_detail.get('run_type', ''), _run_detail.get('run_type', ''))}")
+                        st.markdown(f"**Trạng thái:** {_STATUS_LABELS.get(_run_detail.get('status', ''), _run_detail.get('status', ''))}")
+                    with _rd_cols[1]:
+                        st.markdown(f"**Tạo lúc:** {str(_run_detail.get('created_at', ''))[:19]}")
+                        _started = _run_detail.get("started_at")
+                        _finished = _run_detail.get("finished_at")
+                        if _started:
+                            st.markdown(f"**Bắt đầu:** {str(_started)[:19]}")
+                        if _finished:
+                            st.markdown(f"**Hoàn thành:** {str(_finished)[:19]}")
+                    with _rd_cols[2]:
+                        _cursor_in = _run_detail.get("cursor_in") or {}
+                        if isinstance(_cursor_in, dict) and _cursor_in:
+                            _ci_parts = [f"{k}: {v}" for k, v in _cursor_in.items() if v]
+                            st.markdown(f"**Tham số:** {', '.join(_ci_parts[:3])}")
+                        _stats = _run_detail.get("stats") or {}
+                        if isinstance(_stats, dict) and _stats:
+                            _st_parts = [f"{k}: {v}" for k, v in _stats.items()]
+                            st.markdown(f"**Kết quả:** {', '.join(_st_parts[:4])}")
+
             colA, colB = st.columns(2)
             with colA:
-                st.markdown("### Bước xử lý")
+                st.markdown("### Chuỗi xử lý (Chain Trace)")
                 try:
                     tasks = _get("/agent/v1/tasks", params={"run_id": run_id}).get("items", [])
                 except Exception as e:
@@ -541,13 +579,17 @@ with tab_runs:
                 if tasks:
                     df_t = pd.DataFrame(tasks)
                     df_t["Trạng thái"] = df_t["status"].map(lambda s: _STATUS_LABELS.get(s, s))
+                    # Add timing info
+                    _show_cols = ["task_name", "Trạng thái", "started_at", "finished_at", "error"]
+                    _avail_cols = [c for c in _show_cols if c in df_t.columns]
                     st.dataframe(
-                        df_t[["task_name", "Trạng thái", "error", "created_at"]],
+                        df_t[_avail_cols],
                         use_container_width=True,
                         column_config={
                             "task_name": "Bước",
                             "error": "Lỗi",
-                            "created_at": "Thời gian",
+                            "started_at": "Bắt đầu",
+                            "finished_at": "Hoàn thành",
                         },
                     )
                 else:
@@ -1331,6 +1373,21 @@ with tab_command_center:
     st.subheader("🎛️ Command Center — VN Invoice Data Stream")
     st.caption("Quản lý nguồn dữ liệu hoá đơn VN — Kaggle + Synthetic → Agent Pipeline")
 
+    # --- Refresh controls ---
+    _cc_ctrl_col1, _cc_ctrl_col2 = st.columns([3, 1])
+    with _cc_ctrl_col2:
+        if st.button("🔄 Làm mới", key="cc_refresh"):
+            st.rerun()
+    with _cc_ctrl_col1:
+        from datetime import datetime as _dt
+        st.caption(f"Cập nhật lần cuối: {_dt.now().strftime('%H:%M:%S %d/%m/%Y')}")
+
+    # Auto-refresh toggle (every 10s)
+    _auto_refresh = st.checkbox("Tự động làm mới (10 giây)", value=False, key="cc_auto_refresh")
+    if _auto_refresh:
+        time.sleep(10)
+        st.rerun()
+
     # --- Feeder Status ---
     _cc_status: dict = {}
     try:
@@ -1438,3 +1495,30 @@ with tab_command_center:
             st.code(_tt_ctx, language="text")
         except Exception as e:
             st.error(f"Lỗi tra cứu TT133: {e}")
+
+    st.divider()
+
+    # --- Recent Feeder Runs ---
+    st.markdown("##### 📜 Tác vụ gần đây từ Feeder")
+    try:
+        _feeder_runs = _get(
+            "/agent/v1/runs",
+            params={"run_type": "voucher_ingest", "limit": 5},
+        ).get("items", [])
+        if _feeder_runs:
+            for _fr in _feeder_runs:
+                _fr_status = _STATUS_LABELS.get(_fr.get("status", ""), _fr.get("status", ""))
+                _fr_time = str(_fr.get("created_at", ""))[:19]
+                _fr_stats = _fr.get("stats") or {}
+                _fr_info = ""
+                if isinstance(_fr_stats, dict):
+                    _fr_parts = [f"{k}: {v}" for k, v in _fr_stats.items()]
+                    _fr_info = " • ".join(_fr_parts[:3])
+                st.markdown(
+                    f"- **{_fr_time}** — {_fr_status}"
+                    + (f" — {_fr_info}" if _fr_info else "")
+                )
+        else:
+            st.info("Chưa có tác vụ voucher_ingest nào.")
+    except Exception as e:
+        st.error(f"Lỗi tải lịch sử: {e}")

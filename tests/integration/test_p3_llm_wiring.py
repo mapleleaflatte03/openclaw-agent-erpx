@@ -212,6 +212,98 @@ class TestQnaLLMWiring:
 
         assert "TT133" in result["answer"] or "Xin lỗi" in result["answer"]
 
+    def test_qna_no_reasoning_chain_in_result(self, monkeypatch):
+        """Handler results must NOT contain reasoning_chain (stripped for UI/API)."""
+        monkeypatch.setenv("USE_REAL_LLM", "false")
+        import openclaw_agent.flows.qna_accounting as qna_mod
+
+        mock_session = MagicMock()
+        result = qna_mod.answer_question(mock_session, "Bất kỳ câu hỏi nào")
+        assert "reasoning_chain" not in result
+
+
+# ---------------------------------------------------------------------------
+# Golden tests – 3 benchmark Q&A questions (stub LLM)
+# ---------------------------------------------------------------------------
+
+class TestQnaGoldenBenchmark:
+    """Golden answers for the 3 PO benchmark questions (using stub LLM)."""
+
+    @pytest.fixture(autouse=True)
+    def _enable_llm(self, monkeypatch):
+        monkeypatch.setenv("USE_REAL_LLM", "true")
+
+    def _run_with_stub(self, question: str, stub_answer: str) -> dict:
+        import openclaw_agent.flows.qna_accounting as qna_mod
+
+        fake_result = {
+            "answer": stub_answer,
+            "llm_used": True,
+            "model": "golden-stub",
+        }
+        with patch.object(qna_mod, "_try_llm_answer", return_value=fake_result):
+            mock_session = MagicMock()
+            return qna_mod.answer_question(mock_session, question)
+
+    def test_golden_q1_tk131_vs_tk331(self):
+        """PO Q1: So sánh TK 131 vs TK 331 — must mention both accounts, Nợ/Có."""
+        answer_text = (
+            "TK 131 – Phải thu của khách hàng: phản ánh khoản phải thu, số dư bên Nợ.\n"
+            "Bút toán mẫu: Nợ TK 131 / Có TK 511 — ghi nhận doanh thu 50.000.000 VND.\n\n"
+            "TK 331 – Phải trả cho người bán: phản ánh khoản phải trả, số dư bên Có.\n"
+            "Bút toán mẫu: Nợ TK 152 / Có TK 331 — mua NVL 30.000.000 VND.\n\n"
+            "Căn cứ: TT200/2014/TT-BTC."
+        )
+        result = self._run_with_stub("So sánh TK 131 vs 331", answer_text)
+        assert result["llm_used"] is True
+        assert "131" in result["answer"]
+        assert "331" in result["answer"]
+        assert "Nợ" in result["answer"]
+        assert "Có" in result["answer"]
+        assert "VND" in result["answer"]
+        assert "reasoning_chain" not in result
+
+    def test_golden_q2_tk642_vs_tk641(self):
+        """PO Q2: Khi nào dùng TK 642 thay vì 641 — must distinguish selling vs admin."""
+        answer_text = (
+            "TK 641 – Chi phí bán hàng: dùng cho các chi phí phát sinh trong quá trình "
+            "tiêu thụ sản phẩm, hàng hoá, dịch vụ (lương nhân viên bán hàng, vận chuyển, "
+            "hoa hồng…).\n\n"
+            "TK 642 – Chi phí quản lý doanh nghiệp: dùng cho các chi phí quản lý chung "
+            "của doanh nghiệp (lương ban giám đốc, văn phòng phẩm, khấu hao TSCĐ dùng "
+            "chung…).\n\n"
+            "Ví dụ: Chi lương nhân viên kinh doanh → Nợ TK 641 / Có TK 334: 15.000.000 VND.\n"
+            "Chi lương kế toán trưởng → Nợ TK 642 / Có TK 334: 20.000.000 VND.\n\n"
+            "Căn cứ: TT200/2014/TT-BTC."
+        )
+        result = self._run_with_stub("Khi nào dùng TK 642 thay vì 641", answer_text)
+        assert result["llm_used"] is True
+        assert "641" in result["answer"]
+        assert "642" in result["answer"]
+        assert "VND" in result["answer"]
+        assert "reasoning_chain" not in result
+
+    def test_golden_q3_depreciation(self):
+        """PO Q3: Khấu hao TSCĐ 30 triệu / 3 năm — must show TK 211/214, calculation."""
+        answer_text = (
+            "Tài sản cố định nguyên giá 30.000.000 VND, thời gian sử dụng 3 năm.\n"
+            "Phương pháp khấu hao đường thẳng: mức khấu hao hàng năm = "
+            "30.000.000 / 3 = 10.000.000 VND/năm, tương đương khoảng "
+            "833.333 VND/tháng.\n\n"
+            "Bút toán hạch toán hàng tháng:\n"
+            "Nợ TK 642 (hoặc 627/641 tuỳ bộ phận sử dụng): 833.333 VND\n"
+            "Có TK 214 – Hao mòn TSCĐ: 833.333 VND\n\n"
+            "TK 211 – Tài sản cố định hữu hình: ghi nhận nguyên giá ban đầu.\n"
+            "TK 214 – Hao mòn TSCĐ: lũy kế giá trị khấu hao.\n\n"
+            "Căn cứ: TT200/2014/TT-BTC, Điều 35-38."
+        )
+        result = self._run_with_stub("Khấu hao TSCĐ 30 triệu/3 năm", answer_text)
+        assert result["llm_used"] is True
+        assert "211" in result["answer"] or "214" in result["answer"]
+        assert "VND" in result["answer"]
+        assert "khấu hao" in result["answer"].lower() or "833" in result["answer"]
+        assert "reasoning_chain" not in result
+
 
 class TestJournalLLMWiring:
     """Verify journal_suggestion LLM refinement path."""

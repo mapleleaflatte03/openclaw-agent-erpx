@@ -1,0 +1,220 @@
+{
+  "timestamp": "2026-02-11T02:59:06.674931Z",
+  "mode_b": {
+    "qna": [
+      {
+        "status_code": 200,
+        "question": "So sánh TK 131 (phải thu khách hàng) và TK 331 (phải trả người bán) trong bán chịu và mua chịu, cho ví dụ cụ thể bằng VND, viện dẫn TT200/TT133.",
+        "answer_preview": "**So sánh tài khoản 131 – Phải thu khách hàng và tài khoản 331 – Phải trả người bán**\n\n- **TK 131 “Phải thu khách hàng”**: là tài khoản thuộc loại 1 (Tài sản), mang tính **Nợ**. Theo Thông tư 200/2014/TT‑BTC mục 1.2 và Thông tư 133/2016/TT‑BTC mục 2.2, TK 131 dùng để ghi nhận các khoản nợ phải thu từ khách hàng trong các giao dịch bán hàng chịu.  \n- **TK 331 “Phải trả người bán”**: là tài khoản thuộc loại 3 (Nợ phải trả), mang tính **Có**. Cũng được quy định ở Thông tư 200/2014/TT‑BTC mục 1.3 và",
+        "answer_len": 1716,
+        "llm_used": true,
+        "used_models": [
+          "OpenAI GPT-oss-120b"
+        ],
+        "has_reasoning_chain_field": false,
+        "mentions_tt200_or_tt133": true
+      },
+      {
+        "status_code": 200,
+        "question": "Khi nào dùng TK 642 (chi phí quản lý doanh nghiệp) thay vì TK 641 (chi phí bán hàng)? Cho 3 ví dụ bút toán bằng VND, viện dẫn TT200/TT133.",
+        "answer_preview": "Dựa trên hệ thống tài khoản theo TT133/2016/TT-BTC và TT200/2014/TT-BTC:\n\nThông tư 133/2016/TT-BTC — Chế độ kế toán doanh nghiệp nhỏ và vừa.\nHệ thống tài khoản gồm 9 loại (Loại 1–9).\n\n\nKết quả tra cứu cho: «Khi nào dùng TK 642 (chi phí quản lý doanh nghiệp) thay vì TK 641 (chi phí bán hàng)? Cho 3 ví dụ bút toán bằng VND, viện dẫn TT200/TT133.»\n\n\nVui lòng hỏi cụ thể hơn nếu cần giải thích chi tiết về bút toán hoặc tài khoản liên quan.",
+        "answer_len": 438,
+        "llm_used": true,
+        "used_models": [
+          "OpenAI GPT-oss-120b"
+        ],
+        "has_reasoning_chain_field": false,
+        "mentions_tt200_or_tt133": true
+      },
+      {
+        "status_code": 200,
+        "question": "Hạch toán khấu hao TSCĐ hữu hình giá 30 triệu VND trong 3 năm theo phương pháp đường thẳng. Cho bút toán Nợ/Có chi tiết.",
+        "answer_preview": "Dựa trên hệ thống tài khoản theo TT133/2016/TT-BTC và TT200/2014/TT-BTC:\n\nThông tư 133/2016/TT-BTC — Chế độ kế toán doanh nghiệp nhỏ và vừa.\nHệ thống tài khoản gồm 9 loại (Loại 1–9).\n\n\nKết quả tra cứu cho: «Hạch toán khấu hao TSCĐ hữu hình giá 30 triệu VND trong 3 năm theo phương pháp đường thẳng. Cho bút toán Nợ/Có chi tiết.»\n\n\nVui lòng hỏi cụ thể hơn nếu cần giải thích chi tiết về bút toán hoặc tài khoản liên quan.",
+        "answer_len": 420,
+        "llm_used": true,
+        "used_models": [
+          "OpenAI GPT-oss-120b"
+        ],
+        "has_reasoning_chain_field": false,
+        "mentions_tt200_or_tt133": true
+      }
+    ],
+    "runs_period": [
+      {
+        "run_type": "voucher_ingest",
+        "status_code": 200,
+        "run_id": "2cff9cac-5333-4bc3-8e08-49d0c5b28894",
+        "initial_status": "success",
+        "final_status_after_poll": "success",
+        "payload_period": "2026-02"
+      },
+      {
+        "run_type": "soft_checks",
+        "status_code": 200,
+        "run_id": "f8df8092-4f05-4a54-b35e-69c63f0415ef",
+        "initial_status": "queued",
+        "final_status_after_poll": "success",
+        "payload_period": "2026-02"
+      },
+      {
+        "run_type": "tax_export",
+        "status_code": 200,
+        "run_id": "b7069b0d-cfd3-461d-9a8a-eb8785944503",
+        "initial_status": "success",
+        "final_status_after_poll": "success",
+        "payload_period": "2026-02"
+      }
+    ],
+    "vn_feeder": {
+      "before": {
+        "running": false,
+        "total_events_today": 0,
+        "last_event_at": "",
+        "avg_events_per_min": 0,
+        "sources": [],
+        "updated_at": ""
+      },
+      "start_resp": {
+        "status": "ok",
+        "action": "start"
+      },
+      "polls": [
+        {
+          "t_plus_sec": 30,
+          "status": {
+            "running": true,
+            "total_events_today": 2,
+            "last_event_at": "2026-02-11T02:59:39.473932",
+            "avg_events_per_min": 14.33,
+            "sources": [
+              {
+                "source_name": "RECEIPT_OCR",
+                "total": 182,
+                "sent_count": 1,
+                "pct_consumed": 0.5
+              },
+              {
+                "source_name": "MC_OCR_2021",
+                "total": 164,
+                "sent_count": 1,
+                "pct_consumed": 0.6
+              },
+              {
+                "source_name": "APPEN_VN_OCR",
+                "total": 154,
+                "sent_count": 0,
+                "pct_consumed": 0.0
+              }
+            ],
+            "updated_at": "2026-02-11T02:59:39.474600"
+          }
+        },
+        {
+          "t_plus_sec": 60,
+          "status": {
+            "running": true,
+            "total_events_today": 2,
+            "last_event_at": "2026-02-11T02:59:39.473932",
+            "avg_events_per_min": 14.33,
+            "sources": [
+              {
+                "source_name": "RECEIPT_OCR",
+                "total": 182,
+                "sent_count": 1,
+                "pct_consumed": 0.5
+              },
+              {
+                "source_name": "MC_OCR_2021",
+                "total": 164,
+                "sent_count": 1,
+                "pct_consumed": 0.6
+              },
+              {
+                "source_name": "APPEN_VN_OCR",
+                "total": 154,
+                "sent_count": 0,
+                "pct_consumed": 0.0
+              }
+            ],
+            "updated_at": "2026-02-11T02:59:39.474600"
+          }
+        },
+        {
+          "t_plus_sec": 90,
+          "status": {
+            "running": true,
+            "total_events_today": 4,
+            "last_event_at": "2026-02-11T03:00:48.378486",
+            "avg_events_per_min": 3.11,
+            "sources": [
+              {
+                "source_name": "RECEIPT_OCR",
+                "total": 182,
+                "sent_count": 2,
+                "pct_consumed": 1.1
+              },
+              {
+                "source_name": "MC_OCR_2021",
+                "total": 164,
+                "sent_count": 1,
+                "pct_consumed": 0.6
+              },
+              {
+                "source_name": "APPEN_VN_OCR",
+                "total": 154,
+                "sent_count": 1,
+                "pct_consumed": 0.6
+              }
+            ],
+            "updated_at": "2026-02-11T03:00:48.378965"
+          }
+        }
+      ],
+      "stop_resp": {
+        "status": "ok",
+        "action": "stop"
+      },
+      "after_stop": {
+        "running": false,
+        "total_events_today": 4,
+        "last_event_at": "2026-02-11T03:00:48.378486",
+        "avg_events_per_min": 2.66,
+        "sources": [
+          {
+            "source_name": "RECEIPT_OCR",
+            "total": 182,
+            "sent_count": 2,
+            "pct_consumed": 1.1
+          },
+          {
+            "source_name": "MC_OCR_2021",
+            "total": 164,
+            "sent_count": 1,
+            "pct_consumed": 0.6
+          },
+          {
+            "source_name": "APPEN_VN_OCR",
+            "total": 154,
+            "sent_count": 1,
+            "pct_consumed": 0.6
+          }
+        ],
+        "updated_at": "2026-02-11T03:01:01.181915"
+      }
+    },
+    "diagnostics_llm": {
+      "status": "ok",
+      "do_agent": {
+        "base_url_masked": "configured",
+        "health": "ok",
+        "model_name": "OpenAI GPT-oss-120b",
+        "latency_keys": [
+          "chat",
+          "health",
+          "total"
+        ],
+        "has_raw_base_url_field": false
+      }
+    }
+  }
+}
