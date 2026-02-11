@@ -140,12 +140,12 @@ def _clean_llm_answer(raw: str) -> str:
     # 2. Remove fenced JSON code blocks
     text = _JSON_BLOCK_RE.sub("", text)
 
-    # 3. Early exit – if >20 % of words are 4+-letter ASCII words,
+    # 3. Early exit – if >40 % of words are 4+-letter ASCII words,
     #    the model produced a full English CoT answer.
     all_words = text.split()
     if len(all_words) >= 8:
         eng_count = sum(1 for w in all_words if _ENG_WORD_RE.match(w))
-        if eng_count / len(all_words) > 0.20:
+        if eng_count / len(all_words) > 0.40:
             return _FALLBACK_ANSWER
 
     # 4. Line-by-line filtering
@@ -163,8 +163,11 @@ def _clean_llm_answer(raw: str) -> str:
             continue
 
         # Skip lines without Vietnamese diacritics that are long enough
-        # (likely pure English reasoning even if containing some VN terms)
-        if len(stripped) > 15 and not _VN_DIACRITIC_RE.search(stripped):
+        # AND don't contain accounting keywords (TK, VND, Nợ, Có, TT200, TT133)
+        _ACCT_KEYWORDS = ("TK", "VND", "TT200", "TT133", "TT 200", "TT 133",
+                          "Nợ", "Có", "khấu hao", "tài khoản", "bút toán")
+        has_acct_kw = any(kw in stripped for kw in _ACCT_KEYWORDS)
+        if len(stripped) > 15 and not _VN_DIACRITIC_RE.search(stripped) and not has_acct_kw:
             continue
 
         # Skip lines with high English word ratio (CoT interleaved with VN terms)
@@ -172,7 +175,7 @@ def _clean_llm_answer(raw: str) -> str:
             line_words = stripped.split()
             if len(line_words) >= 5:
                 line_eng = sum(1 for w in line_words if _ENG_WORD_RE.match(w))
-                if line_eng / len(line_words) > 0.30:
+                if line_eng / len(line_words) > 0.50:
                     continue
 
         cleaned.append(line)
@@ -387,20 +390,17 @@ def _answer_voucher_count(session: Session, question: str) -> dict[str, Any] | N
 
 
 def _answer_journal_explanation(session: Session, question: str) -> dict[str, Any] | None:
-    """Answer: why was a voucher classified / journaled a certain way?"""
-    keywords = ["vì sao", "tại sao", "hạch toán", "gợi ý", "tài khoản"]
-    if not any(kw in question.lower() for kw in keywords):
-        return None
+    """Answer: why was a voucher classified / journaled a certain way?
 
+    Only triggers when the question explicitly references a voucher/invoice
+    number.  General accounting questions (comparisons, theory) are handled
+    by the LLM path with TT133/TT200 context enrichment.
+    """
+    # Must contain a voucher/invoice reference to trigger this handler.
+    # General questions like "so sánh TK 131 vs 331" go to LLM instead.
     voucher_no = _extract_voucher_no(question)
     if not voucher_no:
-        return {
-            "answer": (
-                "Để giải thích bút toán, vui lòng cung cấp số chứng từ/hóa đơn cụ thể. "
-                "Ví dụ: 'Vì sao chứng từ hóa đơn số 0000123 được gợi ý hạch toán như vậy?'"
-            ),
-            "used_models": [],
-        }
+        return None
 
     # Find voucher
     voucher = session.query(AcctVoucher).filter(
@@ -656,24 +656,46 @@ def answer_question(session: Session, question: str) -> dict[str, Any]:
             return result
 
     # --- Try LLM for free-form questions when enabled ---
+    # Enrich context with TT133/TT200 regulation index for accounting questions
+    _tt_context = ""
+    try:
+        from openclaw_agent.regulations.tt133_index import get_regulation_context
+        _tt_context = get_regulation_context(question)
+    except Exception:
+        pass
     llm_result = _try_llm_answer(
         question,
+        context_summary=_tt_context or "Không có dữ liệu ngữ cảnh bổ sung.",
         regulation_refs=_cite_regulation(question) or None,
     )
     if llm_result is not None:
         # DEV-04: post-process LLM answer to strip CoT / JSON noise
         llm_result["answer"] = _clean_llm_answer(llm_result.get("answer", ""))
         llm_result.setdefault("used_models", [])
-        llm_result["reasoning_chain"] = _build_reasoning_chain(
-            question,
-            ["Không khớp handler nào — chuyển sang LLM", "LLM trả lời thành công"],
-            regulation_refs=_cite_regulation(question) or None,
-        )
+        llm_result["llm_used"] = True
+
+        # Quality gate: if answer is essentially empty/fallback after cleaning,
+        # provide a content-rich fallback using TT133 regulation data.
+        ans = llm_result["answer"].strip()
+        if (ans == _FALLBACK_ANSWER or len(ans) < 20) and _tt_context:
+                llm_result["answer"] = (
+                    f"Dựa trên hệ thống tài khoản theo TT133/2016/TT-BTC và "
+                    f"TT200/2014/TT-BTC:\n\n{_tt_context}\n\n"
+                    f"Vui lòng hỏi cụ thể hơn nếu cần giải thích chi tiết về "
+                    f"bút toán hoặc tài khoản liên quan."
+                )
         return llm_result
 
-    # Default fallback (no handler, no LLM)
-    return {
-        "answer": (
+    # Default fallback (no handler, no LLM) — try to provide useful TT133 context
+    _fallback_answer = ""
+    if _tt_context:
+        _fallback_answer = (
+            f"Theo hệ thống tài khoản TT133/2016/TT-BTC và TT200/2014/TT-BTC:\n\n"
+            f"{_tt_context}\n\n"
+            f"Bạn có thể hỏi thêm chi tiết về bút toán hoặc tài khoản cụ thể."
+        )
+    else:
+        _fallback_answer = (
             "Xin lỗi, tôi chưa hiểu câu hỏi này. Bạn có thể hỏi về:\n"
             "- Số lượng chứng từ (ví dụ: 'Tháng 1/2025 có bao nhiêu chứng từ?')\n"
             "- Giải thích bút toán (ví dụ: 'Vì sao chứng từ số 0000123 được hạch toán vậy?')\n"
@@ -681,10 +703,8 @@ def answer_question(session: Session, question: str) -> dict[str, Any]:
             "- Dòng tiền (ví dụ: 'Tóm tắt dòng tiền dự báo')\n"
             "- Phân loại chứng từ (ví dụ: 'Thống kê phân loại chứng từ')\n"
             "- Quy định kế toán (ví dụ: 'Thông tư 200 quy định gì về hạch toán?')"
-        ),
+        )
+    return {
+        "answer": _fallback_answer,
         "used_models": [],
-        "reasoning_chain": _build_reasoning_chain(
-            question,
-            ["Không khớp với handler nào", "Trả hướng dẫn sử dụng"],
-        ),
     }

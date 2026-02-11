@@ -171,14 +171,18 @@ class TestQnaLLMWiring:
     """Verify qna_accounting uses LLM path when _USE_REAL_LLM=True."""
 
     def test_qna_llm_fallback_path(self, monkeypatch):
-        """When USE_REAL_LLM=false, default fallback is used (no LLM)."""
+        """When USE_REAL_LLM=false, default fallback is used (no LLM).
+
+        Fallback now provides TT133 context when available, or 'Xin lỗi' otherwise.
+        """
         monkeypatch.setenv("USE_REAL_LLM", "false")
         import openclaw_agent.flows.qna_accounting as qna_mod
 
         mock_session = MagicMock()
         result = qna_mod.answer_question(mock_session, "Câu hỏi ngẫu nhiên không khớp handler nào?")
         assert "llm_used" not in result or result.get("llm_used") is not True
-        assert "Xin lỗi" in result["answer"]
+        # Fallback provides TT133 context or "Xin lỗi" guidance
+        assert "TT133" in result["answer"] or "Xin lỗi" in result["answer"]
 
     def test_qna_llm_active_path(self, monkeypatch):
         """When LLM is active and no handler matches → LLM branch fires."""
@@ -198,7 +202,7 @@ class TestQnaLLMWiring:
         assert "TT200" in result["answer"]
 
     def test_qna_llm_error_falls_through(self, monkeypatch):
-        """LLM error → falls through to default help text."""
+        """LLM error → falls through to default help text (TT133 context or Xin lỗi)."""
         monkeypatch.setenv("USE_REAL_LLM", "true")
         import openclaw_agent.flows.qna_accounting as qna_mod
 
@@ -206,7 +210,7 @@ class TestQnaLLMWiring:
             mock_session = MagicMock()
             result = qna_mod.answer_question(mock_session, "Unknown question that triggers nothing")
 
-        assert "Xin lỗi" in result["answer"]
+        assert "TT133" in result["answer"] or "Xin lỗi" in result["answer"]
 
 
 class TestJournalLLMWiring:

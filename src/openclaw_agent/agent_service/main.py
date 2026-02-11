@@ -1829,7 +1829,6 @@ def accounting_qna(
             "source": "acct_db",
             "qna_id": qna_row.id,
             "used_models": result.get("used_models", []),
-            "reasoning_chain": result.get("reasoning_chain", []),
             "llm_used": result.get("llm_used", False),
         },
     }
@@ -2156,14 +2155,21 @@ class VnFeederControlBody(BaseModel):
 def vn_feeder_status() -> dict[str, Any]:
     """Return current VN feeder status from the status file."""
     import json as _json
+
+    from openclaw_agent.agent_service.vn_feeder_engine import is_running as _feeder_is_running
+
     status_path = os.path.join(_VN_FEEDER_CACHE, "feeder_status.json")
     if os.path.isfile(status_path):
         try:
-            return _json.loads(open(status_path, encoding="utf-8").read())
+            with open(status_path, encoding="utf-8") as fh:
+                data = _json.loads(fh.read())
+            # Ensure running state reflects actual thread state
+            data["running"] = _feeder_is_running()
+            return data
         except Exception:
             pass
     return {
-        "running": False,
+        "running": _feeder_is_running(),
         "total_events_today": 0,
         "last_event_at": "",
         "avg_events_per_min": 0,
@@ -2174,20 +2180,22 @@ def vn_feeder_status() -> dict[str, Any]:
 
 @app.post("/agent/v1/vn_feeder/control", dependencies=[Depends(require_api_key)])
 def vn_feeder_control(body: VnFeederControlBody) -> dict[str, str]:
-    """Write control command for the VN feeder process."""
-    import json as _json
-    os.makedirs(_VN_FEEDER_CACHE, exist_ok=True)
-    control_path = os.path.join(_VN_FEEDER_CACHE, "feeder_control.json")
-    ctrl: dict[str, Any] = {}
+    """Control the VN feeder background thread — start/stop/inject."""
+    from openclaw_agent.agent_service.vn_feeder_engine import (
+        inject_now as _feeder_inject,
+    )
+    from openclaw_agent.agent_service.vn_feeder_engine import (
+        start_feeder as _feeder_start,
+    )
+    from openclaw_agent.agent_service.vn_feeder_engine import (
+        stop_feeder as _feeder_stop,
+    )
+
+    epm = body.target_events_per_min
     if body.action == "start":
-        ctrl["running"] = True
+        _feeder_start(target_epm=epm)
     elif body.action == "stop":
-        ctrl["running"] = False
+        _feeder_stop()
     elif body.action == "inject_now":
-        ctrl["running"] = True
-        ctrl["inject_once"] = True
-    if body.target_events_per_min is not None:
-        ctrl["target_events_per_min"] = body.target_events_per_min
-    with open(control_path, "w", encoding="utf-8") as f:
-        _json.dump(ctrl, f)
+        _feeder_inject(target_epm=epm)
     return {"status": "ok", "action": body.action}

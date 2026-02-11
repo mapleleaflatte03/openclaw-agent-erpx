@@ -380,7 +380,12 @@ with tab_trigger:
             key="trig_rt",
         )
         payload: dict[str, Any] = {}
-        _period_required = run_type in {"tax_export", "working_papers", "close_checklist"}
+        # Period required for these run types (must match backend _PERIOD_REQUIRED_RUN_TYPES)
+        _period_required = run_type in {
+            "voucher_ingest", "soft_checks", "journal_suggestion",
+            "cashflow_forecast", "tax_export", "bank_reconcile",
+            "working_papers", "close_checklist",
+        }
         if run_type in {"tax_export", "working_papers", "close_checklist"}:
             payload["period"] = st.text_input(
                 "Kỳ kế toán (YYYY-MM) *", value=date.today().strftime("%Y-%m"), key="trig_period",
@@ -388,15 +393,26 @@ with tab_trigger:
         if run_type == "soft_checks":
             payload["updated_after"] = st.text_input("Cập nhật sau (ISO)", value="", key="trig_ua")
             payload["period"] = st.text_input(
-                "Kỳ kế toán (YYYY-MM, tùy chọn)", value=date.today().strftime("%Y-%m"), key="trig_sc_period",
+                "Kỳ kế toán (YYYY-MM) *", value=date.today().strftime("%Y-%m"), key="trig_sc_period",
             )
         if run_type == "cashflow_forecast":
             payload["period"] = st.text_input(
-                "Kỳ (YYYY-MM)", value=date.today().strftime("%Y-%m"), key="trig_cf_period",
+                "Kỳ (YYYY-MM) *", value=date.today().strftime("%Y-%m"), key="trig_cf_period",
             )
             payload["horizon_days"] = st.number_input("Số ngày dự báo", min_value=7, max_value=90, value=30)
         if run_type == "voucher_ingest":
+            payload["period"] = st.text_input(
+                "Kỳ kế toán (YYYY-MM) *", value=date.today().strftime("%Y-%m"), key="trig_vi_period",
+            )
             payload["source"] = st.selectbox("Nguồn dữ liệu", ["vn_fixtures", "payload", "erpx_mock"])
+        if run_type == "journal_suggestion":
+            payload["period"] = st.text_input(
+                "Kỳ kế toán (YYYY-MM) *", value=date.today().strftime("%Y-%m"), key="trig_js_period",
+            )
+        if run_type == "bank_reconcile":
+            payload["period"] = st.text_input(
+                "Kỳ kế toán (YYYY-MM) *", value=date.today().strftime("%Y-%m"), key="trig_br_period",
+            )
         if run_type == "voucher_classify":
             payload["period"] = st.text_input("Kỳ (YYYY-MM, tùy chọn)", value="", key="trig_vc_period")
         if run_type == "ar_dunning":
@@ -1031,14 +1047,11 @@ with tab_qna:
                     st.success(qna_res.get("answer", "Không có câu trả lời."))
                     with st.expander("📋 Chi tiết xử lý"):
                         meta = qna_res.get("meta", {})
-                        # Display reasoning chain if available
-                        chain = meta.get("reasoning_chain", [])
-                        if chain:
-                            st.markdown("**Chuỗi lập luận:**")
-                            for i, step in enumerate(chain, 1):
-                                st.markdown(f"{i}. {step}")
-                            st.divider()
-                        st.json({k: v for k, v in meta.items() if k != "reasoning_chain"})
+                        # Show only non-sensitive meta (no reasoning_chain)
+                        st.json({
+                            k: v for k, v in meta.items()
+                            if k not in ("reasoning_chain",)
+                        })
                 except Exception as e:
                     st.error(f"❌ Lỗi: {e}")
         else:
