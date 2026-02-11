@@ -96,15 +96,22 @@ function toggleLang() {
 // ───────────────────────────────────────────────────────────────
 async function api(path, options = {}) {
   const url = path.startsWith('http') ? path : `${API_BASE}${path}`;
-  const res = await fetch(url, {
-    headers: { 'Content-Type': 'application/json', ...options.headers },
-    ...options,
-  });
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`API ${res.status}: ${text.slice(0, 200)}`);
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 10_000);
+  try {
+    const res = await fetch(url, {
+      headers: { 'Content-Type': 'application/json', ...options.headers },
+      signal: controller.signal,
+      ...options,
+    });
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(`API ${res.status}: ${text.slice(0, 200)}`);
+    }
+    return res.json();
+  } finally {
+    clearTimeout(timeout);
   }
-  return res.json();
 }
 
 async function apiPost(path, body) {
@@ -168,7 +175,7 @@ function closeModal() {
 // Tab Navigation
 // ───────────────────────────────────────────────────────────────
 const tabModules = {};
-let activeTab = 'dashboard';
+let activeTab = null;
 
 function switchTab(tabId) {
   if (activeTab === tabId) return;
@@ -343,20 +350,31 @@ document.addEventListener('DOMContentLoaded', async () => {
   renderNotifList();
 
   // Load tab modules dynamically
-  await Promise.all([
-    import('./tabs/dashboard.js'),
-    import('./tabs/ocr.js'),
-    import('./tabs/journal.js'),
-    import('./tabs/reconcile.js'),
-    import('./tabs/risk.js'),
-    import('./tabs/forecast.js'),
-    import('./tabs/qna.js'),
-    import('./tabs/reports.js'),
-    import('./tabs/settings.js'),
-  ]);
+  try {
+    await Promise.all([
+      import('./tabs/dashboard.js'),
+      import('./tabs/ocr.js'),
+      import('./tabs/journal.js'),
+      import('./tabs/reconcile.js'),
+      import('./tabs/risk.js'),
+      import('./tabs/forecast.js'),
+      import('./tabs/qna.js'),
+      import('./tabs/reports.js'),
+      import('./tabs/settings.js'),
+    ]);
+  } catch (e) {
+    console.error('Module import error:', e);
+    toast('Lỗi tải module: ' + e.message, 'error');
+  }
 
   // Init first tab
-  switchTab('dashboard');
+  try {
+    switchTab('dashboard');
+  } catch (e) {
+    console.error('Dashboard init error:', e);
+    document.getElementById('tab-dashboard').innerHTML =
+      '<div class="card mt-lg"><p class="text-danger">Không thể khởi tạo Dashboard. Vui lòng tải lại trang.</p></div>';
+  }
 
   // Start status polling
   pollStatus();

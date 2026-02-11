@@ -112,7 +112,12 @@ function bindDashboardEvents() {
 }
 
 async function refresh() {
-  await Promise.all([loadKPIs(), loadTimeline(), loadVoucherChart()]);
+  try {
+    await Promise.all([loadKPIs(), loadTimeline(), loadVoucherChart()]);
+  } catch (e) {
+    console.error('Dashboard refresh error', e);
+    toast('Không kết nối được server — hiển thị chế độ offline', 'warning');
+  }
 }
 
 async function loadKPIs() {
@@ -135,6 +140,10 @@ async function loadKPIs() {
     document.getElementById('kpi-cashflow').textContent = net != null ? formatVND(net) : '—';
   } catch (e) {
     console.error('KPI load error', e);
+    document.getElementById('kpi-vouchers').textContent = '—';
+    document.getElementById('kpi-risks').textContent = '—';
+    document.getElementById('kpi-pending').textContent = '—';
+    document.getElementById('kpi-cashflow').textContent = '—';
   }
 }
 
