@@ -160,8 +160,8 @@ def _feeder_loop() -> None:
     last_event_at = ""
     start_ts = time.monotonic()
 
-    # API config for creating runs
-    api_url = os.getenv("AGENT_API_URL", "http://127.0.0.1:30080")
+    # API config for creating runs — inside the same container, use port 8000
+    api_url = os.getenv("AGENT_API_URL", "http://127.0.0.1:8000")
     api_key = os.getenv("AGENT_API_KEY", "ak-7e8ed81281a387b88d210759f445863161d07461")
     headers = {"X-API-Key": api_key, "Content-Type": "application/json"}
 
