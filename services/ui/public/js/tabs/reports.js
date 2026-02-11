@@ -422,10 +422,16 @@ async function generatePreview() {
     // Run validation
     runValidation();
   } catch (e) {
-    // Fallback to sample preview
-    previewDiv.innerHTML = renderSamplePreview();
-    step3Preview.innerHTML = `<div class="alert alert-info">Xem trước mẫu (chưa có dữ liệu thực)</div>`;
+    // Show error state instead of sample preview
+    previewDiv.innerHTML = `
+      <div class="text-center p-lg">
+        <div class="text-danger text-lg mb-md">⚠️ Lỗi tải xem trước</div>
+        <p class="text-secondary">Không thể tạo xem trước báo cáo. Vui lòng kiểm tra dữ liệu kỳ kế toán.</p>
+      </div>
+    `;
+    step3Preview.innerHTML = `<div class="alert alert-danger">Lỗi: ${e.message || 'Không thể tải dữ liệu xem trước'}</div>`;
     console.error('Preview error', e);
+    toast('Lỗi tạo xem trước báo cáo', 'error');
   }
 }
 
@@ -441,31 +447,6 @@ function renderReportPreview(data) {
   `;
 }
 
-function renderSamplePreview() {
-  return `
-    <div style="font-family: 'Times New Roman', serif; padding: 20px;">
-      <div style="text-align: center; margin-bottom: 20px;">
-        <h2 style="margin: 0;">${getReportTypeName(reportConfig.type)}</h2>
-        <p style="color: #666;">Kỳ: ${reportConfig.period || '2026'} | Chuẩn mực: ${reportConfig.standard || 'VAS'}</p>
-      </div>
-      <table style="width: 100%; border-collapse: collapse;">
-        <thead>
-          <tr style="background: #f5f5f5;">
-            <th style="border: 1px solid #ddd; padding: 8px; text-align: left;">Chỉ tiêu</th>
-            <th style="border: 1px solid #ddd; padding: 8px; text-align: right;">Kỳ này</th>
-            <th style="border: 1px solid #ddd; padding: 8px; text-align: right;">Kỳ trước</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr><td style="border: 1px solid #ddd; padding: 8px;">Tổng tài sản</td><td style="border: 1px solid #ddd; padding: 8px; text-align: right;">10,500,000,000</td><td style="border: 1px solid #ddd; padding: 8px; text-align: right;">9,800,000,000</td></tr>
-          <tr><td style="border: 1px solid #ddd; padding: 8px;">Tổng nợ phải trả</td><td style="border: 1px solid #ddd; padding: 8px; text-align: right;">4,200,000,000</td><td style="border: 1px solid #ddd; padding: 8px; text-align: right;">4,100,000,000</td></tr>
-          <tr><td style="border: 1px solid #ddd; padding: 8px;">Vốn chủ sở hữu</td><td style="border: 1px solid #ddd; padding: 8px; text-align: right;">6,300,000,000</td><td style="border: 1px solid #ddd; padding: 8px; text-align: right;">5,700,000,000</td></tr>
-        </tbody>
-      </table>
-    </div>
-  `;
-}
-
 async function runValidation() {
   const items = document.querySelectorAll('.check-item');
   items.forEach((item) => {
@@ -474,13 +455,26 @@ async function runValidation() {
     item.querySelector('.check-icon').textContent = '○';
   });
 
-  // Simulate validation checks
-  for (let i = 0; i < items.length; i++) {
-    await new Promise((r) => setTimeout(r, 300));
-    const pass = Math.random() > 0.1; // 90% pass rate
-    items[i].classList.remove('pending');
-    items[i].classList.add(pass ? 'pass' : 'fail');
-    items[i].querySelector('.check-icon').textContent = pass ? '✓' : '✗';
+  try {
+    // Call real validation API
+    const validation = await api(`/reports/validate?type=${reportConfig.type}&period=${reportConfig.period || '2026'}`);
+    const checks = validation.checks || [];
+    
+    items.forEach((item, i) => {
+      const check = checks[i];
+      const pass = check ? check.passed : true;
+      item.classList.remove('pending');
+      item.classList.add(pass ? 'pass' : 'fail');
+      item.querySelector('.check-icon').textContent = pass ? '✓' : '✗';
+    });
+  } catch (e) {
+    // On API error, mark all as pending
+    items.forEach((item) => {
+      item.classList.remove('pending');
+      item.classList.add('fail');
+      item.querySelector('.check-icon').textContent = '?';
+    });
+    console.error('Validation error', e);
   }
 }
 

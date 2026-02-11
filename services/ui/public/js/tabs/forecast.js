@@ -165,38 +165,19 @@ async function loadForecast() {
     const data = await api(`/acct/cashflow_forecast?horizon_days=${horizon}`);
     forecastData = data.items || data.forecasts || [];
 
-    // If no data, generate sample structure
     if (!forecastData.length) {
-      forecastData = generateSampleData();
+      toast('Không có dữ liệu dự báo cho kỳ này', 'info');
     }
 
     renderChart();
     renderTable();
   } catch (e) {
     console.error('Forecast load error', e);
-    forecastData = generateSampleData();
+    forecastData = [];
+    toast('Lỗi tải dữ liệu dự báo', 'error');
     renderChart();
     renderTable();
   }
-}
-
-function generateSampleData() {
-  // Generate 12 months of sample data for display
-  const data = [];
-  for (let m = 1; m <= 12; m++) {
-    const period = `2026-${String(m).padStart(2, '0')}`;
-    const actual = m <= 2 ? Math.random() * 500_000_000 + 100_000_000 : null;
-    const base = Math.random() * 600_000_000 + 100_000_000;
-    data.push({
-      period,
-      actual,
-      base,
-      optimistic: base * 1.15,
-      pessimistic: base * 0.85,
-      note: m > 6 ? 'Dự kiến tăng trưởng' : null,
-    });
-  }
-  return data;
 }
 
 function renderChart() {

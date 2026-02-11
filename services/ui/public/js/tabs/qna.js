@@ -1,12 +1,13 @@
 /**
  * Q&A Chat Tab — Expert chatbot interface with context panel
  */
-const { api, apiPost, formatDate, toast, registerTab, t } = window.ERPX;
+const { api, apiPost, apiPatch, formatDate, toast, registerTab, t } = window.ERPX;
 
 let initialized = false;
 let messages = [];
 let isTyping = false;
 let contextData = {};
+let lastQnaId = null;
 
 async function init() {
   if (!initialized) {
@@ -184,15 +185,20 @@ async function sendMessage() {
   document.getElementById('typing-indicator').style.display = 'flex';
 
   try {
-    const resp = await apiPost('/qna/ask', { question, context_limit: 5 });
+    const resp = await apiPost('/acct/qna', { question, context_limit: 5 });
 
     // Hide typing
     isTyping = false;
     document.getElementById('typing-indicator').style.display = 'none';
 
+    // Store qna_id for feedback
+    if (resp.meta?.qna_id) {
+      lastQnaId = resp.meta.qna_id;
+    }
+
     const answer = resp.answer || resp.response || 'Xin lỗi, tôi không thể trả lời câu hỏi này.';
     addBubble('assistant', answer, resp);
-    messages.push({ role: 'assistant', content: answer });
+    messages.push({ role: 'assistant', content: answer, qna_id: lastQnaId });
 
     // Update context panel
     updateContextPanel(resp);
@@ -288,13 +294,8 @@ function updateContextPanel(resp) {
 }
 
 async function loadContextSummary() {
-  try {
-    const data = await api('/qna/context_summary');
-    contextData = data;
-    document.getElementById('ctx-token-count').textContent = `${data.max_tokens || 4096} tokens`;
-  } catch (e) {
-    // Ignore
-  }
+  // Context summary is embedded in Q&A responses
+  document.getElementById('ctx-token-count').textContent = '4096 tokens';
 }
 
 async function submitFeedback() {
@@ -303,13 +304,18 @@ async function submitFeedback() {
 
   const rating = activeBtn.dataset.rating;
   const note = document.getElementById('feedback-note').value.trim();
-  const lastMsg = messages.filter((m) => m.role === 'assistant').pop();
+  const lastAssistantMsg = messages.filter((m) => m.role === 'assistant').pop();
+  const auditId = lastAssistantMsg?.qna_id || lastQnaId;
+
+  if (!auditId) {
+    toast('Không thể gửi phản hồi: thiếu ID câu hỏi', 'error');
+    return;
+  }
 
   try {
-    await apiPost('/qna/feedback', {
+    await apiPatch(`/acct/qna_feedback/${auditId}`, {
       rating: rating === 'up' ? 1 : -1,
       note,
-      answer: lastMsg?.content || '',
     });
     toast('Cảm ơn phản hồi của bạn!', 'success');
     // Reset feedback UI
