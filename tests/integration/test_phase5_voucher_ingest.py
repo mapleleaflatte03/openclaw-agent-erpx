@@ -47,7 +47,7 @@ def test_voucher_ingest_creates_vn_invoice_voucher():
     assert len(invoices) >= 1, "Kaggle seed must contain at least one invoice_vat"
 
     normalized = _normalize_vn_fixture(invoices[0])
-    assert _REQUIRED_KEYS <= set(normalized.keys())
+    assert set(normalized.keys()) >= _REQUIRED_KEYS
     assert normalized["currency"] == "VND"
     assert normalized["type_hint"] == "invoice_vat"
     assert normalized["voucher_type"] == "sell_invoice"
@@ -65,7 +65,7 @@ def test_voucher_ingest_creates_vn_cash_voucher():
     assert len(cash_vouchers) >= 1, "Kaggle seed must contain at least one cash_disbursement"
 
     normalized = _normalize_vn_fixture(cash_vouchers[0])
-    assert _REQUIRED_KEYS <= set(normalized.keys())
+    assert set(normalized.keys()) >= _REQUIRED_KEYS
     assert normalized["currency"] == "VND"
     assert normalized["type_hint"] == "cash_disbursement"
     assert normalized["voucher_type"] == "payment"
@@ -80,7 +80,7 @@ def test_voucher_ingest_vn_receipt_voucher():
     assert len(receipts) >= 1, "Kaggle seed must contain at least one cash_receipt"
 
     normalized = _normalize_vn_fixture(receipts[0])
-    assert _REQUIRED_KEYS <= set(normalized.keys())
+    assert set(normalized.keys()) >= _REQUIRED_KEYS
     assert normalized["currency"] == "VND"
     assert normalized["type_hint"] == "cash_receipt"
     assert normalized["voucher_type"] == "receipt"

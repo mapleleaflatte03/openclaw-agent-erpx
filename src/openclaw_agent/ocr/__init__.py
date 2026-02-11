@@ -18,11 +18,11 @@ Data sources (Kaggle only, R2/R3 compliant):
 """
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 import re
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any
 
 log = logging.getLogger("openclaw.ocr.engine")
@@ -175,20 +175,16 @@ def extract_structured_fields(text: str) -> dict[str, Any]:
     m = _AMOUNT_RE.search(text)
     if m:
         amt_str = m.group(1).replace(".", "").replace(",", ".")
-        try:
+        with contextlib.suppress(ValueError):
             fields["total_amount"] = float(amt_str)
-        except ValueError:
-            pass
 
     m = _DATE_RE.search(text)
     if m:
         day, month, year = m.group(1), m.group(2), m.group(3)
         if len(year) == 2:
             year = "20" + year
-        try:
+        with contextlib.suppress(ValueError):
             fields["issue_date"] = f"{year}-{int(month):02d}-{int(day):02d}"
-        except ValueError:
-            pass
 
     m = _VAT_RE.search(text)
     if m:

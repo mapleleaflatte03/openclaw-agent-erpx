@@ -22,7 +22,7 @@ import logging
 import math
 from collections import Counter
 from dataclasses import dataclass, field
-from datetime import date, datetime
+from datetime import date
 from typing import Any
 
 log = logging.getLogger("openclaw.risk.engine")
@@ -124,7 +124,7 @@ def detect_split_transactions(
     """Flag transactions just below approval threshold (split transaction pattern)."""
     flags: list[RiskFlag] = []
     lower = approval_threshold * (1 - tolerance)
-    for entity_id, amount, tx_date in amounts:
+    for entity_id, amount, _tx_date in amounts:
         if lower <= amount < approval_threshold:
             flags.append(RiskFlag(
                 risk_type="SPLIT_TRANSACTION",

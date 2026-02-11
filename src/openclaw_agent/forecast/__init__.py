@@ -9,6 +9,7 @@ Features:
 """
 from __future__ import annotations
 
+import contextlib
 import logging
 import math
 import random
@@ -83,10 +84,8 @@ def _detect_recurring_patterns(
             dates_str = [t.get("date", "") for t in txs]
             dates = []
             for d in dates_str:
-                try:
+                with contextlib.suppress(ValueError, TypeError):
                     dates.append(date.fromisoformat(str(d)[:10]))
-                except (ValueError, TypeError):
-                    pass
 
             # Estimate frequency
             if len(dates) >= 2:
@@ -183,11 +182,10 @@ def monte_carlo_forecast(
 
             # Simulated invoice payments
             for due, amt, prob in expected_inflows:
-                if due == current_date:
-                    if random.random() < prob:
-                        # Amount varies ±5%
-                        actual = amt * (1 + random.gauss(0, 0.05))
-                        day_inflow += max(0, actual)
+                if due == current_date and random.random() < prob:
+                    # Amount varies ±5%
+                    actual = amt * (1 + random.gauss(0, 0.05))
+                    day_inflow += max(0, actual)
 
             # Simulated recurring transactions
             for pattern in recurring:

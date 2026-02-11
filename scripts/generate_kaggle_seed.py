@@ -357,7 +357,7 @@ def main() -> None:
             name: {
                 "count": count,
                 "license": "Kaggle competition / CC-BY-SA",
-                "origin": f"Kaggle dataset loaded via scripts/vn_data_catalog.py",
+                "origin": "Kaggle dataset loaded via scripts/vn_data_catalog.py",
             }
             for name, count in source_counts.items()
         },
@@ -377,7 +377,7 @@ def main() -> None:
         json.dump(manifest, f, ensure_ascii=False, indent=2)
     print(f"✅ Manifest: {manifest_path}")
 
-    print(f"\n📋 Source breakdown:")
+    print("\n📋 Source breakdown:")
     for name, count in source_counts.items():
         print(f"   {name}: {count} records")
 

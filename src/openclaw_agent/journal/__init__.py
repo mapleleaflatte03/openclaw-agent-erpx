@@ -116,7 +116,7 @@ def detect_vat_rate(voucher: dict[str, Any]) -> int:
     Follows TT219/2013/TT-BTC and NQ43/2022/QH15.
     """
     description = (voucher.get("description", "") or "").lower()
-    doc_type = voucher.get("doc_type", "")
+    voucher.get("doc_type", "")
     vat_rate = voucher.get("vat_rate")
     if vat_rate is not None and vat_rate >= 0:
         return int(vat_rate)
@@ -201,8 +201,8 @@ def validate_journal_balance(lines: list[dict[str, Any]]) -> dict[str, Any]:
 
     Read-only check per TT133 requirement.
     """
-    total_debit = sum(float(l.get("debit", 0) or 0) for l in lines)
-    total_credit = sum(float(l.get("credit", 0) or 0) for l in lines)
+    total_debit = sum(float(ln.get("debit", 0) or 0) for ln in lines)
+    total_credit = sum(float(ln.get("credit", 0) or 0) for ln in lines)
     balanced = abs(total_debit - total_credit) < 0.01
 
     return {

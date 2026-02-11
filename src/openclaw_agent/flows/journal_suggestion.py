@@ -72,8 +72,8 @@ def _classify_voucher(voucher: dict[str, Any]) -> dict[str, Any]:
             doc_type=vtype,
         )
         if lines and len(lines) >= 2:
-            debit_line = next((l for l in lines if l["debit"] > 0), None)
-            credit_line = next((l for l in lines if l["credit"] > 0), None)
+            debit_line = next((ln for ln in lines if ln["debit"] > 0), None)
+            credit_line = next((ln for ln in lines if ln["credit"] > 0), None)
             if debit_line and credit_line:
                 result = {
                     "debit_account": debit_line["account"],

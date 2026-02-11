@@ -195,13 +195,13 @@ def generate_b01_dn(
     ]
 
     # Fill section totals
-    current_assets = sum(l["amount"] for l in lines if l.get("code") in {"110", "120", "130", "140"})
-    noncurrent_assets = sum(l["amount"] for l in lines if l.get("code") in {"220", "250"})
-    for l in lines:
-        if l.get("code") == "100":
-            l["amount"] = round(current_assets, 2)
-        elif l.get("code") == "200":
-            l["amount"] = round(noncurrent_assets, 2)
+    current_assets = sum(ln["amount"] for ln in lines if ln.get("code") in {"110", "120", "130", "140"})
+    noncurrent_assets = sum(ln["amount"] for ln in lines if ln.get("code") in {"220", "250"})
+    for ln in lines:
+        if ln.get("code") == "100":
+            ln["amount"] = round(current_assets, 2)
+        elif ln.get("code") == "200":
+            ln["amount"] = round(noncurrent_assets, 2)
 
     return FinancialReport(
         report_type="B01-DN",
@@ -370,13 +370,13 @@ def generate_b03_dn(
     ]
 
     # Fill section totals
-    for l in lines:
-        if l.get("code") == "01":
-            l["amount"] = round(operating_cf, 2)
-        elif l.get("code") == "21":
-            l["amount"] = round(investing_cf, 2)
-        elif l.get("code") == "31":
-            l["amount"] = round(financing_cf, 2)
+    for ln in lines:
+        if ln.get("code") == "01":
+            ln["amount"] = round(operating_cf, 2)
+        elif ln.get("code") == "21":
+            ln["amount"] = round(investing_cf, 2)
+        elif ln.get("code") == "31":
+            ln["amount"] = round(financing_cf, 2)
 
     return FinancialReport(
         report_type="B03-DN",
@@ -439,8 +439,8 @@ def generate_audit_pack(
                 lines = _json.loads(lines)
             except (ValueError, TypeError):
                 lines = []
-        total_debit = sum(float(l.get("debit", 0) or 0) for l in lines)
-        total_credit = sum(float(l.get("credit", 0) or 0) for l in lines)
+        total_debit = sum(float(ln.get("debit", 0) or 0) for ln in lines)
+        total_credit = sum(float(ln.get("credit", 0) or 0) for ln in lines)
         if abs(total_debit - total_credit) > 0.01:
             imbalanced_entries += 1
             total_imbalance += abs(total_debit - total_credit)

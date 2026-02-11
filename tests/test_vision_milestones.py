@@ -126,8 +126,8 @@ class TestVisionJournal:
             doc_type="sell_invoice",
         )
         assert len(lines) >= 2
-        debit_accounts = [l["account"] for l in lines if l["debit"] > 0]
-        credit_accounts = [l["account"] for l in lines if l["credit"] > 0]
+        debit_accounts = [ln["account"] for ln in lines if ln["debit"] > 0]
+        credit_accounts = [ln["account"] for ln in lines if ln["credit"] > 0]
         assert "131" in debit_accounts
         assert any(a in credit_accounts for a in ["511", "33311"])
 
@@ -142,7 +142,7 @@ class TestVisionJournal:
             voucher={"amount": 10_000_000},
             doc_type="sell_invoice",
         )
-        vat_line = [l for l in lines if "3331" in l["account"]]
+        vat_line = [ln for ln in lines if "3331" in ln["account"]]
         assert len(vat_line) > 0  # VAT output line present
 
     @pytest.mark.skip(reason="Phase 2 – DN policy engine")
