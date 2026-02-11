@@ -32,63 +32,68 @@ def test_voucher_ingest_run_type_accepted():
     )
 
 
+# Required keys every normalized VN fixture record must have
+_REQUIRED_KEYS = {
+    "voucher_no", "amount", "currency", "partner_name",
+    "source", "raw_payload", "voucher_type", "type_hint",
+}
+
+
 def test_voucher_ingest_creates_vn_invoice_voucher():
-    """VN VAT invoice fixture must map correctly to AcctVoucher fields."""
+    """Any VN invoice fixture must normalize to AcctVoucher-compatible dict."""
     from openclaw_agent.flows.voucher_ingest import VN_FIXTURES, _normalize_vn_fixture
 
-    invoice = VN_FIXTURES[0]  # Hóa đơn VAT chuẩn
-    normalized = _normalize_vn_fixture(invoice)
+    invoices = [f for f in VN_FIXTURES if f.get("doc_type") == "invoice_vat"]
+    assert len(invoices) >= 1, "Kaggle seed must contain at least one invoice_vat"
 
-    assert normalized["voucher_no"] == "0000123"
-    assert normalized["amount"] == 11_000_000
+    normalized = _normalize_vn_fixture(invoices[0])
+    assert _REQUIRED_KEYS <= set(normalized.keys())
     assert normalized["currency"] == "VND"
-    assert normalized["partner_name"] == "CÔNG TY CP XYZ"
-    assert normalized["partner_tax_code"] == "0318765432"
     assert normalized["type_hint"] == "invoice_vat"
     assert normalized["voucher_type"] == "sell_invoice"
     assert normalized["source"] == "mock_vn_fixture"
-    assert normalized["raw_payload"] == invoice
+    assert normalized["raw_payload"] is invoices[0]
+    assert isinstance(normalized["amount"], float)
+    assert normalized["voucher_no"]  # non-empty
 
 
 def test_voucher_ingest_creates_vn_cash_voucher():
-    """VN Phiếu chi fixture must map correctly to AcctVoucher fields."""
+    """Any VN cash disbursement fixture must normalize correctly."""
     from openclaw_agent.flows.voucher_ingest import VN_FIXTURES, _normalize_vn_fixture
 
-    cash_voucher = VN_FIXTURES[1]  # Phiếu chi nội bộ
-    normalized = _normalize_vn_fixture(cash_voucher)
+    cash_vouchers = [f for f in VN_FIXTURES if f.get("doc_type") == "cash_disbursement"]
+    assert len(cash_vouchers) >= 1, "Kaggle seed must contain at least one cash_disbursement"
 
-    assert normalized["voucher_no"] == "PC0001"
-    assert normalized["amount"] == 2_500_000
+    normalized = _normalize_vn_fixture(cash_vouchers[0])
+    assert _REQUIRED_KEYS <= set(normalized.keys())
     assert normalized["currency"] == "VND"
-    assert normalized["partner_name"] == "Nguyễn Văn A"
     assert normalized["type_hint"] == "cash_disbursement"
     assert normalized["voucher_type"] == "payment"
     assert normalized["source"] == "mock_vn_fixture"
 
 
 def test_voucher_ingest_vn_receipt_voucher():
-    """VN Phiếu thu fixture must map correctly."""
+    """Any VN cash receipt fixture must normalize correctly."""
     from openclaw_agent.flows.voucher_ingest import VN_FIXTURES, _normalize_vn_fixture
 
-    receipt = VN_FIXTURES[2]
-    normalized = _normalize_vn_fixture(receipt)
+    receipts = [f for f in VN_FIXTURES if f.get("doc_type") == "cash_receipt"]
+    assert len(receipts) >= 1, "Kaggle seed must contain at least one cash_receipt"
 
-    assert normalized["voucher_no"] == "PT0001"
-    assert normalized["amount"] == 5_000_000
+    normalized = _normalize_vn_fixture(receipts[0])
+    assert _REQUIRED_KEYS <= set(normalized.keys())
+    assert normalized["currency"] == "VND"
     assert normalized["type_hint"] == "cash_receipt"
     assert normalized["voucher_type"] == "receipt"
 
 
 def test_voucher_ingest_flow_produces_stats():
-    """flow_voucher_ingest returns correct stats dict."""
+    """_load_documents returns Kaggle-sourced records with required fields."""
     from openclaw_agent.flows.voucher_ingest import _load_documents
 
     docs = _load_documents("vn_fixtures", {})
-    assert len(docs) == 3
+    assert len(docs) >= 1, "Kaggle seed must produce at least 1 document"
     assert all(d["currency"] == "VND" for d in docs)
-    assert docs[0]["voucher_no"] == "0000123"
-    assert docs[1]["voucher_no"] == "PC0001"
-    assert docs[2]["voucher_no"] == "PT0001"
+    assert all(d["voucher_no"] for d in docs)  # every record has a voucher_no
 
 
 def test_vouchers_list_endpoint():

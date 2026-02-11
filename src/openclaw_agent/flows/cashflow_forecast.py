@@ -5,6 +5,7 @@ a 30-day forecast. READ-ONLY — does NOT modify ERP.
 """
 from __future__ import annotations
 
+import logging
 from datetime import date, timedelta
 from typing import Any
 
@@ -12,6 +13,8 @@ from sqlalchemy.orm import Session
 
 from openclaw_agent.common.models import AcctCashflowForecast
 from openclaw_agent.common.utils import new_uuid
+
+log = logging.getLogger("openclaw.flows.cashflow_forecast")
 
 
 def _safe_date(s: str | None) -> date | None:
@@ -105,10 +108,37 @@ def flow_cashflow_forecast(
     total_inflow = sum(f.amount for f in forecasts if f.direction == "inflow")
     total_outflow = sum(f.amount for f in forecasts if f.direction == "outflow")
 
-    return {
+    # --- Monte Carlo enhancement (Milestone 5) ----------------------------
+    monte_carlo_result = None
+    try:
+        from openclaw_agent.forecast import monte_carlo_forecast
+        mc = monte_carlo_forecast(
+            invoices=invoices,
+            bank_txs=bank_txs,
+            horizon_days=horizon_days,
+            n_scenarios=1000,
+            initial_balance=total_inflow - total_outflow,
+        )
+        monte_carlo_result = {
+            "p10_net_cash": mc.p10_net_cash,
+            "p50_net_cash": mc.p50_net_cash,
+            "p90_net_cash": mc.p90_net_cash,
+            "confidence": mc.confidence,
+            "prob_negative": mc.prob_negative,
+            "n_scenarios": mc.n_scenarios,
+            "recurring_patterns": len(mc.recurring_patterns),
+        }
+        log.info("Monte Carlo: P50=%.0f, confidence=%.2f%%", mc.p50_net_cash, mc.confidence * 100)
+    except Exception:
+        log.warning("Monte Carlo forecast unavailable — returning rule-based only")
+
+    result = {
         "forecast_items": len(forecasts),
         "total_inflow": total_inflow,
         "total_outflow": total_outflow,
         "net": total_inflow - total_outflow,
         "horizon_days": horizon_days,
     }
+    if monte_carlo_result:
+        result["monte_carlo"] = monte_carlo_result
+    return result

@@ -132,7 +132,7 @@ def _setup_env(tmp_dir: Path, *, use_langgraph: bool = False, use_real_llm: bool
 
     agent_db = tmp_dir / "agent.sqlite"
     erpx_db = tmp_dir / "erpx_mock.sqlite"
-    seed_path = (REPO_ROOT / "samples" / "seed" / "erpx_seed_minimal.json").resolve()
+    seed_path = (REPO_ROOT / "data" / "kaggle" / "seed" / "erpx_seed_kaggle.json").resolve()
 
     env_map = {
         "AGENT_DB_DSN": f"sqlite+pysqlite:///{agent_db}",

@@ -1,16 +1,20 @@
 """Tax report flow: generate AcctReportSnapshot from ERP invoice/voucher data.
 
-Creates snapshot records for VAT, trial balance summary.
+Creates snapshot records for VAT, trial balance summary, and
+VAS financial statements (B01-DN, B02-DN, B03-DN) per Milestone 7.
 READ-ONLY — does NOT post anything to ERP.
 """
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from sqlalchemy.orm import Session
 
 from openclaw_agent.common.models import AcctReportSnapshot
 from openclaw_agent.common.utils import new_uuid
+
+log = logging.getLogger("openclaw.flows.tax_report")
 
 
 def flow_tax_report(
@@ -20,6 +24,8 @@ def flow_tax_report(
     period: str,
     run_id: str,
     file_uri: str | None = None,
+    journals: list[dict[str, Any]] | None = None,
+    bank_txs: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Summarize VAT-relevant data and create an AcctReportSnapshot.
 
@@ -125,9 +131,55 @@ def flow_tax_report(
     )
     session.add(tb_snapshot)
 
-    return {
+    # --- VAS Financial Statements (Milestone 7) ----------------------------
+    vas_reports = {}
+    try:
+        from openclaw_agent.reports import generate_audit_pack
+        if journals:
+            audit_pack = generate_audit_pack(
+                journals=journals,
+                bank_txs=bank_txs,
+                invoices=invoices,
+                vouchers=vouchers,
+                period=period,
+            )
+            vas_reports = {
+                "B01_DN": audit_pack["reports"].get("B01-DN", {}),
+                "B02_DN": audit_pack["reports"].get("B02-DN", {}),
+                "B03_DN": audit_pack["reports"].get("B03-DN", {}),
+                "cross_checks": audit_pack.get("cross_checks", []),
+                "all_checks_pass": audit_pack.get("all_checks_pass", False),
+            }
+            # Persist VAS report snapshot
+            vas_version = session.execute(
+                select(AcctReportSnapshot.version)
+                .where(
+                    (AcctReportSnapshot.report_type == "vas_audit_pack")
+                    & (AcctReportSnapshot.period == period)
+                )
+                .order_by(AcctReportSnapshot.version.desc())
+                .limit(1)
+            ).scalar()
+            vas_version = (vas_version or 0) + 1
+            session.add(AcctReportSnapshot(
+                id=new_uuid(),
+                report_type="vas_audit_pack",
+                period=period,
+                version=vas_version,
+                file_uri=None,
+                summary_json=vas_reports,
+                run_id=run_id,
+            ))
+            log.info("VAS audit pack generated for period %s", period)
+    except Exception:
+        log.warning("VAS report module unavailable — returning basic reports only")
+
+    result = {
         "period": period,
         "vat_summary": summary,
         "trial_balance": tb_summary,
-        "snapshots_created": 2,
+        "snapshots_created": 2 + (1 if vas_reports else 0),
     }
+    if vas_reports:
+        result["vas_reports"] = vas_reports
+    return result

@@ -17,7 +17,7 @@ def test_vat_export_idempotent(tmp_path: Path, monkeypatch):
 
     # ERPX mock seed
     erpx_db = tmp_path / "erpx_mock.sqlite"
-    seed_path = Path("samples/seed/erpx_seed_minimal.json").resolve()
+    seed_path = Path("data/kaggle/seed/erpx_seed_kaggle.json").resolve()
     monkeypatch.setenv("ERPX_MOCK_DB_PATH", str(erpx_db))
     monkeypatch.setenv("ERPX_MOCK_SEED_PATH", str(seed_path))
     monkeypatch.setenv("ERPX_MOCK_TOKEN", "testtoken")

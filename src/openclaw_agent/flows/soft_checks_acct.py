@@ -224,4 +224,21 @@ def flow_soft_checks_acct(
     }
     if llm_explanations:
         stats["llm_explanations"] = llm_explanations
+
+    # --- Risk engine enhancement (Milestone 4) ----------------------------
+    try:
+        from openclaw_agent.risk import assess_risk
+        risk_result = assess_risk(
+            vouchers=vouchers,
+            invoices=invoices,
+            bank_txs=[],  # Bank txs not available in soft_checks context
+        )
+        stats["risk_engine"] = {
+            "total_flags": risk_result["total_flags"],
+            "high_risk": risk_result.get("high_risk", 0),
+            "benford_score": risk_result.get("benford_analysis", {}).get("score", 0),
+        }
+    except Exception:
+        log.warning("Risk engine unavailable \u2014 returning rule-based checks only")
+
     return stats

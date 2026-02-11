@@ -58,12 +58,57 @@ _ACCOUNT_MAP: dict[str, dict[str, Any]] = {
 
 
 def _classify_voucher(voucher: dict[str, Any]) -> dict[str, Any]:
-    """Rule-based voucher classifier.
+    """Rule-based voucher classifier, enhanced with TT133 journal module.
 
-    TODO: Replace with LLM call via LangGraph node.
     Returns: {debit_account, debit_name, credit_account, credit_name, confidence, reasoning}
     """
     vtype = voucher.get("voucher_type", "other")
+
+    # --- Try the enhanced TT133 journal module first (Milestone 3) ---------
+    try:
+        from openclaw_agent.journal import suggest_journal_lines
+        lines = suggest_journal_lines(
+            voucher=voucher,
+            doc_type=vtype,
+        )
+        if lines and len(lines) >= 2:
+            debit_line = next((l for l in lines if l["debit"] > 0), None)
+            credit_line = next((l for l in lines if l["credit"] > 0), None)
+            if debit_line and credit_line:
+                result = {
+                    "debit_account": debit_line["account"],
+                    "debit_name": debit_line["name"],
+                    "credit_account": credit_line["account"],
+                    "credit_name": credit_line["name"],
+                    "confidence": 0.95 if not voucher.get("has_attachment") else 0.92,
+                    "reasoning": f"TT133 chart: {vtype} \u2192 N\u1ee3 TK {debit_line['account']}, C\u00f3 TK {credit_line['account']}",
+                    "llm_used": False,
+                }
+                if not voucher.get("has_attachment"):
+                    result["confidence"] *= 0.8
+                # LLM refinement if enabled
+                if _is_real_llm_enabled():
+                    try:
+                        from openclaw_agent.llm.client import get_llm_client
+                        llm = get_llm_client()
+                        refined = llm.refine_journal_suggestion(voucher, result)
+                        if refined is not None:
+                            result.update({
+                                "debit_account": refined.get("debit_account", result["debit_account"]),
+                                "debit_name": refined.get("debit_name", result["debit_name"]),
+                                "credit_account": refined.get("credit_account", result["credit_account"]),
+                                "credit_name": refined.get("credit_name", result["credit_name"]),
+                                "confidence": round(float(refined.get("confidence", result["confidence"])), 3),
+                                "reasoning": refined.get("reasoning", result["reasoning"]),
+                                "llm_used": True,
+                            })
+                    except Exception:
+                        log.exception("LLM refinement failed \u2014 keeping TT133 result")
+                return result
+    except Exception:
+        log.debug("TT133 journal module unavailable \u2014 falling back to rule-based")
+
+    # --- Fallback: original rule-based classification ----------------------
     mapping = _ACCOUNT_MAP.get(vtype, _ACCOUNT_MAP["other"])
     debit_code, debit_name = mapping["debit"]
     credit_code, credit_name = mapping["credit"]
