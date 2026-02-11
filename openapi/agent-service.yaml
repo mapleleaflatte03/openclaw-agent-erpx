@@ -1926,6 +1926,408 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /agent/v1/reports/history:
+    get:
+      summary: Reports History
+      description: Alias for report_snapshots for UI compatibility.
+      operationId: reports_history_agent_v1_reports_history_get
+      parameters:
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          default: 50
+          title: Limit
+      - name: X-API-Key
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Api-Key
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Reports History Agent V1 Reports History Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /agent/v1/reports/preview:
+    post:
+      summary: Reports Preview
+      description: Generate a preview of a report based on current data.
+      operationId: reports_preview_agent_v1_reports_preview_post
+      parameters:
+      - name: X-API-Key
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Api-Key
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReportPreviewBody'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Reports Preview Agent V1 Reports Preview Post
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /agent/v1/reports/validate:
+    get:
+      summary: Reports Validate
+      description: Validate report data before generation.
+      operationId: reports_validate_agent_v1_reports_validate_get
+      parameters:
+      - name: type
+        in: query
+        required: false
+        schema:
+          type: string
+          default: balance_sheet
+          title: Type
+      - name: period
+        in: query
+        required: false
+        schema:
+          type: string
+          default: '2026'
+          title: Period
+      - name: X-API-Key
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Api-Key
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Reports Validate Agent V1 Reports Validate Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /agent/v1/reports/generate:
+    post:
+      summary: Reports Generate
+      description: Generate and save a report snapshot.
+      operationId: reports_generate_agent_v1_reports_generate_post
+      parameters:
+      - name: X-API-Key
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Api-Key
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReportGenerateBody'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Reports Generate Agent V1 Reports Generate Post
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /agent/v1/reports/{report_id}/download:
+    get:
+      summary: Reports Download
+      description: Get download URL for a report.
+      operationId: reports_download_agent_v1_reports__report_id__download_get
+      parameters:
+      - name: report_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Report Id
+      - name: X-API-Key
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Api-Key
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Reports Download Agent V1 Reports  Report Id  Download
+                  Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /agent/v1/settings:
+    get:
+      summary: Get Settings All
+      description: Get all user settings.
+      operationId: get_settings_all_agent_v1_settings_get
+      parameters:
+      - name: X-API-Key
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Api-Key
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Get Settings All Agent V1 Settings Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /agent/v1/settings/profile:
+    patch:
+      summary: Update Settings Profile
+      description: Update profile settings.
+      operationId: update_settings_profile_agent_v1_settings_profile_patch
+      parameters:
+      - name: X-API-Key
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Api-Key
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+              title: Body
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Update Settings Profile Agent V1 Settings Profile
+                  Patch
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /agent/v1/settings/agent:
+    patch:
+      summary: Update Settings Agent
+      description: Update agent configuration settings.
+      operationId: update_settings_agent_agent_v1_settings_agent_patch
+      parameters:
+      - name: X-API-Key
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Api-Key
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+              title: Body
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Update Settings Agent Agent V1 Settings Agent Patch
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /agent/v1/settings/feeders:
+    post:
+      summary: Add Settings Feeder
+      description: Add a new data feeder configuration.
+      operationId: add_settings_feeder_agent_v1_settings_feeders_post
+      parameters:
+      - name: X-API-Key
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Api-Key
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+              title: Body
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Add Settings Feeder Agent V1 Settings Feeders Post
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /agent/v1/settings/accessibility:
+    patch:
+      summary: Update Settings Accessibility
+      description: Update accessibility settings.
+      operationId: update_settings_accessibility_agent_v1_settings_accessibility_patch
+      parameters:
+      - name: X-API-Key
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Api-Key
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+              title: Body
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Update Settings Accessibility Agent V1 Settings Accessibility
+                  Patch
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /agent/v1/settings/advanced:
+    patch:
+      summary: Update Settings Advanced
+      description: Update advanced settings.
+      operationId: update_settings_advanced_agent_v1_settings_advanced_patch
+      parameters:
+      - name: X-API-Key
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Api-Key
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+              title: Body
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Update Settings Advanced Agent V1 Settings Advanced
+                  Patch
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
 components:
   schemas:
     AgentCommandRequest:
@@ -2507,6 +2909,49 @@ components:
       required:
       - prompt
       title: LlmTestRequest
+    ReportGenerateBody:
+      properties:
+        type:
+          type: string
+          title: Type
+        standard:
+          type: string
+          title: Standard
+          default: VAS
+        period:
+          type: string
+          title: Period
+          default: '2026'
+        format:
+          type: string
+          title: Format
+          default: pdf
+        options:
+          additionalProperties: true
+          type: object
+          title: Options
+          default: {}
+      type: object
+      required:
+      - type
+      title: ReportGenerateBody
+    ReportPreviewBody:
+      properties:
+        type:
+          type: string
+          title: Type
+        standard:
+          type: string
+          title: Standard
+          default: VAS
+        period:
+          type: string
+          title: Period
+          default: '2026'
+      type: object
+      required:
+      - type
+      title: ReportPreviewBody
     TierBFeedbackCreateRequest:
       properties:
         obligation_id:
