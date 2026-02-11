@@ -44,8 +44,7 @@ dependencies = [
 
 [project.optional-dependencies]
 ui = [
-  "streamlit>=1.31",
-  "pandas>=2.2",
+  # Static SPA - no Python dependencies needed
 ]
 graphs = [
   "langgraph>=1.0",

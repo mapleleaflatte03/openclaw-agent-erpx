@@ -1,17 +1,17 @@
-FROM python:3.10-slim
+# UI Service - Static SPA served via nginx
+FROM nginx:alpine
 
-WORKDIR /app
+# Copy custom nginx config
+COPY services/ui/nginx.conf /etc/nginx/conf.d/default.conf
 
-ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1
+# Copy static SPA files
+COPY services/ui/public /usr/share/nginx/html
 
-COPY pyproject.toml /app/pyproject.toml
-COPY src /app/src
-
-RUN python -m pip install -U pip && \
-    python -m pip install -e '.[ui]'
+# Health check
+HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
+  CMD wget --no-verbose --tries=1 --spider http://localhost:8501/health || exit 1
 
 EXPOSE 8501
 
-CMD ["streamlit", "run", "src/openclaw_agent/ui/app.py", "--server.port", "8501", "--server.address", "0.0.0.0"]
+CMD ["nginx", "-g", "daemon off;"]
 

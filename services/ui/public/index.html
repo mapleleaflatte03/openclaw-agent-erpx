@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="vi" data-theme="light">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ERP-X AI Kế toán</title>
+  <link rel="icon" type="image/svg+xml" href="favicon.svg" />
+  <link rel="stylesheet" href="css/main.css" />
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+</head>
+<body>
+  <!-- ===== Top Nav ===== -->
+  <header id="topnav" role="banner">
+    <div class="nav-brand">
+      <svg class="brand-icon" viewBox="0 0 32 32" width="28" height="28"><rect rx="6" width="32" height="32" fill="var(--c-primary)"/><text x="16" y="22" text-anchor="middle" fill="#fff" font-size="16" font-weight="700">X</text></svg>
+      <span class="brand-text">ERP-X AI</span>
+    </div>
+    <nav class="nav-tabs" role="tablist" aria-label="Main navigation">
+      <button class="tab-btn active" data-tab="dashboard" role="tab" aria-selected="true">
+        <span class="tab-icon">📊</span><span class="tab-label" data-i18n="nav.dashboard">Dashboard</span>
+      </button>
+      <button class="tab-btn" data-tab="ocr" role="tab">
+        <span class="tab-icon">🧾</span><span class="tab-label" data-i18n="nav.ocr">OCR</span>
+      </button>
+      <button class="tab-btn" data-tab="journal" role="tab">
+        <span class="tab-icon">📋</span><span class="tab-label" data-i18n="nav.journal">Hạch toán</span>
+      </button>
+      <button class="tab-btn" data-tab="reconcile" role="tab">
+        <span class="tab-icon">🔗</span><span class="tab-label" data-i18n="nav.reconcile">Đối chiếu</span>
+      </button>
+      <button class="tab-btn" data-tab="risk" role="tab">
+        <span class="tab-icon">⚠️</span><span class="tab-label" data-i18n="nav.risk">Rủi ro</span>
+      </button>
+      <button class="tab-btn" data-tab="forecast" role="tab">
+        <span class="tab-icon">📈</span><span class="tab-label" data-i18n="nav.forecast">Dự báo</span>
+      </button>
+      <button class="tab-btn" data-tab="qna" role="tab">
+        <span class="tab-icon">💬</span><span class="tab-label" data-i18n="nav.qna">Hỏi đáp</span>
+      </button>
+      <button class="tab-btn" data-tab="reports" role="tab">
+        <span class="tab-icon">📑</span><span class="tab-label" data-i18n="nav.reports">Báo cáo</span>
+      </button>
+      <button class="tab-btn" data-tab="settings" role="tab">
+        <span class="tab-icon">⚙️</span><span class="tab-label" data-i18n="nav.settings">Cài đặt</span>
+      </button>
+    </nav>
+    <div class="nav-actions">
+      <button id="btn-theme" class="icon-btn" aria-label="Toggle dark mode" title="Dark / Light">🌓</button>
+      <button id="btn-lang" class="icon-btn" aria-label="Switch language" title="VN / EN">🌐</button>
+      <button id="btn-notif" class="icon-btn notif-bell" aria-label="Notifications" title="Thông báo">
+        🔔<span class="notif-badge" id="notif-count" hidden>0</span>
+      </button>
+    </div>
+  </header>
+
+  <!-- ===== Main Content ===== -->
+  <main id="app-main" role="main">
+    <section id="tab-dashboard" class="tab-pane active" role="tabpanel"></section>
+    <section id="tab-ocr" class="tab-pane" role="tabpanel"></section>
+    <section id="tab-journal" class="tab-pane" role="tabpanel"></section>
+    <section id="tab-reconcile" class="tab-pane" role="tabpanel"></section>
+    <section id="tab-risk" class="tab-pane" role="tabpanel"></section>
+    <section id="tab-forecast" class="tab-pane" role="tabpanel"></section>
+    <section id="tab-qna" class="tab-pane" role="tabpanel"></section>
+    <section id="tab-reports" class="tab-pane" role="tabpanel"></section>
+    <section id="tab-settings" class="tab-pane" role="tabpanel"></section>
+  </main>
+
+  <!-- ===== Status Bar ===== -->
+  <footer id="statusbar" role="contentinfo">
+    <div class="status-left">
+      <span class="status-dot pulse" id="agent-dot"></span>
+      <span id="agent-status-text" data-i18n="status.agent_running">Agent đang chạy</span>
+      <span class="status-sep">|</span>
+      <span id="last-sync">—</span>
+    </div>
+    <div class="status-right">
+      <span id="ray-nodes">Ray: —</span>
+      <span class="status-sep">|</span>
+      <span id="app-version">v2.0.0</span>
+    </div>
+  </footer>
+
+  <!-- ===== Loading Overlay ===== -->
+  <div id="loading-overlay" class="overlay" hidden>
+    <div class="spinner"></div>
+    <p id="loading-text">Đang tải…</p>
+  </div>
+
+  <!-- ===== Modal Container ===== -->
+  <div id="modal-root"></div>
+
+  <!-- ===== Toast Container ===== -->
+  <div id="toast-container" aria-live="polite"></div>
+
+  <!-- ===== Notification Dropdown ===== -->
+  <div id="notif-dropdown" class="dropdown-panel" hidden>
+    <div class="dropdown-header">
+      <strong data-i18n="notif.title">Thông báo</strong>
+      <button id="notif-mark-all" class="link-btn" data-i18n="notif.mark_all">Đánh dấu tất cả đã đọc</button>
+    </div>
+    <ul id="notif-list" class="dropdown-list"></ul>
+  </div>
+
+  <!-- ===== JS Modules ===== -->
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>
