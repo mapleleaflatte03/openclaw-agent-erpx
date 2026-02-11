@@ -1847,7 +1847,7 @@ paths:
   /agent/v1/vn_feeder/control:
     post:
       summary: Vn Feeder Control
-      description: Write control command for the VN feeder process.
+      description: "Control the VN feeder background thread \u2014 start/stop/inject."
       operationId: vn_feeder_control_agent_v1_vn_feeder_control_post
       parameters:
       - name: X-API-Key
