@@ -461,11 +461,18 @@ with tab_trigger:
                         _steps_text = "\n\nChuỗi xử lý: " + " → ".join(
                             t.get("task_name", "?") for t in _task_preview
                         )
+                    _period_info = ""
+                    _p_val = payload.get("period", "")
+                    if _p_val:
+                        _period_info = f"  •  Kỳ: `{_p_val}`"
                     st.success(
                         f"✅ Tác vụ **{_RUN_TYPE_LABELS.get(run_type, run_type)}** đã được tạo thành công!\n\n"
-                        f"Mã tác vụ: `{res.get('run_id', '')}`  •  "
-                        f"Trạng thái: {_STATUS_LABELS.get(res.get('status', ''), res.get('status', ''))}"
-                        f"{_steps_text}"
+                        f"- **Mã tác vụ:** `{res.get('run_id', '')}`\n"
+                        f"- **Loại:** {_RUN_TYPE_LABELS.get(run_type, run_type)}\n"
+                        f"- **Trạng thái:** {_STATUS_LABELS.get(res.get('status', ''), res.get('status', ''))}"
+                        f"{_period_info}"
+                        f"{_steps_text}\n\n"
+                        f"👉 Xem chi tiết tại tab **Quản lý tác vụ**."
                     )
                     time.sleep(0.5)
                     st.rerun()
@@ -594,6 +601,48 @@ with tab_runs:
                     )
                 else:
                     st.info("Chưa có bước xử lý cho tác vụ này.")
+
+                # --- Downstream artifact linkage ---
+                _run_rt = _run_detail.get("run_type", "") if _run_detail else ""
+                _run_period = ""
+                if _run_detail:
+                    _ci = _run_detail.get("cursor_in") or {}
+                    if isinstance(_ci, dict):
+                        _run_period = _ci.get("period", "")
+
+                if _run_rt == "soft_checks" and run_id:
+                    st.markdown("#### 🔗 Kết quả downstream")
+                    try:
+                        _sc_params: dict[str, Any] = {"limit": 10}
+                        _sc_results = _get("/agent/v1/acct/soft_check_results", params=_sc_params).get("items", [])
+                        _matched = [r for r in _sc_results if r.get("run_id") == run_id]
+                        if _matched:
+                            for _scr in _matched:
+                                st.success(
+                                    f"✅ Đã tạo **{_scr.get('total_checks', 0)}** kiểm tra "
+                                    f"(score: {_scr.get('score', 0):.2%}, "
+                                    f"warnings: {_scr.get('warnings', 0)}, "
+                                    f"errors: {_scr.get('errors', 0)}) — "
+                                    f"Kỳ: {_scr.get('period', '')}"
+                                )
+                        else:
+                            st.info("Chưa có kết quả soft_check liên kết với run này.")
+                    except Exception:
+                        pass
+                elif _run_rt == "voucher_ingest" and _run_period:
+                    st.markdown("#### 🔗 Kết quả downstream")
+                    try:
+                        _v_items = _get("/agent/v1/acct/vouchers", params={"limit": 5}).get("items", [])
+                        _v_count = len(_v_items)
+                        st.info(
+                            f"📋 Tổng chứng từ trong hệ thống: ≥{_v_count} bản ghi. "
+                            f"Xem chi tiết tại tab **📥 Chứng từ**."
+                        )
+                    except Exception:
+                        pass
+                elif _run_rt == "tax_export":
+                    st.markdown("#### 🔗 Kết quả downstream")
+                    st.info("📋 Báo cáo thuế đã xuất. Xem chi tiết tại tab **📊 Kiểm tra & Báo cáo**.")
             with colB:
                 st.markdown("### Nhật ký hoạt động")
                 try:
@@ -1430,34 +1479,45 @@ with tab_command_center:
 
     # --- Controls ---
     st.markdown("##### 🎮 Điều khiển Feeder")
+
+    # Use session state to track pending operations and avoid stale disable logic
+    if "cc_pending_action" not in st.session_state:
+        st.session_state["cc_pending_action"] = None
+
     col_c1, col_c2, col_c3 = st.columns(3)
 
     with col_c1:
-        if st.button("▶️ Khởi động", key="cc_start", disabled=_cc_running):
+        # Start: only visually indicate when already running, but always allow click
+        _start_label = "▶️ Khởi động" if not _cc_running else "▶️ Khởi động (đang chạy)"
+        if st.button(_start_label, key="cc_start"):
             try:
-                _post("/agent/v1/vn_feeder/control", {"action": "start"})
-                st.success("✅ Feeder đã khởi động")
+                resp = _post("/agent/v1/vn_feeder/control", {"action": "start"})
+                st.success(f"✅ Feeder đã khởi động — {resp.get('status', 'ok')}")
+                time.sleep(1)  # brief delay for engine to update status
                 st.rerun()
             except Exception as e:
-                st.error(f"❌ {e}")
+                st.error(f"❌ Khởi động thất bại: {e}")
 
     with col_c2:
-        if st.button("⏹️ Dừng", key="cc_stop", disabled=not _cc_running):
+        # Stop: ALWAYS allow click — never disable. User must be able to stop.
+        if st.button("⏹️ Dừng", key="cc_stop"):
             try:
-                _post("/agent/v1/vn_feeder/control", {"action": "stop"})
-                st.success("✅ Feeder đã dừng")
+                resp = _post("/agent/v1/vn_feeder/control", {"action": "stop"})
+                st.success(f"✅ Feeder đã dừng — {resp.get('status', 'ok')}")
+                time.sleep(1)  # brief delay for engine to update status
                 st.rerun()
             except Exception as e:
-                st.error(f"❌ {e}")
+                st.error(f"❌ Dừng thất bại: {e}")
 
     with col_c3:
         if st.button("⚡ Inject ngay", key="cc_inject"):
             try:
-                _post("/agent/v1/vn_feeder/control", {"action": "inject_now"})
-                st.success("✅ Đã gửi lệnh inject")
+                resp = _post("/agent/v1/vn_feeder/control", {"action": "inject_now"})
+                st.success(f"✅ Đã gửi lệnh inject — {resp.get('status', 'ok')}")
+                time.sleep(1)  # brief delay to let events process
                 st.rerun()
             except Exception as e:
-                st.error(f"❌ {e}")
+                st.error(f"❌ Inject thất bại: {e}")
 
     # Speed slider
     _cc_epm = st.slider(

@@ -1,0 +1,615 @@
+{
+  "generated_at_utc": "2026-02-11T06:40:24.565641+00:00",
+  "base_url_mode_b": "http://127.0.0.1:30080",
+  "mode_a_url": "https://app.welliam.codes/",
+  "api_key_source": "runtime_process_env",
+  "regression": {
+    "ruff_check": {
+      "status": "PASS",
+      "detail": "ruff check . -> exit 0 (All checks passed!)"
+    },
+    "pytest": {
+      "status": "PASS",
+      "detail": "pytest tests/ -q -> exit 0 (warnings deprecation, không có test fail)"
+    },
+    "export_openapi": {
+      "status": "PASS",
+      "detail": "python3 scripts/export_openapi.py -> exit 0; openapi/agent-service.yaml và openapi/erpx-mock.yaml được cập nhật."
+    },
+    "health_endpoints": {
+      "status": "PASS",
+      "detail": "/healthz, /readyz, /agent/v1/healthz, /agent/v1/readyz đều HTTP 200."
+    },
+    "ui_tab_sweep": {
+      "status": "PASS",
+      "detail": "Quét đủ tab chính trong session, không ghi nhận traceback/500 ở snapshot và console warning/error = 0."
+    }
+  },
+  "criteria": {
+    "criterion_1_qna_vn": {
+      "status": "PARTIAL",
+      "reason": "Wiring đạt (llm_used=true, không lộ reasoning_chain) nhưng dao động mạnh: có lượt chi tiết, có lượt fallback/generic và có câu trả lời tiếng Anh/nháp."
+    },
+    "criterion_2_erp_chain": {
+      "status": "PASS",
+      "reason": "Có run soft_checks mới `a82dc716-cfd5-40da-98c5-e1ddd6839a3d` trạng thái success và truy vết downstream được ở `/agent/v1/acct/soft_check_results` (run_id trùng khớp)."
+    },
+    "criterion_3_vn_feeder_command_center": {
+      "status": "PARTIAL",
+      "reason": "API start/inject/stop hoạt động và metrics tăng; nhưng thao tác Start/Inject/Stop trên UI không làm status/metrics API thay đổi trong phiên test."
+    },
+    "criterion_4_ui_task_period": {
+      "status": "PASS",
+      "reason": "UI có field period cho voucher_ingest/soft_checks/tax_export; API trả 422 đúng cho thiếu/sai period và tạo run thành công khi period hợp lệ."
+    }
+  },
+  "endpoints_called": [
+    {
+      "method": "GET",
+      "path": "/healthz",
+      "status": 200
+    },
+    {
+      "method": "GET",
+      "path": "/readyz",
+      "status": 200
+    },
+    {
+      "method": "GET",
+      "path": "/agent/v1/healthz",
+      "status": 200
+    },
+    {
+      "method": "GET",
+      "path": "/agent/v1/readyz",
+      "status": 200
+    },
+    {
+      "method": "GET",
+      "path": "/agent/v1/acct/vouchers",
+      "status": 200
+    },
+    {
+      "method": "GET",
+      "path": "/agent/v1/acct/journal_proposals",
+      "status": 200
+    },
+    {
+      "method": "GET",
+      "path": "/agent/v1/acct/anomaly_flags",
+      "status": 200
+    },
+    {
+      "method": "GET",
+      "path": "/agent/v1/acct/cashflow_forecast",
+      "status": 200
+    },
+    {
+      "method": "GET",
+      "path": "/agent/v1/acct/soft_check_results",
+      "status": 200
+    },
+    {
+      "method": "GET",
+      "path": "/agent/v1/acct/report_snapshots",
+      "status": 200
+    },
+    {
+      "method": "POST",
+      "path": "/agent/v1/acct/qna",
+      "status": 200
+    },
+    {
+      "method": "GET",
+      "path": "/agent/v1/acct/qna_audits",
+      "status": 200
+    },
+    {
+      "method": "POST",
+      "path": "/agent/v1/runs",
+      "status": 200
+    },
+    {
+      "method": "GET",
+      "path": "/agent/v1/runs/{run_id}",
+      "status": 200
+    },
+    {
+      "method": "GET",
+      "path": "/agent/v1/vn_feeder/status",
+      "status": 200
+    },
+    {
+      "method": "POST",
+      "path": "/agent/v1/vn_feeder/control",
+      "status": 200
+    }
+  ],
+  "qna_cases": [
+    {
+      "question_id": "Q1",
+      "question": "So sánh TK 131 (Phải thu khách hàng) và TK 331 (Phải trả người bán) trong nghiệp vụ bán chịu và mua chịu, cho ví dụ bút toán bằng VND, viện dẫn Thông tư 200/TT133.",
+      "api_verdict": "PARTIAL",
+      "api_attempts": [
+        {
+          "attempt": 1,
+          "status": 200,
+          "llm_used": true,
+          "checks": {
+            "status_200": true,
+            "llm_used_true": true,
+            "reasoning_chain_absent": true,
+            "has_required_account": true,
+            "has_no_co_and_vnd": false,
+            "has_tt_reference": true,
+            "looks_generic_fallback": true
+          },
+          "answer_preview": "Dựa trên hệ thống tài khoản theo TT133/2016/TT-BTC và TT200/2014/TT-BTC:\n\nThông tư 133/2016/TT-BTC — Chế độ kế toán doanh nghiệp nhỏ và vừa.\nHệ thống tài khoản gồm 9 loại (Loại 1–9).\n\n\nKết quả tra cứu cho: «So sánh TK 131 (Phải thu khách hàng) và TK 331 (Phải "
+        },
+        {
+          "attempt": 2,
+          "status": 200,
+          "llm_used": true,
+          "checks": {
+            "status_200": true,
+            "llm_used_true": true,
+            "reasoning_chain_absent": true,
+            "has_required_account": true,
+            "has_no_co_and_vnd": false,
+            "has_tt_reference": true,
+            "looks_generic_fallback": true
+          },
+          "answer_preview": "Dựa trên hệ thống tài khoản theo TT133/2016/TT-BTC và TT200/2014/TT-BTC:\n\nThông tư 133/2016/TT-BTC — Chế độ kế toán doanh nghiệp nhỏ và vừa.\nHệ thống tài khoản gồm 9 loại (Loại 1–9).\n\n\nKết quả tra cứu cho: «So sánh TK 131 (Phải thu khách hàng) và TK 331 (Phải "
+        },
+        {
+          "attempt": 3,
+          "status": 200,
+          "llm_used": true,
+          "checks": {
+            "status_200": true,
+            "llm_used_true": true,
+            "reasoning_chain_absent": true,
+            "has_required_account": true,
+            "has_no_co_and_vnd": false,
+            "has_tt_reference": true,
+            "looks_generic_fallback": true
+          },
+          "answer_preview": "Dựa trên hệ thống tài khoản theo TT133/2016/TT-BTC và TT200/2014/TT-BTC:\n\nThông tư 133/2016/TT-BTC — Chế độ kế toán doanh nghiệp nhỏ và vừa.\nHệ thống tài khoản gồm 9 loại (Loại 1–9).\n\n\nKết quả tra cứu cho: «So sánh TK 131 (Phải thu khách hàng) và TK 331 (Phải "
+        }
+      ],
+      "ui_latest_created_at": "2026-02-11T06:32:44.766700Z",
+      "ui_answer_preview": "**So sánh TK 131 và TK 331 trong nghiệp vụ bán‑chịu, mua‑chịu**\n\n1. **Bản chất, vị trí trong hệ thống tài khoản**  \n   - **TK 131 – Phải thu khách hàng**: thuộc Loại 1 (Tài khoản tài sản). Số dư thường nằm ở bên **Nợ**, phản ánh số tiền khách hàng còn nợ doanh nghiệp. (TT 200/2014/TT‑BTC, Điều 13; TT 133/2016/TT‑BTC, k"
+    },
+    {
+      "question_id": "Q2",
+      "question": "Khi nào dùng TK 642 (Chi phí quản lý DN) thay vì TK 641 (Chi phí bán hàng)? Cho 3 ví dụ bút toán VND, viện dẫn TT200 hoặc TT133.",
+      "api_verdict": "PARTIAL",
+      "api_attempts": [
+        {
+          "attempt": 1,
+          "status": 200,
+          "llm_used": true,
+          "checks": {
+            "status_200": true,
+            "llm_used_true": true,
+            "reasoning_chain_absent": true,
+            "has_required_account": true,
+            "has_no_co_and_vnd": true,
+            "has_tt_reference": false,
+            "looks_generic_fallback": false
+          },
+          "answer_preview": "TK 642 – Chi phí quản lý doanh nghiệp và TK 641 – Chi phí bán hàng đều thuộc nhóm chi phí hoạt động, nhưng chúng được phân loại dựa trên bản chất và mục đích của chi phí:\n\n**1. Khi nào dùng TK 642 (Chi phí quản lý doanh nghiệp) thay vì TK 641 (Chi phí bán hàng"
+        },
+        {
+          "attempt": 2,
+          "status": 200,
+          "llm_used": true,
+          "checks": {
+            "status_200": true,
+            "llm_used_true": true,
+            "reasoning_chain_absent": true,
+            "has_required_account": false,
+            "has_no_co_and_vnd": false,
+            "has_tt_reference": false,
+            "looks_generic_fallback": true
+          },
+          "answer_preview": "Xin lỗi, tôi cần thêm thông tin ngữ cảnh để trả lời câu hỏi này chính xác hơn. Vui lòng cung cấp thêm chi tiết."
+        },
+        {
+          "attempt": 3,
+          "status": 200,
+          "llm_used": true,
+          "checks": {
+            "status_200": true,
+            "llm_used_true": true,
+            "reasoning_chain_absent": true,
+            "has_required_account": true,
+            "has_no_co_and_vnd": false,
+            "has_tt_reference": true,
+            "looks_generic_fallback": true
+          },
+          "answer_preview": "Dựa trên hệ thống tài khoản theo TT133/2016/TT-BTC và TT200/2014/TT-BTC:\n\nThông tư 133/2016/TT-BTC — Chế độ kế toán doanh nghiệp nhỏ và vừa.\nHệ thống tài khoản gồm 9 loại (Loại 1–9).\n\n\nKết quả tra cứu cho: «Khi nào dùng TK 642 (Chi phí quản lý DN) thay vì TK 6"
+        }
+      ],
+      "ui_latest_created_at": "2026-02-11T06:32:05.607469Z",
+      "ui_answer_preview": "TK 642 - chi phí quản lý doanh nghiệp: overhead costs not directly linked to sales, e.g., admin salaries, office rent, depreciation of office equipment, utilities, legal fees, etc.\n\n\nExample 1: Paying advertising expense for product promotion (sell? Actually advertising supports sales, thus 641). So debit TK 641, credi"
+    },
+    {
+      "question_id": "Q3",
+      "question": "Hạch toán khấu hao TSCĐ hữu hình 30 triệu VND trong 3 năm theo phương pháp đường thẳng.",
+      "api_verdict": "PARTIAL",
+      "api_attempts": [
+        {
+          "attempt": 1,
+          "status": 200,
+          "llm_used": true,
+          "checks": {
+            "status_200": true,
+            "llm_used_true": true,
+            "reasoning_chain_absent": true,
+            "has_required_account": false,
+            "has_no_co_and_vnd": false,
+            "has_tt_reference": false,
+            "looks_generic_fallback": true
+          },
+          "answer_preview": "Xin lỗi, tôi cần thêm thông tin ngữ cảnh để trả lời câu hỏi này chính xác hơn. Vui lòng cung cấp thêm chi tiết."
+        },
+        {
+          "attempt": 2,
+          "status": 200,
+          "llm_used": true,
+          "checks": {
+            "status_200": true,
+            "llm_used_true": true,
+            "reasoning_chain_absent": true,
+            "has_required_account": true,
+            "has_no_co_and_vnd": true,
+            "has_tt_reference": true,
+            "looks_generic_fallback": false
+          },
+          "answer_preview": "**Bút toán hạch toán khấu hao tài sản cố định hữu hình (phương pháp đường thẳng)**  \n\nTheo Thông tư 200/2014/TT‑BTC (Điều 24) và Thông tư 133/2016/TT‑BTC (phần hướng dẫn chi tiết tài khoản cho doanh nghiệp nhỏ và vừa), chi phí khấu hao tài sản cố định được hạc"
+        },
+        {
+          "attempt": 3,
+          "status": 200,
+          "llm_used": true,
+          "checks": {
+            "status_200": true,
+            "llm_used_true": true,
+            "reasoning_chain_absent": true,
+            "has_required_account": true,
+            "has_no_co_and_vnd": false,
+            "has_tt_reference": true,
+            "looks_generic_fallback": false
+          },
+          "answer_preview": "Better: Use TK 214 (Chi phí khấu hao TSCĐ) as debit, TK 214 (Lũy kế khấu hao TSCĐ) as credit. But we need to show both side: Debit expense, credit accumulated depreciation. Provide amounts: 30,000,000 / 3 = 10,000,000 per year.\n\n\nCite TT200/2014 Art 20? Actual"
+        }
+      ],
+      "ui_latest_created_at": "2026-02-11T06:35:51.335979Z",
+      "ui_answer_preview": "- 214: Chi phí sản xuất, kinh doanh (various). Not exactly. I think depreciation expense is account 214? Actually, account 214 is \"Chi phí sản xuất, kinh doanh\". For depreciation, there is a specific account: 214? Hmm. Let’s recall: Common accounts: 214 is \"Chi phí sản xuất, kinh doanh\". There's also 642 \"Chi phí bán h"
+    }
+  ],
+  "feeder_snapshots": {
+    "api_sequence": {
+      "status_before": {
+        "running": false,
+        "total_events_today": 0,
+        "last_event_at": "",
+        "avg_events_per_min": 0,
+        "sources": [],
+        "updated_at": ""
+      },
+      "start": {
+        "ok": true,
+        "status": 200,
+        "path": "/agent/v1/vn_feeder/control",
+        "method": "POST",
+        "data": {
+          "status": "ok",
+          "action": "start"
+        }
+      },
+      "status_after_start_polls": [
+        {
+          "running": true,
+          "total_events_today": 0,
+          "last_event_at": "",
+          "avg_events_per_min": 0,
+          "sources": [],
+          "updated_at": ""
+        },
+        {
+          "running": true,
+          "total_events_today": 4,
+          "last_event_at": "2026-02-11T06:16:08.051899",
+          "avg_events_per_min": 8.39,
+          "sources": [
+            {
+              "source_name": "APPEN_VN_OCR",
+              "total": 166,
+              "sent_count": 2,
+              "pct_consumed": 1.2
+            },
+            {
+              "source_name": "MC_OCR_2021",
+              "total": 168,
+              "sent_count": 1,
+              "pct_consumed": 0.6
+            },
+            {
+              "source_name": "RECEIPT_OCR",
+              "total": 166,
+              "sent_count": 1,
+              "pct_consumed": 0.6
+            }
+          ],
+          "updated_at": "2026-02-11T06:16:08.053081"
+        },
+        {
+          "running": true,
+          "total_events_today": 4,
+          "last_event_at": "2026-02-11T06:16:08.051899",
+          "avg_events_per_min": 8.39,
+          "sources": [
+            {
+              "source_name": "APPEN_VN_OCR",
+              "total": 166,
+              "sent_count": 2,
+              "pct_consumed": 1.2
+            },
+            {
+              "source_name": "MC_OCR_2021",
+              "total": 168,
+              "sent_count": 1,
+              "pct_consumed": 0.6
+            },
+            {
+              "source_name": "RECEIPT_OCR",
+              "total": 166,
+              "sent_count": 1,
+              "pct_consumed": 0.6
+            }
+          ],
+          "updated_at": "2026-02-11T06:16:08.053081"
+        }
+      ],
+      "inject_now": {
+        "ok": true,
+        "status": 200,
+        "path": "/agent/v1/vn_feeder/control",
+        "method": "POST",
+        "data": {
+          "status": "ok",
+          "action": "inject_now"
+        }
+      },
+      "status_after_inject": {
+        "running": true,
+        "total_events_today": 7,
+        "last_event_at": "2026-02-11T06:17:02.774837",
+        "avg_events_per_min": 5.04,
+        "sources": [
+          {
+            "source_name": "APPEN_VN_OCR",
+            "total": 166,
+            "sent_count": 4,
+            "pct_consumed": 2.4
+          },
+          {
+            "source_name": "MC_OCR_2021",
+            "total": 168,
+            "sent_count": 2,
+            "pct_consumed": 1.2
+          },
+          {
+            "source_name": "RECEIPT_OCR",
+            "total": 166,
+            "sent_count": 1,
+            "pct_consumed": 0.6
+          }
+        ],
+        "updated_at": "2026-02-11T06:17:02.775223"
+      },
+      "stop": {
+        "ok": true,
+        "status": 200,
+        "path": "/agent/v1/vn_feeder/control",
+        "method": "POST",
+        "data": {
+          "status": "ok",
+          "action": "stop"
+        }
+      },
+      "status_after_stop": {
+        "running": false,
+        "total_events_today": 7,
+        "last_event_at": "2026-02-11T06:17:02.774837",
+        "avg_events_per_min": 4.94,
+        "sources": [
+          {
+            "source_name": "APPEN_VN_OCR",
+            "total": 166,
+            "sent_count": 4,
+            "pct_consumed": 2.4
+          },
+          {
+            "source_name": "MC_OCR_2021",
+            "total": 168,
+            "sent_count": 2,
+            "pct_consumed": 1.2
+          },
+          {
+            "source_name": "RECEIPT_OCR",
+            "total": 166,
+            "sent_count": 1,
+            "pct_consumed": 0.6
+          }
+        ],
+        "updated_at": "2026-02-11T06:17:04.543164"
+      }
+    },
+    "ui_button_sequence": {
+      "before": {
+        "running": false,
+        "total_events_today": 7,
+        "last_event_at": "2026-02-11T06:17:02.774837",
+        "avg_events_per_min": 4.94,
+        "sources": [
+          {
+            "source_name": "APPEN_VN_OCR",
+            "total": 166,
+            "sent_count": 4,
+            "pct_consumed": 2.4
+          },
+          {
+            "source_name": "MC_OCR_2021",
+            "total": 168,
+            "sent_count": 2,
+            "pct_consumed": 1.2
+          },
+          {
+            "source_name": "RECEIPT_OCR",
+            "total": 166,
+            "sent_count": 1,
+            "pct_consumed": 0.6
+          }
+        ],
+        "updated_at": "2026-02-11T06:17:04.543164"
+      },
+      "ui_start_log_tail": "### Result\n\"clicked\"\n### Ran Playwright code\n```js\nawait (async (page) => { await page.getByRole('tab', { name: '🎛️ Command Center (VN Agent)' }).click(); const b = page.getByRole('button', { name: '▶️ Khởi động' }); if (await b.count()) { await b.click(); await page.waitForTimeout(1200); return 'clicked'; } return 'not_found'; })(page);\n```\n",
+      "after_start": {
+        "running": false,
+        "total_events_today": 7,
+        "last_event_at": "2026-02-11T06:17:02.774837",
+        "avg_events_per_min": 4.94,
+        "sources": [
+          {
+            "source_name": "APPEN_VN_OCR",
+            "total": 166,
+            "sent_count": 4,
+            "pct_consumed": 2.4
+          },
+          {
+            "source_name": "MC_OCR_2021",
+            "total": 168,
+            "sent_count": 2,
+            "pct_consumed": 1.2
+          },
+          {
+            "source_name": "RECEIPT_OCR",
+            "total": 166,
+            "sent_count": 1,
+            "pct_consumed": 0.6
+          }
+        ],
+        "updated_at": "2026-02-11T06:17:04.543164"
+      },
+      "ui_inject_log_tail": "### Result\n\"clicked\"\n### Ran Playwright code\n```js\nawait (async (page) => { await page.getByRole('tab', { name: '🎛️ Command Center (VN Agent)' }).click(); const b = page.getByRole('button', { name: '⚡ Inject ngay' }); if (await b.count()) { await b.click(); await page.waitForTimeout(1200); return 'clicked'; } return 'not_found'; })(page);\n```\n",
+      "after_inject": {
+        "running": false,
+        "total_events_today": 7,
+        "last_event_at": "2026-02-11T06:17:02.774837",
+        "avg_events_per_min": 4.94,
+        "sources": [
+          {
+            "source_name": "APPEN_VN_OCR",
+            "total": 166,
+            "sent_count": 4,
+            "pct_consumed": 2.4
+          },
+          {
+            "source_name": "MC_OCR_2021",
+            "total": 168,
+            "sent_count": 2,
+            "pct_consumed": 1.2
+          },
+          {
+            "source_name": "RECEIPT_OCR",
+            "total": 166,
+            "sent_count": 1,
+            "pct_consumed": 0.6
+          }
+        ],
+        "updated_at": "2026-02-11T06:17:04.543164"
+      },
+      "ui_stop_log_tail": "be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is not enabled\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m    - waiting 20ms\u001b[22m\n\u001b[2m    2 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is not enabled\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m      - waiting 100ms\u001b[22m\n\u001b[2m    9 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is not enabled\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m      - waiting 500ms\u001b[22m\n\n",
+      "after_stop": {
+        "running": false,
+        "total_events_today": 7,
+        "last_event_at": "2026-02-11T06:17:02.774837",
+        "avg_events_per_min": 4.94,
+        "sources": [
+          {
+            "source_name": "APPEN_VN_OCR",
+            "total": 166,
+            "sent_count": 4,
+            "pct_consumed": 2.4
+          },
+          {
+            "source_name": "MC_OCR_2021",
+            "total": 168,
+            "sent_count": 2,
+            "pct_consumed": 1.2
+          },
+          {
+            "source_name": "RECEIPT_OCR",
+            "total": 166,
+            "sent_count": 1,
+            "pct_consumed": 0.6
+          }
+        ],
+        "updated_at": "2026-02-11T06:17:04.543164"
+      }
+    }
+  },
+  "runs_created_summary": {
+    "count_ui_runs_created": 3,
+    "count_api_unique_runs_created": 2,
+    "count_total_runs_created_in_this_round": 5
+  },
+  "trace_ids": {
+    "ui_created": [
+      {
+        "run_type": "voucher_ingest",
+        "run_id": "b9a98e56-5706-45e7-ad93-48f527dfcfc5",
+        "status": "queued",
+        "period": "2026-02"
+      },
+      {
+        "run_type": "soft_checks",
+        "run_id": "a82dc716-cfd5-40da-98c5-e1ddd6839a3d",
+        "status": "success",
+        "period": "2026-02"
+      },
+      {
+        "run_type": "tax_export",
+        "run_id": "b14c7f84-f727-46c4-843f-82557230842f",
+        "status": "queued",
+        "period": "2026-02"
+      }
+    ],
+    "api_created_unique": [
+      {
+        "run_type": "voucher_ingest",
+        "run_id": "282e10d7-e9fb-4452-b35d-2266585db97a",
+        "status": "queued",
+        "period": "2026-02"
+      },
+      {
+        "run_type": "soft_checks",
+        "run_id": "74541b81-f47e-4f2f-b9cd-646fb0bd6edf",
+        "status": "queued",
+        "period": "2026-02"
+      }
+    ],
+    "period_validation_valid_case": {
+      "run_id": "b7069b0d-cfd3-461d-9a8a-eb8785944503",
+      "period": "2026-02"
+    },
+    "chain_proof": {
+      "run_id": "a82dc716-cfd5-40da-98c5-e1ddd6839a3d",
+      "soft_check_result_id": "5dd62027-e743-48d6-9874-933939a8b882",
+      "period": "2026-02"
+    }
+  }
+}

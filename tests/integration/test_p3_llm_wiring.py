@@ -221,6 +221,66 @@ class TestQnaLLMWiring:
         result = qna_mod.answer_question(mock_session, "Bất kỳ câu hỏi nào")
         assert "reasoning_chain" not in result
 
+    def test_po_benchmark_matcher_q1(self, monkeypatch):
+        """PO benchmark Q1 (131 vs 331) matches template."""
+        monkeypatch.setenv("USE_REAL_LLM", "false")
+        import openclaw_agent.flows.qna_accounting as qna_mod
+
+        mock_session = MagicMock()
+        result = qna_mod.answer_question(mock_session, "So sánh TK 131 vs 331")
+        assert "131" in result["answer"]
+        assert "331" in result["answer"]
+        assert "Nợ" in result["answer"]
+        assert "Có" in result["answer"]
+
+    def test_po_benchmark_matcher_q2(self, monkeypatch):
+        """PO benchmark Q2 (642 vs 641) matches template."""
+        monkeypatch.setenv("USE_REAL_LLM", "false")
+        import openclaw_agent.flows.qna_accounting as qna_mod
+
+        mock_session = MagicMock()
+        result = qna_mod.answer_question(mock_session, "Khi nào dùng TK 642 thay vì TK 641")
+        assert "641" in result["answer"]
+        assert "642" in result["answer"]
+        assert "VND" in result["answer"]
+
+    def test_po_benchmark_matcher_q3(self, monkeypatch):
+        """PO benchmark Q3 (khấu hao TSCĐ) matches template."""
+        monkeypatch.setenv("USE_REAL_LLM", "false")
+        import openclaw_agent.flows.qna_accounting as qna_mod
+
+        mock_session = MagicMock()
+        result = qna_mod.answer_question(mock_session, "Khấu hao TSCĐ hữu hình 30 triệu VND trong 3 năm theo phương pháp đường thẳng")
+        assert "214" in result["answer"]
+        assert "VND" in result["answer"]
+        assert "10.000.000" in result["answer"]
+
+    def test_quality_guardrail_rejects_inner_monologue(self):
+        """Quality guardrail rejects answers containing inner monologue."""
+        from openclaw_agent.flows.qna_accounting import _passes_quality_guardrail
+
+        assert _passes_quality_guardrail("Better: Use TK 214 for depreciation") is False
+        assert _passes_quality_guardrail("I think we should use account 131") is False
+        assert _passes_quality_guardrail("Let's recall the accounting rules") is False
+        assert _passes_quality_guardrail("Hmm, not sure about this") is False
+
+    def test_quality_guardrail_accepts_good_answer(self):
+        """Quality guardrail accepts well-formed Vietnamese answers."""
+        from openclaw_agent.flows.qna_accounting import _passes_quality_guardrail
+
+        good = (
+            "TK 131 – Phải thu của khách hàng: phản ánh số tiền khách hàng còn nợ DN. "
+            "Bút toán mẫu: Nợ TK 131 / Có TK 511 – 50.000.000 VND."
+        )
+        assert _passes_quality_guardrail(good) is True
+
+    def test_quality_guardrail_rejects_generic_fallback(self):
+        """Quality guardrail rejects generic apology responses."""
+        from openclaw_agent.flows.qna_accounting import _passes_quality_guardrail
+
+        assert _passes_quality_guardrail("Xin lỗi, tôi cần thêm thông tin ngữ cảnh") is False
+        assert _passes_quality_guardrail("Xin lỗi, hệ thống chưa thể đưa ra câu trả lời") is False
+
 
 # ---------------------------------------------------------------------------
 # Golden tests – 3 benchmark Q&A questions (stub LLM)
