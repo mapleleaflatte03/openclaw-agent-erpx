@@ -16,6 +16,7 @@ venv/
 !.env.example
 
 data/
+!data/kaggle/seed/
 tmp/
 *.sqlite
 *.db

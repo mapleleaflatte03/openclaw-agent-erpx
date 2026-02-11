@@ -1,0 +1,42 @@
+{
+  "generated_at": "2026-02-11T00:00:00Z",
+  "generator": "scripts/generate_kaggle_seed.py",
+  "data_policy": "R2/R3 — All records derived from Kaggle public datasets. No mock/fabricated data.",
+  "sources": {
+    "MC_OCR_2021": {
+      "count": 16,
+      "license": "Kaggle competition / CC-BY-SA",
+      "origin": "Kaggle dataset loaded via scripts/vn_data_catalog.py"
+    },
+    "RECEIPT_OCR": {
+      "count": 16,
+      "license": "Kaggle competition / CC-BY-SA",
+      "origin": "Kaggle dataset loaded via scripts/vn_data_catalog.py"
+    },
+    "APPEN_VN_OCR": {
+      "count": 15,
+      "license": "Kaggle competition / CC-BY-SA",
+      "origin": "Kaggle dataset loaded via scripts/vn_data_catalog.py"
+    }
+  },
+  "output_files": {
+    "erpx_seed_kaggle.json": {
+      "purpose": "Drop-in seed for ERPX_MOCK_SEED_PATH env var",
+      "record_counts": {
+        "partners": 6,
+        "contracts": 1,
+        "payments": 1,
+        "invoices": 47,
+        "vouchers": 47,
+        "journals": 47,
+        "assets": 1,
+        "close_calendar": 5,
+        "bank_transactions": 42
+      }
+    },
+    "vn_kaggle_subset.json": {
+      "purpose": "Raw Kaggle records with audit metadata",
+      "record_count": 47
+    }
+  }
+}
