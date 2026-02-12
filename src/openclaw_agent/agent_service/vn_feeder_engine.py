@@ -319,3 +319,15 @@ def inject_now(target_epm: int | None = None) -> bool:
 def is_running() -> bool:
     """Check if feeder thread is alive."""
     return _thread is not None and _thread.is_alive()
+
+
+def set_target_events_per_min(target_epm: int) -> int:
+    """Update feeder target events/minute without forcing restart."""
+    global _target_epm
+    _target_epm = max(1, min(10, int(target_epm)))
+    return _target_epm
+
+
+def get_target_events_per_min() -> int:
+    """Expose current configured feeder events/minute."""
+    return int(_target_epm)

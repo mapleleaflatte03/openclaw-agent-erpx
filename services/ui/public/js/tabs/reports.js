@@ -8,6 +8,24 @@ let reportHistory = [];
 let currentStep = 1;
 let reportConfig = {};
 
+function currentPeriod() {
+  const now = new Date();
+  const month = String(now.getMonth() + 1).padStart(2, '0');
+  return `${now.getFullYear()}-${month}`;
+}
+
+function buildPeriodOptions(monthCount = 18) {
+  const opts = [];
+  const base = new Date();
+  base.setDate(1);
+  for (let i = 0; i < monthCount; i++) {
+    const d = new Date(base.getFullYear(), base.getMonth() - i, 1);
+    const value = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+    opts.push(`<option value="${value}" ${reportConfig.period === value ? 'selected' : ''}>${value}</option>`);
+  }
+  return opts.join('');
+}
+
 async function init() {
   if (!initialized) {
     initialized = true;
@@ -183,18 +201,10 @@ function renderStep2() {
 
       <div class="form-group">
         <label class="form-label">Kỳ báo cáo</label>
-        <div class="flex-row gap-md">
-          <select class="form-select" id="report-period-type" style="width:150px">
-            <option value="month">Tháng</option>
-            <option value="quarter">Quý</option>
-            <option value="year" selected>Năm</option>
-          </select>
-          <select class="form-select" id="report-period" style="flex:1">
-            <option value="2026">2026</option>
-            <option value="2025">2025</option>
-            <option value="2024">2024</option>
-          </select>
-        </div>
+        <select class="form-select" id="report-period">
+          ${buildPeriodOptions()}
+        </select>
+        <div class="text-secondary text-sm mt-sm">Định dạng kỳ: YYYY-MM (ví dụ 2026-02)</div>
       </div>
 
       <div class="form-group">
@@ -350,13 +360,16 @@ function nextStep() {
   }
 
   if (currentStep === 2) {
-    reportConfig.periodType = document.getElementById('report-period-type')?.value || 'year';
-    reportConfig.period = document.getElementById('report-period')?.value || '2026';
+    reportConfig.period = document.getElementById('report-period')?.value || currentPeriod();
     reportConfig.currency = document.getElementById('report-currency')?.value || 'VND';
     reportConfig.compare = document.getElementById('report-compare')?.value || 'none';
     reportConfig.showDetails = document.getElementById('opt-details')?.checked;
     reportConfig.showNotes = document.getElementById('opt-notes')?.checked;
     reportConfig.sign = document.getElementById('opt-sign')?.checked;
+    if (!/^\d{4}-\d{2}$/.test(reportConfig.period)) {
+      toast('Kỳ báo cáo phải theo định dạng YYYY-MM', 'error');
+      return;
+    }
   }
 
   if (currentStep < 4) {
@@ -404,6 +417,15 @@ async function generatePreview() {
   const previewDiv = document.getElementById('report-preview');
   const step3Preview = document.getElementById('step3-preview');
 
+  if (!reportConfig.type) {
+    toast('Vui lòng chọn loại báo cáo', 'error');
+    return;
+  }
+  if (!reportConfig.period || !/^\d{4}-\d{2}$/.test(reportConfig.period)) {
+    toast('Vui lòng chọn kỳ báo cáo hợp lệ (YYYY-MM)', 'error');
+    return;
+  }
+
   try {
     const data = await apiPost('/reports/preview', {
       type: reportConfig.type,
@@ -448,6 +470,15 @@ function renderReportPreview(data) {
 }
 
 async function runValidation() {
+  if (!reportConfig.type) {
+    toast('Vui lòng chọn loại báo cáo trước khi kiểm tra', 'error');
+    return;
+  }
+  if (!reportConfig.period || !/^\d{4}-\d{2}$/.test(reportConfig.period)) {
+    toast('Vui lòng chọn kỳ báo cáo hợp lệ (YYYY-MM)', 'error');
+    return;
+  }
+
   const items = document.querySelectorAll('.check-item');
   items.forEach((item) => {
     item.classList.remove('pass', 'fail', 'pending');
@@ -456,8 +487,9 @@ async function runValidation() {
   });
 
   try {
-    // Call real validation API
-    const validation = await api(`/reports/validate?type=${reportConfig.type}&period=${reportConfig.period || '2026'}`);
+    const validation = await api(
+      `/reports/validate?type=${encodeURIComponent(reportConfig.type)}&period=${encodeURIComponent(reportConfig.period)}`
+    );
     const checks = validation.checks || [];
     
     items.forEach((item, i) => {
@@ -508,6 +540,14 @@ async function loadReportHistory() {
 }
 
 async function exportReport() {
+  if (!reportConfig.type) {
+    toast('Thiếu loại báo cáo', 'error');
+    return;
+  }
+  if (!reportConfig.period || !/^\d{4}-\d{2}$/.test(reportConfig.period)) {
+    toast('Thiếu kỳ báo cáo hợp lệ (YYYY-MM)', 'error');
+    return;
+  }
   const format = document.querySelector('input[name="export-format"]:checked')?.value || 'pdf';
   toast('Đang xuất báo cáo...', 'info');
 
@@ -547,10 +587,11 @@ async function exportReport() {
 async function quickExport(type) {
   toast(`Đang xuất ${getReportTypeName(type)}...`, 'info');
   try {
+    const period = reportConfig.period && /^\d{4}-\d{2}$/.test(reportConfig.period) ? reportConfig.period : currentPeriod();
     const resp = await apiPost('/reports/generate', {
       type,
       standard: 'VAS',
-      period: '2026',
+      period,
       format: 'pdf',
     });
     if (resp.download_url) {

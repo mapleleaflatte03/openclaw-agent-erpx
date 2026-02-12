@@ -314,7 +314,7 @@ async function submitFeedback() {
 
   try {
     await apiPatch(`/acct/qna_feedback/${auditId}`, {
-      rating: rating === 'up' ? 1 : -1,
+      feedback: rating === 'up' ? 'helpful' : 'not_helpful',
       note,
     });
     toast('Cảm ơn phản hồi của bạn!', 'success');

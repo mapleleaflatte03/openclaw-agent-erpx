@@ -6,6 +6,13 @@ const { api, apiPost, apiPatch, toast, registerTab, t, state } = window.ERPX;
 let initialized = false;
 let settings = {};
 let activeSection = 'profile';
+let feederStatus = {
+  running: false,
+  events_per_min: 3,
+  total_events_today: 0,
+  avg_events_per_min: 0,
+  last_event_at: '',
+};
 
 async function init() {
   if (!initialized) {
@@ -164,66 +171,64 @@ function renderAgent() {
 }
 
 function renderFeeder() {
-  const feeders = settings.feeders || [];
+  const runningBadge = feederStatus.running ? 'badge-success' : 'badge-secondary';
+  const runningText = feederStatus.running ? 'RUNNING' : 'STOPPED';
+  const epm = feederStatus.events_per_min || 3;
   return `
     <div class="settings-section" data-section="feeder">
-      <h2 class="mb-lg">Nguồn dữ liệu (Feeders)</h2>
+      <h2 class="mb-lg">Điều khiển VN Feeder</h2>
 
       <div class="alert alert-info mb-md">
-        Cấu hình các nguồn dữ liệu tự động cập nhật vào hệ thống.
+        Các thao tác dưới đây gọi trực tiếp API <code>/agent/v1/vn_feeder/*</code>.
       </div>
 
-      <div id="feeder-list" class="flex-col gap-md">
-        ${feeders
-          .map(
-            (f, i) => `
-          <div class="feeder-item card" data-index="${i}">
-            <div class="flex-row justify-between mb-sm">
-              <span class="text-bold">${f.name || `Feeder ${i + 1}`}</span>
-              <div class="flex-row gap-sm">
-                <span class="badge ${f.active ? 'badge-success' : 'badge-secondary'}">${f.active ? 'Hoạt động' : 'Tắt'}</span>
-                <button class="btn btn-outline btn-sm" onclick="toggleFeeder(${i})">⚡</button>
-                <button class="btn btn-outline btn-sm text-danger" onclick="removeFeeder(${i})">🗑️</button>
-              </div>
+      <div class="grid-2 gap-md">
+        <div class="card">
+          <div class="card-title mb-sm">Trạng thái hiện tại</div>
+          <div class="flex-col gap-sm">
+            <div class="flex-row justify-between">
+              <span>Feeder</span>
+              <span id="feeder-running-badge" class="badge ${runningBadge}">${runningText}</span>
             </div>
-            <div class="text-sm text-secondary">
-              <strong>Loại:</strong> ${f.type || 'API'} |
-              <strong>URL:</strong> ${f.url || '—'} |
-              <strong>Lịch:</strong> ${f.schedule || 'Thủ công'}
+            <div class="flex-row justify-between">
+              <span>Events/phút (target)</span>
+              <span id="feeder-epm-value">${epm}</span>
+            </div>
+            <div class="flex-row justify-between">
+              <span>Tổng events hôm nay</span>
+              <span id="feeder-total-events">${feederStatus.total_events_today || 0}</span>
+            </div>
+            <div class="flex-row justify-between">
+              <span>Avg events/phút</span>
+              <span id="feeder-avg-epm">${feederStatus.avg_events_per_min || 0}</span>
+            </div>
+            <div class="flex-row justify-between">
+              <span>Lần inject gần nhất</span>
+              <span id="feeder-last-event">${feederStatus.last_event_at || '—'}</span>
             </div>
           </div>
-        `
-          )
-          .join('')}
+        </div>
+
+        <div class="card">
+          <div class="card-title mb-sm">Điều khiển</div>
+          <div class="flex-col gap-sm">
+            <button class="btn btn-primary" id="btn-feeder-start">▶ Start</button>
+            <button class="btn btn-outline" id="btn-feeder-stop">■ Stop</button>
+            <button class="btn btn-outline" id="btn-feeder-inject">⚡ Inject now</button>
+            <button class="btn btn-outline" id="btn-feeder-refresh">🔄 Refresh status</button>
+          </div>
+        </div>
       </div>
 
-      <button class="btn btn-outline mt-md" id="btn-add-feeder">➕ Thêm nguồn dữ liệu</button>
-
-      <h3 class="mt-lg mb-md">Cấu hình nguồn mới</h3>
-      <div class="form-group">
-        <label class="form-label">Tên nguồn</label>
-        <input type="text" class="form-input" id="feeder-name" placeholder="VD: ERP API, Bank Feed, Email Scanner">
+      <div class="card mt-md">
+        <div class="card-title mb-sm">Cấu hình tốc độ feeder</div>
+        <div class="form-group">
+          <label class="form-label">Events/phút</label>
+          <input type="range" id="feeder-epm-slider" min="1" max="10" step="1" value="${epm}" style="width:100%">
+          <div class="text-secondary text-sm mt-sm">Giá trị hiện tại: <strong id="feeder-epm-slider-value">${epm}</strong></div>
+        </div>
+        <button class="btn btn-primary" id="btn-save-feeder">💾 Cập nhật cấu hình</button>
       </div>
-      <div class="form-group">
-        <label class="form-label">Loại</label>
-        <select class="form-select" id="feeder-type">
-          <option value="api">REST API</option>
-          <option value="sftp">SFTP / FTP</option>
-          <option value="email">Email (IMAP)</option>
-          <option value="webhook">Webhook</option>
-          <option value="database">Database</option>
-        </select>
-      </div>
-      <div class="form-group">
-        <label class="form-label">URL / Endpoint</label>
-        <input type="text" class="form-input" id="feeder-url" placeholder="https://erp.example.com/api/vouchers">
-      </div>
-      <div class="form-group">
-        <label class="form-label">Lịch chạy (Cron hoặc interval)</label>
-        <input type="text" class="form-input" id="feeder-schedule" placeholder="*/15 * * * * (mỗi 15 phút)">
-      </div>
-
-      <button class="btn btn-primary mt-md" id="btn-save-feeder">💾 Lưu nguồn dữ liệu</button>
     </div>
   `;
 }
@@ -354,6 +359,9 @@ function bindEvents() {
       document.querySelectorAll('.settings-nav-btn').forEach((b) => b.classList.remove('active'));
       btn.classList.add('active');
       renderSection(activeSection);
+      if (activeSection === 'feeder') {
+        loadFeederStatus();
+      }
     });
   });
 
@@ -362,11 +370,14 @@ function bindEvents() {
     if (e.target.id === 'btn-save-profile') saveProfile();
     if (e.target.id === 'btn-save-agent') saveAgent();
     if (e.target.id === 'btn-save-feeder') saveFeeder();
+    if (e.target.id === 'btn-feeder-start') runFeederControl('start');
+    if (e.target.id === 'btn-feeder-stop') runFeederControl('stop');
+    if (e.target.id === 'btn-feeder-inject') runFeederControl('inject_now');
+    if (e.target.id === 'btn-feeder-refresh') loadFeederStatus();
     if (e.target.id === 'btn-save-a11y') saveAccessibility();
     if (e.target.id === 'btn-save-advanced') saveAdvanced();
     if (e.target.id === 'btn-clear-cache') clearCache();
     if (e.target.id === 'btn-export-settings') exportSettings();
-    if (e.target.id === 'btn-add-feeder') addFeeder();
   });
 
   // Temperature slider
@@ -374,6 +385,9 @@ function bindEvents() {
     if (e.target.id === 'agent-temp') {
       const val = (e.target.value / 100).toFixed(2);
       document.getElementById('agent-temp-val').textContent = val;
+    }
+    if (e.target.id === 'feeder-epm-slider') {
+      document.getElementById('feeder-epm-slider-value').textContent = e.target.value;
     }
   });
 
@@ -442,6 +456,9 @@ async function loadSettings() {
     };
   }
   renderSection(activeSection);
+  if (activeSection === 'feeder') {
+    await loadFeederStatus();
+  }
 }
 
 async function saveProfile() {
@@ -480,25 +497,50 @@ async function saveAgent() {
 }
 
 async function saveFeeder() {
-  const feeder = {
-    name: document.getElementById('feeder-name').value,
-    type: document.getElementById('feeder-type').value,
-    url: document.getElementById('feeder-url').value,
-    schedule: document.getElementById('feeder-schedule').value,
-    active: true,
-  };
-  if (!feeder.name) {
-    toast('Vui lòng nhập tên nguồn', 'error');
+  const value = parseInt(document.getElementById('feeder-epm-slider')?.value || '3', 10);
+  try {
+    await apiPost('/vn_feeder/control', {
+      action: 'update_config',
+      events_per_min: value,
+    });
+    toast('Đã cập nhật cấu hình feeder', 'success');
+    await loadFeederStatus();
+  } catch (e) {
+    toast(`Lỗi cập nhật feeder: ${e.message}`, 'error');
+  }
+}
+
+async function runFeederControl(action) {
+  const value = parseInt(document.getElementById('feeder-epm-slider')?.value || `${feederStatus.events_per_min || 3}`, 10);
+  const payload = { action };
+  if (Number.isFinite(value)) {
+    payload.events_per_min = value;
+  }
+  try {
+    await apiPost('/vn_feeder/control', payload);
+    toast(`Đã gửi lệnh feeder: ${action}`, 'success');
+    setTimeout(() => loadFeederStatus(), 1200);
+  } catch (e) {
+    toast(`Feeder action thất bại: ${e.message}`, 'error');
+  }
+}
+
+async function loadFeederStatus() {
+  try {
+    const data = await api('/vn_feeder/status');
+    feederStatus = {
+      running: !!data.running,
+      events_per_min: data.events_per_min || feederStatus.events_per_min || 3,
+      total_events_today: data.total_events_today || 0,
+      avg_events_per_min: data.avg_events_per_min || 0,
+      last_event_at: data.last_event_at || '',
+    };
+  } catch (e) {
+    toast('Không tải được trạng thái feeder', 'error');
     return;
   }
-  settings.feeders = settings.feeders || [];
-  settings.feeders.push(feeder);
-  try {
-    await apiPost('/settings/feeders', feeder);
-    toast('Đã thêm nguồn dữ liệu', 'success');
+  if (activeSection === 'feeder') {
     renderSection('feeder');
-  } catch (e) {
-    toast('Lỗi thêm nguồn', 'error');
   }
 }
 
@@ -568,28 +610,6 @@ function exportSettings() {
   a.click();
   URL.revokeObjectURL(url);
   toast('Đã xuất cài đặt', 'success');
-}
-
-// Global helpers for feeder management
-window.toggleFeeder = async function (index) {
-  if (settings.feeders && settings.feeders[index]) {
-    settings.feeders[index].active = !settings.feeders[index].active;
-    toast(`Feeder ${settings.feeders[index].active ? 'đã bật' : 'đã tắt'}`, 'info');
-    renderSection('feeder');
-  }
-};
-
-window.removeFeeder = async function (index) {
-  if (settings.feeders && settings.feeders[index]) {
-    settings.feeders.splice(index, 1);
-    toast('Đã xóa nguồn dữ liệu', 'info');
-    renderSection('feeder');
-  }
-};
-
-function addFeeder() {
-  // Scroll to form
-  document.getElementById('feeder-name')?.focus();
 }
 
 registerTab('settings', { init });

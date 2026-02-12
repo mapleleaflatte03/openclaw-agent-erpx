@@ -131,23 +131,20 @@ async function handleFiles(files) {
   let done = 0;
   for (const file of fileArr) {
     try {
-      // Upload file via FormData to attachments, then trigger ingest
+      // Upload binary directly; backend persists attachment + OCR voucher mirror row.
       const formData = new FormData();
       formData.append('file', file);
-      formData.append('source', 'upload');
+      formData.append('source_tag', 'ocr_upload');
 
-      // POST FormData to attachments endpoint
       const uploadRes = await fetch(`${window.ERPX_API_BASE || '/agent/v1'}/attachments`, {
         method: 'POST',
         body: formData,
       });
-      const uploaded = await uploadRes.json();
-
-      // Trigger voucher_ingest run referencing the uploaded file
-      const run = await apiPost('/runs', {
-        run_type: 'voucher_ingest',
-        payload: { filename: file.name, source: 'upload', size: file.size, attachment_id: uploaded.id || null },
-      });
+      if (!uploadRes.ok) {
+        const errText = await uploadRes.text();
+        throw new Error(`HTTP ${uploadRes.status}: ${errText.slice(0, 160)}`);
+      }
+      await uploadRes.json();
 
       done++;
       countEl.textContent = `${done}/${fileArr.length}`;
@@ -158,7 +155,7 @@ async function handleFiles(files) {
     }
   }
 
-  toast(`Đã ingest ${done} file`, 'success');
+  toast(`Đã upload ${done} file`, 'success');
   setTimeout(() => {
     card.classList.add('hidden');
     bar.style.width = '0%';
@@ -169,7 +166,7 @@ async function handleFiles(files) {
 async function loadResults() {
   const tbody = document.getElementById('ocr-results-body');
   try {
-    const data = await api(`/acct/vouchers?limit=${PAGE_SIZE}&offset=${(currentPage - 1) * PAGE_SIZE}`);
+    const data = await api(`/acct/vouchers?source=ocr_upload&limit=${PAGE_SIZE}&offset=${(currentPage - 1) * PAGE_SIZE}`);
     ocrResults = data.items || data.vouchers || [];
     const total = data.total || ocrResults.length;
 
@@ -184,12 +181,12 @@ async function loadResults() {
         (v) => `
       <tr data-id="${v.id}">
         <td class="truncate" style="max-width:100px">${v.id}</td>
-        <td class="truncate" style="max-width:180px">${v.original_filename || v.source_ref || '—'}</td>
+        <td class="truncate" style="max-width:180px">${v.original_filename || v.source_ref || v.voucher_no || '—'}</td>
         <td><span class="badge badge-info">${v.source_tag || v.source || '—'}</span></td>
         <td>${renderConfidenceGauge(v.confidence ?? v.ocr_confidence)}</td>
         <td><span class="badge ${statusBadgeClass(v.status)}">${v.status || 'processed'}</span></td>
-        <td class="text-right">${formatVND(v.total_amount)}</td>
-        <td class="text-right">${formatVND(v.vat_amount)}</td>
+        <td class="text-right">${formatVND(v.total_amount ?? v.amount)}</td>
+        <td class="text-right">${formatVND(v.vat_amount ?? 0)}</td>
         <td class="text-center">${v.line_items_count ?? v.line_count ?? '—'}</td>
         <td>
           <button class="btn btn-icon btn-outline" data-action="preview" data-id="${v.id}" title="Xem chi tiết">👁️</button>

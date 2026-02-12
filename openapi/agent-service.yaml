@@ -335,6 +335,14 @@ paths:
   /agent/v1/attachments:
     post:
       summary: Post Attachment
+      description: 'Create attachment from multipart upload, with legacy JSON fallback.
+
+
+        Multipart mode (preferred by UI):
+
+        - field: ``file``
+
+        - optional: ``source_tag`` / ``source``'
       operationId: post_attachment_agent_v1_attachments_post
       parameters:
       - name: X-API-Key
@@ -346,13 +354,10 @@ paths:
           - type: 'null'
           title: X-Api-Key
       requestBody:
-        required: true
         content:
-          application/json:
+          multipart/form-data:
             schema:
-              type: object
-              additionalProperties: true
-              title: Body
+              $ref: '#/components/schemas/Body_post_attachment_agent_v1_attachments_post'
       responses:
         '200':
           description: Successful Response
@@ -1215,6 +1220,122 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /agent/v1/acct/bank_match:
+    post:
+      summary: Bank Match
+      operationId: bank_match_agent_v1_acct_bank_match_post
+      parameters:
+      - name: X-API-Key
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Api-Key
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BankMatchIn'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Bank Match Agent V1 Acct Bank Match Post
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /agent/v1/acct/bank_match/{bank_tx_id}/unmatch:
+    post:
+      summary: Bank Unmatch
+      operationId: bank_unmatch_agent_v1_acct_bank_match__bank_tx_id__unmatch_post
+      parameters:
+      - name: bank_tx_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Bank Tx Id
+      - name: X-API-Key
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Api-Key
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BankUnmatchIn'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Bank Unmatch Agent V1 Acct Bank Match  Bank Tx Id  Unmatch
+                  Post
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /agent/v1/acct/bank_transactions/{bank_tx_id}/ignore:
+    post:
+      summary: Ignore Bank Transaction
+      operationId: ignore_bank_transaction_agent_v1_acct_bank_transactions__bank_tx_id__ignore_post
+      parameters:
+      - name: bank_tx_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Bank Tx Id
+      - name: X-API-Key
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Api-Key
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BankIgnoreIn'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Ignore Bank Transaction Agent V1 Acct Bank Transactions  Bank
+                  Tx Id  Ignore Post
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /agent/v1/acct/soft_check_results:
     get:
       summary: List Soft Check Results
@@ -1562,6 +1683,14 @@ paths:
           - type: string
           - type: 'null'
           title: Source
+      - name: period
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Period
       - name: limit
         in: query
         required: false
@@ -1569,6 +1698,13 @@ paths:
           type: integer
           default: 50
           title: Limit
+      - name: offset
+        in: query
+        required: false
+        schema:
+          type: integer
+          default: 0
+          title: Offset
       - name: X-API-Key
         in: header
         required: false
@@ -1917,8 +2053,7 @@ paths:
             application/json:
               schema:
                 type: object
-                additionalProperties:
-                  type: string
+                additionalProperties: true
                 title: Response Vn Feeder Control Agent V1 Vn Feeder Control Post
         '422':
           description: Validation Error
@@ -2007,15 +2142,17 @@ paths:
         in: query
         required: false
         schema:
-          type: string
-          default: balance_sheet
+          anyOf:
+          - type: string
+          - type: 'null'
           title: Type
       - name: period
         in: query
         required: false
         schema:
-          type: string
-          default: '2026'
+          anyOf:
+          - type: string
+          - type: 'null'
           title: Period
       - name: X-API-Key
         in: header
@@ -2085,7 +2222,7 @@ paths:
         in: path
         required: true
         schema:
-          type: integer
+          type: string
           title: Report Id
       - name: X-API-Key
         in: header
@@ -2368,6 +2505,66 @@ components:
       - resolution
       - resolved_by
       title: AnomalyResolveIn
+    BankIgnoreIn:
+      properties:
+        ignored_by:
+          type: string
+          title: Ignored By
+          default: web-user
+      type: object
+      title: BankIgnoreIn
+    BankMatchIn:
+      properties:
+        bank_tx_id:
+          type: string
+          title: Bank Tx Id
+        voucher_id:
+          type: string
+          title: Voucher Id
+        method:
+          type: string
+          enum:
+          - manual
+          - auto
+          title: Method
+          default: manual
+        matched_by:
+          type: string
+          title: Matched By
+          default: web-user
+      type: object
+      required:
+      - bank_tx_id
+      - voucher_id
+      title: BankMatchIn
+    BankUnmatchIn:
+      properties:
+        unmatched_by:
+          type: string
+          title: Unmatched By
+          default: web-user
+      type: object
+      title: BankUnmatchIn
+    Body_post_attachment_agent_v1_attachments_post:
+      properties:
+        file:
+          anyOf:
+          - type: string
+            format: binary
+          - type: 'null'
+          title: File
+        source_tag:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Source Tag
+        source:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Source
+      type: object
+      title: Body_post_attachment_agent_v1_attachments_post
     ContractApprovalCreateRequest:
       properties:
         decision:
@@ -2921,7 +3118,6 @@ components:
         period:
           type: string
           title: Period
-          default: '2026'
         format:
           type: string
           title: Format
@@ -2934,6 +3130,7 @@ components:
       type: object
       required:
       - type
+      - period
       title: ReportGenerateBody
     ReportPreviewBody:
       properties:
@@ -2947,10 +3144,10 @@ components:
         period:
           type: string
           title: Period
-          default: '2026'
       type: object
       required:
       - type
+      - period
       title: ReportPreviewBody
     TierBFeedbackCreateRequest:
       properties:
@@ -3060,6 +3257,7 @@ components:
           - start
           - stop
           - inject_now
+          - update_config
           title: Action
           default: start
         target_events_per_min:
@@ -3069,5 +3267,12 @@ components:
             minimum: 1.0
           - type: 'null'
           title: Target Events Per Min
+        events_per_min:
+          anyOf:
+          - type: integer
+            maximum: 10.0
+            minimum: 1.0
+          - type: 'null'
+          title: Events Per Min
       type: object
       title: VnFeederControlBody

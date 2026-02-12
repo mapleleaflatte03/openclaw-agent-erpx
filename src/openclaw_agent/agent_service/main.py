@@ -5,11 +5,13 @@ import os
 import re as _re
 import time
 from datetime import date, datetime
+from hashlib import sha256
+from pathlib import Path
 from typing import Any, Literal
 
 import httpx
 import redis
-from fastapi import Depends, FastAPI, Header, HTTPException, Request
+from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile
 from fastapi.responses import PlainTextResponse
 from prometheus_client import CONTENT_TYPE_LATEST, CollectorRegistry, Gauge, generate_latest
 from pydantic import BaseModel, Field
@@ -642,26 +644,176 @@ def _insert_or_get_unique(session: Session, model, unique_filter, data: Any) -> 
     return data
 
 
+_ATTACH_UPLOAD_DIR = Path(os.getenv("AGENT_UPLOAD_DIR", "/tmp/openclaw_uploads"))
+_ATTACH_ALLOWED_EXT = {
+    ".pdf": "application/pdf",
+    ".xml": "application/xml",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".png": "image/png",
+}
+
+
+def _safe_filename(name: str) -> str:
+    base = os.path.basename(name or "").strip()
+    if not base:
+        return ""
+    return _re.sub(r"[^A-Za-z0-9._-]+", "_", base)
+
+
+def _resolve_upload_type(filename: str, declared: str | None) -> tuple[str, str]:
+    suffix = Path(filename).suffix.lower()
+    content_type = (declared or "").strip().lower()
+    if not content_type or content_type == "application/octet-stream":
+        content_type = _ATTACH_ALLOWED_EXT.get(suffix, "application/octet-stream")
+
+    is_pdf = suffix == ".pdf" or content_type == "application/pdf"
+    is_xml = suffix == ".xml" or content_type in {"application/xml", "text/xml"}
+    is_image = suffix in {".jpg", ".jpeg", ".png"} or content_type.startswith("image/")
+
+    if is_pdf:
+        return "pdf_ocr", "application/pdf"
+    if is_image:
+        mapped = _ATTACH_ALLOWED_EXT.get(suffix, content_type if content_type.startswith("image/") else "image/jpeg")
+        return "image_ocr", mapped
+    if is_xml:
+        return "xml_parse", "application/xml"
+    raise HTTPException(
+        status_code=400,
+        detail="Định dạng chưa hỗ trợ. Chỉ hỗ trợ PDF, XML, JPG, JPEG, PNG.",
+    )
+
+
 @app.post("/agent/v1/attachments", dependencies=[Depends(require_api_key)])
-def post_attachment(body: dict[str, Any], session: Session = Depends(get_session)) -> dict[str, Any]:
-    att = AgentAttachment(
+async def post_attachment(
+    request: Request,
+    file: UploadFile | None = File(default=None),
+    source_tag: str | None = Form(default=None),
+    source: str | None = Form(default=None),
+    session: Session = Depends(get_session),
+) -> dict[str, Any]:
+    """Create attachment from multipart upload, with legacy JSON fallback.
+
+    Multipart mode (preferred by UI):
+    - field: ``file``
+    - optional: ``source_tag`` / ``source``
+    """
+    # Legacy JSON mode for internal callers.
+    if file is None:
+        try:
+            body = await request.json()
+        except Exception as exc:  # pragma: no cover - malformed request body
+            raise HTTPException(status_code=400, detail="Body JSON không hợp lệ") from exc
+
+        required = ("erp_object_type", "erp_object_id", "file_uri", "file_hash", "run_id")
+        missing = [k for k in required if not body.get(k)]
+        if missing:
+            raise HTTPException(status_code=400, detail=f"Thiếu trường bắt buộc: {', '.join(missing)}")
+
+        att = AgentAttachment(
+            id=new_uuid(),
+            erp_object_type=str(body["erp_object_type"]),
+            erp_object_id=str(body["erp_object_id"]),
+            file_uri=str(body["file_uri"]),
+            file_hash=str(body["file_hash"]),
+            matched_by=str(body.get("matched_by", "rule")),
+            run_id=str(body["run_id"]),
+        )
+        out = _insert_or_get_unique(
+            session,
+            AgentAttachment,
+            (AgentAttachment.file_hash == att.file_hash)
+            & (AgentAttachment.erp_object_type == att.erp_object_type)
+            & (AgentAttachment.erp_object_id == att.erp_object_id),
+            att,
+        )
+        return {
+            "id": out.id,
+            "filename": body.get("filename") or body.get("file_name") or "",
+            "source_tag": body.get("source_tag") or "legacy",
+            "status": "stored",
+            "created_at": out.created_at,
+            "has_file": bool(out.file_uri),
+        }
+
+    safe_name = _safe_filename(file.filename or "")
+    if not safe_name:
+        raise HTTPException(status_code=400, detail="Tên tệp không hợp lệ")
+
+    blob = await file.read()
+    if not blob:
+        raise HTTPException(status_code=400, detail="Tệp rỗng")
+
+    pipeline, normalized_type = _resolve_upload_type(safe_name, file.content_type)
+    if pipeline == "xml_parse":
+        try:
+            blob.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise HTTPException(status_code=400, detail="Tệp XML phải mã hóa UTF-8") from exc
+
+    file_hash = sha256(blob).hexdigest()
+    _ATTACH_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+    suffix = Path(safe_name).suffix.lower() or ".bin"
+    stored_path = _ATTACH_UPLOAD_DIR / f"{file_hash}{suffix}"
+    if not stored_path.exists():
+        stored_path.write_bytes(blob)
+
+    now = utcnow()
+    voucher_id = new_uuid()
+    run_id = new_uuid()
+    tag = (source_tag or source or "ocr_upload").strip() or "ocr_upload"
+
+    attachment = AgentAttachment(
         id=new_uuid(),
-        erp_object_type=body["erp_object_type"],
-        erp_object_id=body["erp_object_id"],
-        file_uri=body["file_uri"],
-        file_hash=body["file_hash"],
-        matched_by=body.get("matched_by", "rule"),
-        run_id=body["run_id"],
+        erp_object_type="voucher_upload",
+        erp_object_id=voucher_id,
+        file_uri=str(stored_path),
+        file_hash=file_hash,
+        matched_by="ocr" if pipeline in {"pdf_ocr", "image_ocr"} else "rule",
+        run_id=run_id,
     )
-    out = _insert_or_get_unique(
-        session,
-        AgentAttachment,
-        (AgentAttachment.file_hash == att.file_hash)
-        & (AgentAttachment.erp_object_type == att.erp_object_type)
-        & (AgentAttachment.erp_object_id == att.erp_object_id),
-        att,
+    session.add(attachment)
+
+    payload = {
+        "attachment_id": attachment.id,
+        "original_filename": safe_name,
+        "source_tag": tag,
+        "status": "uploaded",
+        "content_type": normalized_type,
+        "size_bytes": len(blob),
+        "pipeline": pipeline,
+    }
+    voucher = AcctVoucher(
+        id=voucher_id,
+        erp_voucher_id=f"upload-{voucher_id[:8]}",
+        voucher_no=Path(safe_name).stem[:64] or f"UPLOAD-{voucher_id[:8]}",
+        voucher_type="other",
+        date=now.date().isoformat(),
+        amount=0.0,
+        currency="VND",
+        partner_name=None,
+        partner_tax_code=None,
+        description=f"Tệp tải lên: {safe_name}",
+        has_attachment=True,
+        raw_payload=payload,
+        source=tag,
+        type_hint="invoice_vat" if pipeline in {"pdf_ocr", "image_ocr"} else "other",
+        run_id=run_id,
     )
-    return {"id": out.id, "has_file": bool(out.file_uri)}
+    session.add(voucher)
+    session.commit()
+
+    return {
+        "id": attachment.id,
+        "attachment_id": attachment.id,
+        "voucher_id": voucher.id,
+        "filename": safe_name,
+        "source_tag": tag,
+        "status": payload["status"],
+        "created_at": now,
+        "pipeline": pipeline,
+        "content_type": normalized_type,
+    }
 
 
 @app.post("/agent/v1/exports", dependencies=[Depends(require_api_key)])
@@ -1597,6 +1749,79 @@ def list_bank_transactions(
     }
 
 
+class BankMatchIn(BaseModel):
+    bank_tx_id: str
+    voucher_id: str
+    method: Literal["manual", "auto"] = "manual"
+    matched_by: str = "web-user"
+
+
+@app.post("/agent/v1/acct/bank_match", dependencies=[Depends(require_api_key)])
+def bank_match(
+    body: BankMatchIn,
+    session: Session = Depends(get_session),
+) -> dict[str, Any]:
+    tx = session.get(AcctBankTransaction, body.bank_tx_id)
+    if tx is None:
+        raise HTTPException(status_code=404, detail="Không tìm thấy giao dịch ngân hàng")
+
+    voucher = session.get(AcctVoucher, body.voucher_id)
+    if voucher is None:
+        raise HTTPException(status_code=404, detail="Không tìm thấy chứng từ")
+
+    status_val = "matched_auto" if body.method == "auto" else "matched_manual"
+    tx.matched_voucher_id = voucher.id
+    tx.match_status = status_val
+    tx.run_id = tx.run_id or f"match-{new_uuid()[:8]}"
+    session.commit()
+
+    return {
+        "bank_tx_id": tx.id,
+        "voucher_id": voucher.id,
+        "match_status": tx.match_status,
+        "matched_by": body.matched_by,
+    }
+
+
+class BankUnmatchIn(BaseModel):
+    unmatched_by: str = "web-user"
+
+
+@app.post("/agent/v1/acct/bank_match/{bank_tx_id}/unmatch", dependencies=[Depends(require_api_key)])
+def bank_unmatch(
+    bank_tx_id: str,
+    body: BankUnmatchIn,
+    session: Session = Depends(get_session),
+) -> dict[str, Any]:
+    tx = session.get(AcctBankTransaction, bank_tx_id)
+    if tx is None:
+        raise HTTPException(status_code=404, detail="Không tìm thấy giao dịch ngân hàng")
+
+    tx.matched_voucher_id = None
+    tx.match_status = "unmatched"
+    session.commit()
+    return {"bank_tx_id": tx.id, "match_status": tx.match_status, "unmatched_by": body.unmatched_by}
+
+
+class BankIgnoreIn(BaseModel):
+    ignored_by: str = "web-user"
+
+
+@app.post("/agent/v1/acct/bank_transactions/{bank_tx_id}/ignore", dependencies=[Depends(require_api_key)])
+def ignore_bank_transaction(
+    bank_tx_id: str,
+    body: BankIgnoreIn,
+    session: Session = Depends(get_session),
+) -> dict[str, Any]:
+    tx = session.get(AcctBankTransaction, bank_tx_id)
+    if tx is None:
+        raise HTTPException(status_code=404, detail="Không tìm thấy giao dịch ngân hàng")
+
+    tx.match_status = "ignored"
+    session.commit()
+    return {"bank_tx_id": tx.id, "match_status": tx.match_status, "ignored_by": body.ignored_by}
+
+
 # ---------------------------------------------------------------------------
 # Phase 2: Extended accounting endpoints
 # ---------------------------------------------------------------------------
@@ -1791,7 +2016,23 @@ def submit_qna_feedback(
     if row is None:
         raise HTTPException(status_code=404, detail="QnA audit not found")
 
-    feedback_val = str(payload.get("feedback", "")).strip()
+    # Backward compatibility: accept both canonical feedback strings and
+    # legacy numeric rating values from older UI builds.
+    feedback_val = str(payload.get("feedback", "")).strip().lower()
+    if not feedback_val:
+        rating = payload.get("rating")
+        if isinstance(rating, (int, float)):
+            feedback_val = "helpful" if float(rating) > 0 else "not_helpful" if float(rating) < 0 else ""
+        elif isinstance(rating, str):
+            feedback_val = {
+                "up": "helpful",
+                "down": "not_helpful",
+                "1": "helpful",
+                "-1": "not_helpful",
+                "helpful": "helpful",
+                "not_helpful": "not_helpful",
+            }.get(rating.strip().lower(), "")
+
     if feedback_val not in ("helpful", "not_helpful"):
         raise HTTPException(status_code=422, detail="feedback must be 'helpful' or 'not_helpful'")
 
@@ -1809,37 +2050,67 @@ def submit_qna_feedback(
 def list_vouchers(
     classification_tag: str | None = None,
     source: str | None = None,
+    period: str | None = None,
     limit: int = 50,
+    offset: int = 0,
     session: Session = Depends(get_session),
 ) -> dict[str, Any]:
     """List AcctVoucher rows with optional filter by classification_tag or source."""
-    q = select(AcctVoucher).order_by(AcctVoucher.synced_at.desc()).limit(min(limit, 200))
+    filters = []
     if classification_tag:
-        q = q.where(AcctVoucher.classification_tag == classification_tag)
+        filters.append(AcctVoucher.classification_tag == classification_tag)
     if source:
-        q = q.where(AcctVoucher.source == source)
+        filters.append(AcctVoucher.source == source)
+    if period:
+        if not _re.fullmatch(r"\d{4}-(0[1-9]|1[0-2])", period):
+            raise HTTPException(status_code=400, detail="period phải theo định dạng YYYY-MM")
+        filters.append(AcctVoucher.date.like(period + "%"))
+
+    q = (
+        select(AcctVoucher)
+        .where(*filters)
+        .order_by(AcctVoucher.synced_at.desc())
+        .limit(min(limit, 200))
+        .offset(max(offset, 0))
+    )
+    total = session.execute(select(func.count()).select_from(AcctVoucher).where(*filters)).scalar() or 0
     rows = session.execute(q).scalars().all()
+    items = []
+    for r in rows:
+        payload = r.raw_payload if isinstance(r.raw_payload, dict) else {}
+        vat_amount = payload.get("vat_amount", 0)
+        line_items = payload.get("line_items", [])
+        items.append({
+            "id": r.id,
+            "voucher_id": r.id,  # backward-compatible alias used in legacy UI/tests
+            "voucher_no": r.voucher_no,
+            "voucher_type": r.voucher_type,
+            "date": r.date,
+            "amount": r.amount,
+            "total_amount": r.amount,
+            "vat_amount": vat_amount if isinstance(vat_amount, (int, float)) else 0,
+            "currency": r.currency,
+            "partner_name": r.partner_name,
+            "partner_tax_code": getattr(r, "partner_tax_code", None),
+            "description": r.description,
+            "source": getattr(r, "source", None),
+            "source_tag": payload.get("source_tag") or getattr(r, "source", None),
+            "source_ref": payload.get("attachment_id"),
+            "original_filename": payload.get("original_filename"),
+            "confidence": payload.get("ocr_confidence"),
+            "status": payload.get("status", "processed"),
+            "line_items_count": len(line_items) if isinstance(line_items, list) else payload.get("line_items_count"),
+            "type_hint": getattr(r, "type_hint", None),
+            "classification_tag": getattr(r, "classification_tag", None),
+            "has_attachment": r.has_attachment,
+            "synced_at": r.synced_at,
+            "run_id": r.run_id,
+        })
     return {
-        "items": [
-            {
-                "id": r.id,
-                "voucher_no": r.voucher_no,
-                "voucher_type": r.voucher_type,
-                "date": r.date,
-                "amount": r.amount,
-                "currency": r.currency,
-                "partner_name": r.partner_name,
-                "partner_tax_code": getattr(r, "partner_tax_code", None),
-                "description": r.description,
-                "source": getattr(r, "source", None),
-                "type_hint": getattr(r, "type_hint", None),
-                "classification_tag": getattr(r, "classification_tag", None),
-                "has_attachment": r.has_attachment,
-                "synced_at": r.synced_at,
-                "run_id": r.run_id,
-            }
-            for r in rows
-        ]
+        "items": items,
+        "total": int(total),
+        "limit": min(limit, 200),
+        "offset": max(offset, 0),
     }
 
 
@@ -2215,8 +2486,9 @@ _VN_FEEDER_CACHE = os.getenv("VN_FEEDER_CACHE_DIR", "/data/vn_feeder_cache")
 
 
 class VnFeederControlBody(BaseModel):
-    action: Literal["start", "stop", "inject_now"] = "start"
+    action: Literal["start", "stop", "inject_now", "update_config"] = "start"
     target_events_per_min: int | None = Field(None, ge=1, le=10)
+    events_per_min: int | None = Field(None, ge=1, le=10)
 
 
 @app.get("/agent/v1/vn_feeder/status", dependencies=[Depends(require_api_key)])
@@ -2224,6 +2496,9 @@ def vn_feeder_status() -> dict[str, Any]:
     """Return current VN feeder status from the status file."""
     import json as _json
 
+    from openclaw_agent.agent_service.vn_feeder_engine import (
+        get_target_events_per_min as _feeder_target_epm,
+    )
     from openclaw_agent.agent_service.vn_feeder_engine import is_running as _feeder_is_running
 
     status_path = os.path.join(_VN_FEEDER_CACHE, "feeder_status.json")
@@ -2233,11 +2508,13 @@ def vn_feeder_status() -> dict[str, Any]:
                 data = _json.loads(fh.read())
             # Ensure running state reflects actual thread state
             data["running"] = _feeder_is_running()
+            data["events_per_min"] = _feeder_target_epm()
             return data
         except Exception:
             pass
     return {
         "running": _feeder_is_running(),
+        "events_per_min": _feeder_target_epm(),
         "total_events_today": 0,
         "last_event_at": "",
         "avg_events_per_min": 0,
@@ -2247,10 +2524,16 @@ def vn_feeder_status() -> dict[str, Any]:
 
 
 @app.post("/agent/v1/vn_feeder/control", dependencies=[Depends(require_api_key)])
-def vn_feeder_control(body: VnFeederControlBody) -> dict[str, str]:
+def vn_feeder_control(body: VnFeederControlBody) -> dict[str, Any]:
     """Control the VN feeder background thread — start/stop/inject."""
     from openclaw_agent.agent_service.vn_feeder_engine import (
+        get_target_events_per_min as _feeder_target_epm,
+    )
+    from openclaw_agent.agent_service.vn_feeder_engine import (
         inject_now as _feeder_inject,
+    )
+    from openclaw_agent.agent_service.vn_feeder_engine import (
+        set_target_events_per_min as _feeder_set_epm,
     )
     from openclaw_agent.agent_service.vn_feeder_engine import (
         start_feeder as _feeder_start,
@@ -2259,14 +2542,18 @@ def vn_feeder_control(body: VnFeederControlBody) -> dict[str, str]:
         stop_feeder as _feeder_stop,
     )
 
-    epm = body.target_events_per_min
+    epm = body.events_per_min or body.target_events_per_min
     if body.action == "start":
         _feeder_start(target_epm=epm)
     elif body.action == "stop":
         _feeder_stop()
     elif body.action == "inject_now":
         _feeder_inject(target_epm=epm)
-    return {"status": "ok", "action": body.action}
+    elif body.action == "update_config":
+        if epm is None:
+            raise HTTPException(status_code=400, detail="events_per_min là bắt buộc cho action=update_config")
+        _feeder_set_epm(epm)
+    return {"status": "ok", "action": body.action, "events_per_min": _feeder_target_epm()}
 
 
 # ---------------------------------------------------------------------------
@@ -2302,10 +2589,27 @@ def reports_history(
     }
 
 
+_REPORT_TYPES = {"balance_sheet", "income_statement", "cashflow", "notes"}
+
+
+def _validate_report_inputs(report_type: str | None, period: str | None) -> tuple[str, str]:
+    rt = (report_type or "").strip().lower()
+    pd = (period or "").strip()
+    if not rt or rt in {"undefined", "null"}:
+        raise HTTPException(status_code=400, detail="Thiếu loại báo cáo (type)")
+    if rt not in _REPORT_TYPES:
+        raise HTTPException(status_code=400, detail=f"type không hợp lệ: {rt}")
+    if not pd or pd in {"undefined", "null"}:
+        raise HTTPException(status_code=400, detail="Thiếu kỳ báo cáo (period)")
+    if not _re.fullmatch(r"\d{4}-(0[1-9]|1[0-2])", pd):
+        raise HTTPException(status_code=400, detail="period phải theo định dạng YYYY-MM")
+    return rt, pd
+
+
 class ReportPreviewBody(BaseModel):
     type: str
     standard: str = "VAS"
-    period: str = "2026"
+    period: str
 
 
 @app.post("/agent/v1/reports/preview", dependencies=[Depends(require_api_key)])
@@ -2314,19 +2618,16 @@ def reports_preview(
     session: Session = Depends(get_session),
 ) -> dict[str, Any]:
     """Generate a preview of a report based on current data."""
-    report_type = body.type
-    period = body.period
-    standard = body.standard
+    report_type, period = _validate_report_inputs(body.type, body.period)
+    standard = (body.standard or "VAS").strip() or "VAS"
 
-    # Fetch summary data from the most recent snapshot or generate from live data
     snapshot = session.execute(
         select(AcctReportSnapshot)
         .where(AcctReportSnapshot.report_type == report_type)
         .where(AcctReportSnapshot.period == period)
         .order_by(AcctReportSnapshot.created_at.desc())
         .limit(1)
-    ).scalar()
-
+    ).scalar_one_or_none()
     if snapshot and snapshot.summary_json:
         return {
             "html": f"<pre>{json.dumps(snapshot.summary_json, ensure_ascii=False, indent=2)}</pre>",
@@ -2335,38 +2636,44 @@ def reports_preview(
             "snapshot_id": snapshot.id,
         }
 
-    # Generate from live voucher/journal data if no snapshot
     voucher_count = session.execute(
         select(func.count()).select_from(AcctVoucher).where(AcctVoucher.date.like(period + "%"))
     ).scalar() or 0
-
     journal_lines = session.execute(
         select(AcctJournalLine)
-        .join(AcctJournalProposal)
+        .join(AcctJournalProposal, AcctJournalProposal.id == AcctJournalLine.proposal_id)
         .where(AcctJournalProposal.status == "approved")
-        .limit(50)
+        .limit(500)
     ).scalars().all()
 
-    if voucher_count == 0 and not journal_lines:
-        raise HTTPException(status_code=404, detail=f"No data for period {period}")
-
-    # Aggregate by account
-    account_summary: dict[str, dict[str, float]] = {}
+    account_summary: dict[str, dict[str, float | str]] = {}
     for line in journal_lines:
         acc = line.account_code
         if acc not in account_summary:
             account_summary[acc] = {"debit": 0.0, "credit": 0.0, "name": line.account_name or acc}
-        account_summary[acc]["debit"] += float(line.debit_amount or 0)
-        account_summary[acc]["credit"] += float(line.credit_amount or 0)
+        account_summary[acc]["debit"] = float(account_summary[acc]["debit"]) + float(line.debit or 0)
+        account_summary[acc]["credit"] = float(account_summary[acc]["credit"]) + float(line.credit or 0)
+
+    issues: list[str] = []
+    if voucher_count == 0:
+        issues.append(f"Không có chứng từ cho kỳ {period}")
+    if not journal_lines:
+        issues.append("Không có bút toán đã duyệt để tổng hợp")
 
     data = {
         "period": period,
         "standard": standard,
         "report_type": report_type,
-        "voucher_count": voucher_count,
+        "voucher_count": int(voucher_count),
+        "issues": issues,
         "items": [
-            {"account": k, "name": v["name"], "debit": v["debit"], "credit": v["credit"]}
-            for k, v in sorted(account_summary.items())
+            {
+                "account": account,
+                "name": summary["name"],
+                "debit": float(summary["debit"]),
+                "credit": float(summary["credit"]),
+            }
+            for account, summary in sorted(account_summary.items())
         ],
     }
     return {
@@ -2378,53 +2685,44 @@ def reports_preview(
 
 @app.get("/agent/v1/reports/validate", dependencies=[Depends(require_api_key)])
 def reports_validate(
-    type: str = "balance_sheet",
-    period: str = "2026",
+    type: str | None = None,
+    period: str | None = None,
     session: Session = Depends(get_session),
 ) -> dict[str, Any]:
     """Validate report data before generation."""
-    checks = []
+    report_type, period_value = _validate_report_inputs(type, period)
 
-    # Check 1: Voucher data exists for period
     voucher_count = session.execute(
-        select(func.count()).select_from(AcctVoucher).where(AcctVoucher.date.like(period + "%"))
+        select(func.count()).select_from(AcctVoucher).where(AcctVoucher.date.like(period_value + "%"))
     ).scalar() or 0
-    checks.append({"name": "Dữ liệu kỳ kế toán", "passed": voucher_count > 0, "detail": f"{voucher_count} chứng từ"})
-
-    # Check 2: Journal proposals exist
     proposal_count = session.execute(
         select(func.count()).select_from(AcctJournalProposal).where(AcctJournalProposal.status == "approved")
     ).scalar() or 0
-    checks.append({"name": "Số dư đầu kỳ", "passed": proposal_count > 0, "detail": f"{proposal_count} bút toán"})
+    total_debit = float(session.execute(select(func.sum(AcctJournalLine.debit))).scalar() or 0)
+    total_credit = float(session.execute(select(func.sum(AcctJournalLine.credit))).scalar() or 0)
+    imbalance = abs(total_debit - total_credit)
 
-    # Check 3: Journal lines with amounts
-    total_debit = session.execute(
-        select(func.sum(AcctJournalLine.debit_amount))
-    ).scalar() or 0
-    checks.append({"name": "Phát sinh trong kỳ", "passed": total_debit > 0, "detail": f"{total_debit:,.0f} VND"})
-
-    # Check 4: Debit/Credit balance
-    total_credit = session.execute(
-        select(func.sum(AcctJournalLine.credit_amount))
-    ).scalar() or 0
-    is_balanced = abs(float(total_debit) - float(total_credit)) < 1
-    checks.append({"name": "Cân đối thử", "passed": is_balanced, "detail": f"Chênh lệch: {abs(float(total_debit) - float(total_credit)):,.0f}"})
-
-    # Check 5: VAS/IFRS compliance (simplified)
-    checks.append({"name": "Tuân thủ VAS/IFRS", "passed": True, "detail": "OK"})
-
+    checks = [
+        {"name": "Dữ liệu kỳ kế toán", "passed": voucher_count > 0, "detail": f"{voucher_count} chứng từ"},
+        {"name": "Số dư đầu kỳ", "passed": proposal_count > 0, "detail": f"{proposal_count} bút toán"},
+        {"name": "Phát sinh trong kỳ", "passed": total_debit > 0, "detail": f"{total_debit:,.0f} VND"},
+        {"name": "Cân đối thử", "passed": imbalance < 1, "detail": f"Chênh lệch: {imbalance:,.0f}"},
+        {"name": "Tuân thủ VAS/IFRS", "passed": True, "detail": "OK"},
+    ]
+    issues = [c for c in checks if not c["passed"]]
     return {
-        "period": period,
-        "report_type": type,
+        "period": period_value,
+        "report_type": report_type,
         "checks": checks,
-        "all_passed": all(c["passed"] for c in checks),
+        "issues": issues,
+        "all_passed": not issues,
     }
 
 
 class ReportGenerateBody(BaseModel):
     type: str
     standard: str = "VAS"
-    period: str = "2026"
+    period: str
     format: str = "pdf"
     options: dict[str, Any] = {}
 
@@ -2435,15 +2733,28 @@ def reports_generate(
     session: Session = Depends(get_session),
 ) -> dict[str, Any]:
     """Generate and save a report snapshot."""
-    # Create a new snapshot
+    report_type, period = _validate_report_inputs(body.type, body.period)
+    fmt = (body.format or "pdf").strip().lower() or "pdf"
+    standard = (body.standard or "VAS").strip() or "VAS"
+
+    latest = session.execute(
+        select(AcctReportSnapshot)
+        .where(AcctReportSnapshot.report_type == report_type)
+        .where(AcctReportSnapshot.period == period)
+        .order_by(AcctReportSnapshot.version.desc())
+        .limit(1)
+    ).scalar_one_or_none()
+    next_version = int(latest.version) + 1 if latest else 1
+
     snapshot = AcctReportSnapshot(
-        report_type=body.type,
-        period=body.period,
-        version=1,
+        id=new_uuid(),
+        report_type=report_type,
+        period=period,
+        version=next_version,
         summary_json={
-            "standard": body.standard,
-            "format": body.format,
-            "options": body.options,
+            "standard": standard,
+            "format": fmt,
+            "options": body.options or {},
             "generated_at": utcnow().isoformat(),
         },
         file_uri=None,
@@ -2454,9 +2765,11 @@ def reports_generate(
 
     return {
         "id": snapshot.id,
-        "type": body.type,
-        "period": body.period,
-        "format": body.format,
+        "report_id": snapshot.id,
+        "type": report_type,
+        "period": period,
+        "version": snapshot.version,
+        "format": fmt,
         "download_url": f"/agent/v1/reports/{snapshot.id}/download",
         "created_at": snapshot.created_at,
     }
@@ -2464,7 +2777,7 @@ def reports_generate(
 
 @app.get("/agent/v1/reports/{report_id}/download", dependencies=[Depends(require_api_key)])
 def reports_download(
-    report_id: int,
+    report_id: str,
     session: Session = Depends(get_session),
 ) -> dict[str, Any]:
     """Get download URL for a report."""
@@ -2472,11 +2785,9 @@ def reports_download(
     if not snapshot:
         raise HTTPException(status_code=404, detail="Report not found")
 
-    # If file_uri exists, return it
     if snapshot.file_uri:
         return {"url": snapshot.file_uri, "id": snapshot.id}
 
-    # Otherwise return the summary as JSON download
     return {
         "id": snapshot.id,
         "type": snapshot.report_type,
