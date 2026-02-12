@@ -394,6 +394,7 @@ _PERIOD_REQUIRED_RUN_TYPES = frozenset(
     }
 )
 _EXECUTOR_MODES = frozenset({"auto", "celery", "local"})
+_RUN_STALE_QUEUE_SECONDS = int(os.getenv("RUN_STALE_QUEUE_SECONDS", "45"))
 
 
 def _executor_mode() -> str:
@@ -500,6 +501,17 @@ def _mark_run_dispatch_failed(session: Session, run_id: str, detail: str) -> Non
     session.commit()
 
 
+def _is_stale_pending_run(run: AgentRun) -> bool:
+    if run.status not in {"queued", "running"}:
+        return False
+    if run.status == "running" and run.started_at is not None:
+        return False
+    if run.created_at is None:
+        return False
+    age_seconds = (utcnow() - run.created_at).total_seconds()
+    return age_seconds >= _RUN_STALE_QUEUE_SECONDS
+
+
 @app.post("/agent/v1/runs", dependencies=[Depends(require_api_key)])
 def create_run(
     body: dict[str, Any],
@@ -541,6 +553,38 @@ def create_run(
 
     existing = session.execute(select(AgentRun).where(AgentRun.idempotency_key == idem)).scalar_one_or_none()
     if existing:
+        if _is_stale_pending_run(existing):
+            readiness = _executor_readiness()
+            if not readiness["dispatch_ready"]:
+                raise HTTPException(
+                    status_code=503,
+                    detail=(
+                        "Run cũ đang pending nhưng không có executor để re-dispatch. "
+                        "Vui lòng thử lại sau."
+                    ),
+                )
+            try:
+                dispatch_info = _dispatch_run(
+                    existing.run_id,
+                    existing.run_type,
+                    preferred_executor=str(readiness["preferred_executor"]),
+                    allow_local_fallback=readiness["mode"] == "auto",
+                )
+                log.info("run_redispatched", run_id=existing.run_id, run_type=existing.run_type)
+                return {
+                    "run_id": existing.run_id,
+                    "status": existing.status,
+                    "idempotency_key": existing.idempotency_key,
+                    "redispatched": True,
+                    "executor": dispatch_info,
+                }
+            except HTTPException as exc:
+                _mark_run_dispatch_failed(session, existing.run_id, str(exc.detail))
+                raise
+            except Exception as exc:  # pragma: no cover - defensive
+                _mark_run_dispatch_failed(session, existing.run_id, str(exc))
+                raise HTTPException(status_code=503, detail=f"Không thể re-dispatch run cũ: {exc}") from exc
+
         return {"run_id": existing.run_id, "status": existing.status, "idempotency_key": existing.idempotency_key}
 
     readiness = _executor_readiness()
@@ -2594,11 +2638,32 @@ def execute_agent_command(
             select(AgentRun).where(AgentRun.idempotency_key == idem)
         ).scalar_one_or_none()
         if existing:
+            redispatched = False
+            dispatch_info: dict[str, Any] | None = None
+            if _is_stale_pending_run(existing):
+                try:
+                    dispatch_info = _dispatch_run(
+                        existing.run_id,
+                        existing.run_type,
+                        preferred_executor=str(readiness["preferred_executor"]),
+                        allow_local_fallback=readiness["mode"] == "auto",
+                    )
+                    redispatched = True
+                    log.info("command_run_redispatched", run_id=existing.run_id, run_type=existing.run_type)
+                except HTTPException as exc:
+                    _mark_run_dispatch_failed(session, existing.run_id, str(exc.detail))
+                    raise
+                except Exception as exc:  # pragma: no cover
+                    _mark_run_dispatch_failed(session, existing.run_id, str(exc))
+                    raise HTTPException(status_code=503, detail=f"Không thể re-dispatch run cũ: {exc}") from exc
+
             runs_created.append({
                 "run_id": existing.run_id,
                 "run_type": existing.run_type,
                 "status": existing.status,
                 "reused": True,
+                "redispatched": redispatched,
+                "executor": dispatch_info,
             })
             continue
 
