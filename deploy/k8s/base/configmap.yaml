@@ -32,8 +32,8 @@ data:
   MINIO_BUCKET_KB: "agent-kb"
   MINIO_BUCKET_DROP: "agent-drop"
 
-  # Auth
-  AGENT_AUTH_MODE: "api_key"
+  # Auth – none for intra-cluster UI→API; external gated by Caddy
+  AGENT_AUTH_MODE: "none"
 
   # Scheduler -> Agent API
   AGENT_BASE_URL: "http://agent-service:8000"

@@ -1,7 +1,7 @@
 /**
  * Reports Tab — VAS/IFRS report generation wizard
  */
-const { api, apiPost, formatDate, toast, registerTab, showModal, hideModal } = window.ERPX;
+const { api, apiPost, formatDate, toast, registerTab, openModal, closeModal } = window.ERPX;
 
 let initialized = false;
 let reportHistory = [];

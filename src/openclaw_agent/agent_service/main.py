@@ -2337,7 +2337,7 @@ def reports_preview(
 
     # Generate from live voucher/journal data if no snapshot
     voucher_count = session.execute(
-        select(func.count()).select_from(AcctVoucher).where(AcctVoucher.period == period)
+        select(func.count()).select_from(AcctVoucher).where(AcctVoucher.date.like(period + "%"))
     ).scalar() or 0
 
     journal_lines = session.execute(
@@ -2387,7 +2387,7 @@ def reports_validate(
 
     # Check 1: Voucher data exists for period
     voucher_count = session.execute(
-        select(func.count()).select_from(AcctVoucher).where(AcctVoucher.period == period)
+        select(func.count()).select_from(AcctVoucher).where(AcctVoucher.date.like(period + "%"))
     ).scalar() or 0
     checks.append({"name": "Dữ liệu kỳ kế toán", "passed": voucher_count > 0, "detail": f"{voucher_count} chứng từ"})
 

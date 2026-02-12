@@ -262,10 +262,9 @@ function severityBadge(sev) {
 }
 
 async function resolveAnomaly(id) {
-  const note = prompt('Ghi chú giải quyết:');
-  if (note === null) return;
+  const action = confirm('Bấm OK = Đã giải quyết, Cancel = Bỏ qua') ? 'resolved' : 'ignored';
   try {
-    await apiPost(`/acct/anomaly_flags/${id}/resolve`, { resolution: note, resolver: 'web-user' });
+    await apiPost(`/acct/anomaly_flags/${id}/resolve`, { resolution: action, resolved_by: 'web-user' });
     toast('Đã giải quyết rủi ro', 'success');
     await refresh();
   } catch (e) {

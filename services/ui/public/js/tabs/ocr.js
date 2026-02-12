@@ -131,20 +131,23 @@ async function handleFiles(files) {
   let done = 0;
   for (const file of fileArr) {
     try {
-      // Create FormData and upload
+      // Upload file via FormData to attachments, then trigger ingest
       const formData = new FormData();
       formData.append('file', file);
       formData.append('source', 'upload');
 
-      // POST to runs with voucher_ingest type
-      const run = await fetch('/agent/v1/runs', {
+      // POST FormData to attachments endpoint
+      const uploadRes = await fetch(`${window.ERPX_API_BASE || '/agent/v1'}/attachments`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          run_type: 'voucher_ingest',
-          payload: { filename: file.name, source: 'upload', size: file.size },
-        }),
-      }).then((r) => r.json());
+        body: formData,
+      });
+      const uploaded = await uploadRes.json();
+
+      // Trigger voucher_ingest run referencing the uploaded file
+      const run = await apiPost('/runs', {
+        run_type: 'voucher_ingest',
+        payload: { filename: file.name, source: 'upload', size: file.size, attachment_id: uploaded.id || null },
+      });
 
       done++;
       countEl.textContent = `${done}/${fileArr.length}`;

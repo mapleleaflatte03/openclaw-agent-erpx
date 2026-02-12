@@ -295,7 +295,8 @@ function showEditModal(id) {
 
 async function reviewProposal(id, action, note) {
   try {
-    await apiPost(`/acct/journal_proposals/${id}/review`, { action, note, reviewer: 'web-user' });
+    const status = action === 'approve' ? 'approved' : 'rejected';
+    await apiPost(`/acct/journal_proposals/${id}/review`, { status, reviewed_by: 'web-user' });
     toast(`Đã ${action === 'approve' ? 'duyệt' : 'từ chối'} bút toán`, 'success');
     loadProposals();
   } catch (e) {
