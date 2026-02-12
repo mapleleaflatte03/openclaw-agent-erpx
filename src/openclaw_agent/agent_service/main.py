@@ -3274,13 +3274,29 @@ def reports_generate(
         standard=standard,
         options=body.options or {},
     )
-    artifact_path = _write_report_artifact(
-        report_type=report_type,
-        period=period,
-        version=next_version,
-        fmt=fmt,
-        data=report_data,
-    )
+    effective_fmt = fmt
+    format_warning: str | None = None
+    try:
+        artifact_path = _write_report_artifact(
+            report_type=report_type,
+            period=period,
+            version=next_version,
+            fmt=effective_fmt,
+            data=report_data,
+        )
+    except HTTPException as exc:
+        if fmt == "pdf" and exc.status_code == 501:
+            effective_fmt = "xlsx"
+            format_warning = "Môi trường chưa hỗ trợ render PDF, hệ thống tự động xuất XLSX."
+            artifact_path = _write_report_artifact(
+                report_type=report_type,
+                period=period,
+                version=next_version,
+                fmt=effective_fmt,
+                data=report_data,
+            )
+        else:
+            raise
 
     snapshot = AcctReportSnapshot(
         id=new_uuid(),
@@ -3290,7 +3306,9 @@ def reports_generate(
         summary_json=report_data
         | {
             "standard": standard,
-            "format": fmt,
+            "format": effective_fmt,
+            "requested_format": fmt,
+            "format_warning": format_warning,
             "options": body.options or {},
             "generated_at": utcnow().isoformat(),
         },
@@ -3306,8 +3324,10 @@ def reports_generate(
         "type": report_type,
         "period": period,
         "version": snapshot.version,
-        "format": fmt,
-        "download_url": f"/agent/v1/reports/{snapshot.id}/download?format={fmt}",
+        "format": effective_fmt,
+        "requested_format": fmt,
+        "format_warning": format_warning,
+        "download_url": f"/agent/v1/reports/{snapshot.id}/download?format={effective_fmt}",
         "created_at": snapshot.created_at,
     }
 

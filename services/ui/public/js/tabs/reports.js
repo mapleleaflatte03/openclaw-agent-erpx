@@ -576,9 +576,13 @@ async function exportReport() {
       },
     });
 
+    const generatedFormat = resp.format || format;
+    if (resp.format_warning) {
+      toast(resp.format_warning, 'warning');
+    }
     const reportId = resp.report_id || resp.id;
     if (reportId) {
-      const url = buildReportDownloadUrl(reportId, format);
+      const url = buildReportDownloadUrl(reportId, generatedFormat);
       window.open(url, '_blank', 'noopener');
     } else if (resp.download_url) {
       window.open(resp.download_url, '_blank', 'noopener');
@@ -608,9 +612,12 @@ async function quickExport(type) {
       period,
       format: 'pdf',
     });
+    if (resp.format_warning) {
+      toast(resp.format_warning, 'warning');
+    }
     const reportId = resp.report_id || resp.id;
     if (reportId) {
-      window.open(buildReportDownloadUrl(reportId, 'pdf'), '_blank', 'noopener');
+      window.open(buildReportDownloadUrl(reportId, resp.format || 'pdf'), '_blank', 'noopener');
     } else if (resp.download_url) {
       window.open(resp.download_url, '_blank', 'noopener');
     }
