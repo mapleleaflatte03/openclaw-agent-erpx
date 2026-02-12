@@ -955,21 +955,58 @@ def _estimate_line_items(text: str) -> int:
 
 def _extract_total_amount(filename: str, text: str) -> float:
     joined = f"{filename}\n{text}"
-    # Prefer amount near total keywords first.
+    # Prefer amount near explicit total keywords. If a total keyword exists but
+    # parsed values are non-positive, keep 0.0 instead of falling back to
+    # arbitrary long numbers (e.g. tax code/invoice id).
     patterns = [
-        r"(?:tong\s*tien|tổng\s*tiền|thanh\s*tien|thành\s*tiền|total)\s*[:=]?\s*([0-9][0-9.,\s]{2,})",
-        r"(?:amount|grand\s*total)\s*[:=]?\s*([0-9][0-9.,\s]{2,})",
+        r"(?:tong\s*tien|tổng\s*tiền|thanh\s*tien|thành\s*tiền|total)\s*[:=]?\s*([0-9][0-9.,\s]{0,})",
+        r"(?:amount|grand\s*total)\s*[:=]?\s*([0-9][0-9.,\s]{0,})",
     ]
+    keyword_matches: list[float] = []
     for pat in patterns:
-        m = _re.search(pat, joined, flags=_re.I)
-        if not m:
+        for m in _re.finditer(pat, joined, flags=_re.I):
+            keyword_matches.append(_parse_amount_token(m.group(1)))
+    positives = [amt for amt in keyword_matches if amt > 0]
+    if positives:
+        return max(positives)
+    if keyword_matches:
+        return 0.0
+
+    # Conservative fallback: only parse numeric tokens from lines that look
+    # like monetary lines and avoid common id/tax-code lines.
+    money_ctx = {
+        "tong tien",
+        "tổng tiền",
+        "thanh tien",
+        "thành tiền",
+        "total",
+        "amount",
+        "vnd",
+        "₫",
+        "đ",
+        "dong",
+    }
+    id_ctx = {
+        "mst",
+        "tax code",
+        "ma so thue",
+        "mã số thuế",
+        "so hoa don",
+        "số hóa đơn",
+        "invoice no",
+        "invoice id",
+    }
+    candidates: list[float] = []
+    for line in joined.splitlines():
+        lowered = line.lower()
+        if any(token in lowered for token in id_ctx):
             continue
-        amt = _parse_amount_token(m.group(1))
-        if amt > 0:
-            return amt
-    # Fallback: largest numeric token in document.
-    candidates = [_parse_amount_token(tok) for tok in _re.findall(r"\d[\d.,\s]{3,}", joined)]
-    candidates = [val for val in candidates if val > 0]
+        if not any(token in lowered for token in money_ctx):
+            continue
+        for tok in _re.findall(r"\d[\d.,\s]{2,}", line):
+            amt = _parse_amount_token(tok)
+            if amt > 0:
+                candidates.append(amt)
     return max(candidates) if candidates else 0.0
 
 

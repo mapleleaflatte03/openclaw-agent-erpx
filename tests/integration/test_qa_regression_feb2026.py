@@ -409,6 +409,35 @@ def test_ocr_quality_gate_valid_vs_non_invoice(client_and_engine):
     assert by_id[noisy_body["voucher_id"]]["status"] in {"non_invoice", "quarantined", "low_quality"}
 
 
+def test_ocr_zero_total_not_overridden_by_tax_code(client_and_engine):
+    client, _engine = client_and_engine
+    xml = b"""
+    <invoice>
+      <meta>Hoa don VAT MST 0101234567</meta>
+      <invoice_no>INV-2026-0002</invoice_no>
+      <summary>Tong tien: 0</summary>
+    </invoice>
+    """.strip()
+    uploaded = client.post(
+        "/agent/v1/attachments",
+        files={"file": ("invoice-zero-total.xml", xml, "application/xml")},
+        data={"source_tag": "ocr_upload"},
+        headers=_HEADERS,
+    )
+    assert uploaded.status_code == 200, uploaded.text
+    body = uploaded.json()
+    assert body["status"] in {"quarantined", "non_invoice", "low_quality"}
+    assert "zero_amount" in (body.get("quality_reasons") or [])
+
+    vouchers = client.get("/agent/v1/acct/vouchers?source=ocr_upload&limit=20", headers=_HEADERS)
+    assert vouchers.status_code == 200, vouchers.text
+    items = vouchers.json().get("items", [])
+    row = next((item for item in items if item.get("id") == body.get("voucher_id")), None)
+    assert row is not None
+    assert float(row.get("total_amount") or 0) == 0
+    assert "zero_amount" in (row.get("quality_reasons") or [])
+
+
 def test_qna_data_driven_vs_knowledge_routing(client_and_engine):
     client, _engine = client_and_engine
     no_data = client.post(
