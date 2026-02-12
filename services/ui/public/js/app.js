@@ -140,10 +140,10 @@ function toast(message, type = 'info', duration = 4000) {
 function showLoading(text) {
   const overlay = document.getElementById('loading-overlay');
   document.getElementById('loading-text').textContent = text || t('loading');
-  overlay.hidden = false;
+  overlay.classList.add('visible');
 }
 function hideLoading() {
-  document.getElementById('loading-overlay').hidden = true;
+  document.getElementById('loading-overlay').classList.remove('visible');
 }
 
 // ───────────────────────────────────────────────────────────────

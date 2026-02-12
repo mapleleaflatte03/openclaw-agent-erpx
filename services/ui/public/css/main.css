@@ -613,13 +613,13 @@ ul, ol { list-style: none; }
 .overlay {
   position: fixed; inset: 0;
   background: rgba(0,0,0,.6);
-  display: flex; flex-direction: column;
+  display: none; flex-direction: column;
   align-items: center; justify-content: center;
   z-index: 500;
   color: #fff;
   gap: var(--sp-md);
 }
-.overlay[hidden] { display: none; }
+.overlay.visible { display: flex; }
 .spinner {
   width: 48px; height: 48px;
   border: 4px solid rgba(255,255,255,.3);
