@@ -1,7 +1,7 @@
 /**
  * Dashboard Tab — KPI cards, quick actions, activity timeline
  */
-const { api, formatVND, formatPercent, formatDateTime, toast, registerTab } = window.ERPX;
+const { api, apiPost, formatVND, formatPercent, formatDateTime, toast, registerTab } = window.ERPX;
 
 let initialized = false;
 let charts = {};
@@ -91,17 +91,22 @@ function bindDashboardEvents() {
     });
   });
 
-  document.getElementById('btn-ingest').addEventListener('click', () => {
+  document.getElementById('btn-ingest').addEventListener('click', async () => {
+    await runCommandAction({
+      command: 'trigger_voucher_ingest',
+      period: currentPeriod(),
+      payload: { source: 'manual_dashboard' },
+    });
     document.querySelector('.tab-btn[data-tab="ocr"]')?.click();
   });
 
   document.getElementById('btn-close-period').addEventListener('click', async () => {
-    try {
-      await window.ERPX.apiPost('/agent/commands', { command: 'run_goal', goal: 'close_period' });
-      toast('Đã bắt đầu đóng kỳ', 'success');
-    } catch (e) {
-      toast('Lỗi: ' + e.message, 'error');
-    }
+    await runCommandAction({
+      command: 'run_goal',
+      goal: 'close_period',
+      period: currentPeriod(),
+      payload: { source: 'manual_dashboard' },
+    });
   });
 
   document.getElementById('btn-gen-report').addEventListener('click', () => {
@@ -109,6 +114,31 @@ function bindDashboardEvents() {
   });
 
   document.getElementById('btn-refresh-dash').addEventListener('click', refresh);
+}
+
+function currentPeriod() {
+  const now = new Date();
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+}
+
+async function runCommandAction(payload) {
+  try {
+    const resp = await apiPost('/agent/commands', payload);
+    const runs = Array.isArray(resp?.runs) ? resp.runs : [];
+    if (!runs.length) {
+      toast('Lệnh chưa được cấu hình chain thực thi', 'warning');
+      return;
+    }
+    toast(`Đã tạo ${runs.length} run`, 'success');
+    await loadTimeline();
+  } catch (e) {
+    const msg = String(e?.message || '');
+    if (msg.includes('409') || msg.includes('no_chain')) {
+      toast('Chức năng chưa được cấu hình chain thực thi', 'warning');
+      return;
+    }
+    toast('Lỗi: ' + msg, 'error');
+  }
 }
 
 async function refresh() {

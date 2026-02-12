@@ -78,7 +78,7 @@ function render() {
             </div>
             <div class="flex-row justify-between">
               <span>Ngữ cảnh:</span>
-              <span id="ctx-token-count">0 tokens</span>
+              <span id="ctx-token-count">—</span>
             </div>
             <div class="flex-row justify-between">
               <span>Độ tin cậy:</span>
@@ -197,7 +197,7 @@ async function sendMessage() {
     }
 
     const answer = resp.answer || resp.response || 'Xin lỗi, tôi không thể trả lời câu hỏi này.';
-    addBubble('assistant', answer, resp);
+    addBubble('assistant', answer, resp.meta || resp);
     messages.push({ role: 'assistant', content: answer, qna_id: lastQnaId });
 
     // Update context panel
@@ -218,11 +218,13 @@ function addBubble(role, content, meta = null, isError = false) {
   let html = `<div class="bubble-content">${formatMarkdown(content)}</div>`;
 
   if (role === 'assistant' && meta) {
-    const confidence = meta.confidence != null ? (meta.confidence * 100).toFixed(0) : '—';
+    const confidenceValue = typeof meta.confidence === 'number' ? meta.confidence : null;
+    const confidence = confidenceValue != null ? `${(confidenceValue * 100).toFixed(0)}%` : '—';
+    const refItems = Array.isArray(meta.sources) ? meta.sources : [];
     html += `
       <div class="bubble-meta">
-        <span class="text-sm text-secondary">Độ tin cậy: ${confidence}%</span>
-        ${meta.sources ? `<span class="text-sm text-secondary">• ${meta.sources.length} nguồn</span>` : ''}
+        <span class="text-sm text-secondary">Độ tin cậy: ${confidence}</span>
+        ${refItems.length ? `<span class="text-sm text-secondary">• ${refItems.length} nguồn</span>` : ''}
       </div>
     `;
   }
@@ -242,24 +244,42 @@ function formatMarkdown(text) {
 }
 
 function updateContextPanel(resp) {
+  const meta = resp?.meta || {};
+  const usage = meta.usage || resp?.usage || {};
+
   // Token count
   const tokenSpan = document.getElementById('ctx-token-count');
-  tokenSpan.textContent = `${resp.tokens_used || 0} tokens`;
+  let totalTokens = null;
+  if (Number.isFinite(usage.total_tokens)) {
+    totalTokens = usage.total_tokens;
+  } else if (Number.isFinite(usage.totalTokens)) {
+    totalTokens = usage.totalTokens;
+  } else if (Number.isFinite(usage.prompt_tokens) && Number.isFinite(usage.completion_tokens)) {
+    totalTokens = usage.prompt_tokens + usage.completion_tokens;
+  } else if (Number.isFinite(resp?.tokens_used)) {
+    totalTokens = resp.tokens_used;
+  }
+  tokenSpan.textContent = Number.isFinite(totalTokens) ? `${totalTokens} tokens` : '—';
 
   // Confidence
   const confSpan = document.getElementById('answer-confidence');
-  const conf = resp.confidence || 0;
-  const confPercent = (conf * 100).toFixed(0);
-  confSpan.innerHTML = `
-    <span class="badge ${conf >= 0.8 ? 'badge-success' : conf >= 0.6 ? 'badge-warning' : 'badge-danger'}">
-      ${confPercent}%
-    </span>
-  `;
+  const conf = typeof meta.confidence === 'number' ? meta.confidence : typeof resp?.confidence === 'number' ? resp.confidence : null;
+  if (typeof conf === 'number') {
+    const confPercent = (conf * 100).toFixed(0);
+    confSpan.innerHTML = `
+      <span class="badge ${conf >= 0.8 ? 'badge-success' : conf >= 0.6 ? 'badge-warning' : 'badge-danger'}">
+        ${confPercent}%
+      </span>
+    `;
+  } else {
+    confSpan.textContent = '—';
+  }
 
   // Knowledge references
   const refsDiv = document.getElementById('knowledge-refs');
-  if (resp.sources && resp.sources.length) {
-    refsDiv.innerHTML = resp.sources
+  const refs = Array.isArray(meta.sources) ? meta.sources : Array.isArray(resp?.sources) ? resp.sources : [];
+  if (refs.length) {
+    refsDiv.innerHTML = refs
       .slice(0, 5)
       .map(
         (s) => `
@@ -295,7 +315,7 @@ function updateContextPanel(resp) {
 
 async function loadContextSummary() {
   // Context summary is embedded in Q&A responses
-  document.getElementById('ctx-token-count').textContent = '4096 tokens';
+  document.getElementById('ctx-token-count').textContent = '—';
 }
 
 async function submitFeedback() {

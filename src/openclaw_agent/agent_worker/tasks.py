@@ -28,6 +28,7 @@ from openclaw_agent.common.db import db_session, make_engine
 from openclaw_agent.common.erpx_client import ErpXClient
 from openclaw_agent.common.logging import configure_logging, get_logger
 from openclaw_agent.common.models import (
+    AcctVoucher,
     AgentAttachment,
     AgentAuditLog,
     AgentCloseTask,
@@ -422,6 +423,8 @@ def dispatch_run(self: Task, run_id: str) -> dict[str, Any]:
             stats = _wf_voucher_ingest(run_id)
         elif run_type == "voucher_classify":
             stats = _wf_voucher_classify(run_id)
+        elif run_type == "voucher_reprocess":
+            stats = _wf_voucher_reprocess(run_id)
         else:
             raise RuntimeError(f"unsupported run_type: {run_type}")
 
@@ -2684,4 +2687,58 @@ def _wf_voucher_classify(run_id: str) -> dict[str, Any]:
         raise
     _task_finish(run_id, "classify_vouchers", "success",
                  output_ref={"classified": stats.get("classified", 0)})
+    return stats
+
+
+def _wf_voucher_reprocess(run_id: str) -> dict[str, Any]:
+    """Reprocess a single voucher uploaded from OCR flow."""
+    payload = _run_payload(run_id)
+    voucher_id = str(payload.get("voucher_id") or "").strip()
+    attachment_id = str(payload.get("attachment_id") or "").strip()
+
+    if not voucher_id and not attachment_id:
+        raise RuntimeError("payload.voucher_id hoặc payload.attachment_id là bắt buộc")
+
+    _db_log(run_id, None, "info", "voucher_reprocess_start", payload)
+    _task_start(run_id, "reprocess_voucher", payload)
+    try:
+        with db_session(engine) as s:
+            voucher = s.get(AcctVoucher, voucher_id) if voucher_id else None
+            if voucher is None and attachment_id:
+                candidates = s.execute(select(AcctVoucher).order_by(AcctVoucher.synced_at.desc()).limit(2000)).scalars().all()
+                voucher = next(
+                    (
+                        row
+                        for row in candidates
+                        if isinstance(row.raw_payload, dict) and row.raw_payload.get("attachment_id") == attachment_id
+                    ),
+                    None,
+                )
+
+            if voucher is None:
+                raise RuntimeError("Không tìm thấy voucher để reprocess")
+
+            raw_payload = dict(voucher.raw_payload or {})
+            raw_payload["status"] = "reprocessed"
+            raw_payload["reprocess_count"] = int(raw_payload.get("reprocess_count") or 0) + 1
+            raw_payload["reprocessed_at"] = utcnow().isoformat()
+            raw_payload["reprocess_run_id"] = run_id
+
+            voucher.raw_payload = raw_payload
+            voucher.run_id = run_id
+            voucher.synced_at = utcnow()
+            s.commit()
+
+            stats = {
+                "voucher_id": voucher.id,
+                "status": raw_payload["status"],
+                "reprocess_count": raw_payload["reprocess_count"],
+            }
+    except Exception as e:
+        _task_finish(run_id, "reprocess_voucher", "failed", error=str(e))
+        raise
+
+    _task_finish(run_id, "reprocess_voucher", "success", output_ref=stats)
+    _db_log(run_id, None, "info", "voucher_reprocess_success", stats)
+    _update_run(run_id, cursor_out=stats)
     return stats

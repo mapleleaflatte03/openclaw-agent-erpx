@@ -181,6 +181,9 @@ function renderFeeder() {
       <div class="alert alert-info mb-md">
         Các thao tác dưới đây gọi trực tiếp API <code>/agent/v1/vn_feeder/*</code>.
       </div>
+      <div class="text-secondary text-sm mb-md">
+        Số liệu feeder cập nhật theo chu kỳ, có thể chậm 2–5 giây so với thực tế.
+      </div>
 
       <div class="grid-2 gap-md">
         <div class="card">
@@ -519,7 +522,7 @@ async function runFeederControl(action) {
   try {
     await apiPost('/vn_feeder/control', payload);
     toast(`Đã gửi lệnh feeder: ${action}`, 'success');
-    setTimeout(() => loadFeederStatus(), 1200);
+    setTimeout(() => loadFeederStatus(), 2500);
   } catch (e) {
     toast(`Feeder action thất bại: ${e.message}`, 'error');
   }

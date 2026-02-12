@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+import mimetypes
 import os
 import re as _re
+import threading
 import time
 from datetime import date, datetime
 from hashlib import sha256
@@ -12,7 +14,7 @@ from typing import Any, Literal
 import httpx
 import redis
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile
-from fastapi.responses import PlainTextResponse
+from fastapi.responses import FileResponse, PlainTextResponse
 from prometheus_client import CONTENT_TYPE_LATEST, CollectorRegistry, Gauge, generate_latest
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
@@ -362,6 +364,142 @@ def sa_text(sql: str):
     return sa.text(sql)
 
 
+_RUN_QUEUE_MAP: dict[str, str] = {
+    "attachment": "ocr",
+    "kb_index": "ocr",
+    "tax_export": "export",
+    "working_papers": "export",
+    "soft_checks": "default",
+    "close_checklist": "default",
+    "ar_dunning": "io",
+    "evidence_pack": "io",
+    "contract_obligation": "ocr",
+    "journal_suggestion": "default",
+    "bank_reconcile": "default",
+    "cashflow_forecast": "default",
+    "voucher_ingest": "default",
+    "voucher_classify": "default",
+    "voucher_reprocess": "default",
+}
+
+_VALID_RUN_TYPES = frozenset(_RUN_QUEUE_MAP.keys())
+_PERIOD_REQUIRED_RUN_TYPES = frozenset(
+    {
+        "voucher_ingest",
+        "soft_checks",
+        "journal_suggestion",
+        "cashflow_forecast",
+        "tax_export",
+        "bank_reconcile",
+    }
+)
+_EXECUTOR_MODES = frozenset({"auto", "celery", "local"})
+
+
+def _executor_mode() -> str:
+    mode = (os.getenv("RUN_EXECUTOR_MODE") or "auto").strip().lower()
+    if mode not in _EXECUTOR_MODES:
+        return "auto"
+    return mode
+
+
+def _celery_workers(timeout_seconds: float = 1.0) -> dict[str, Any]:
+    try:
+        inspect = celery_app.control.inspect(timeout=timeout_seconds)
+        ping = inspect.ping() or {}
+        workers = sorted(str(w) for w in ping)
+        return {
+            "available": bool(workers),
+            "worker_count": len(workers),
+            "workers": workers,
+        }
+    except Exception as exc:
+        return {
+            "available": False,
+            "worker_count": 0,
+            "workers": [],
+            "error": str(exc),
+        }
+
+
+def _executor_readiness() -> dict[str, Any]:
+    mode = _executor_mode()
+    celery_enabled = mode in {"auto", "celery"}
+    celery = _celery_workers() if celery_enabled else {"available": False, "worker_count": 0, "workers": []}
+    local_enabled = mode in {"auto", "local"}
+    can_use_celery = celery_enabled and bool(celery.get("available"))
+    preferred_executor: str | None = "celery" if can_use_celery else "local" if local_enabled else None
+    dispatch_ready = bool(preferred_executor)
+    return {
+        "mode": mode,
+        "dispatch_ready": dispatch_ready,
+        "preferred_executor": preferred_executor,
+        "local_executor_enabled": local_enabled,
+        "celery": celery,
+    }
+
+
+def _dispatch_run_local(run_id: str) -> None:
+    def _runner() -> None:
+        try:
+            from openclaw_agent.agent_worker.tasks import dispatch_run as worker_dispatch
+
+            worker_dispatch.run(run_id)
+        except Exception as exc:
+            log.error("run_local_dispatch_failed", run_id=run_id, error=str(exc))
+
+    thread = threading.Thread(
+        target=_runner,
+        name=f"openclaw-local-run-{run_id[:8]}",
+        daemon=True,
+    )
+    thread.start()
+
+
+def _dispatch_run(
+    run_id: str,
+    run_type: str,
+    *,
+    preferred_executor: str,
+    allow_local_fallback: bool,
+) -> dict[str, Any]:
+    queue_name = _RUN_QUEUE_MAP.get(run_type, "default")
+
+    if preferred_executor == "celery":
+        try:
+            celery_app.send_task(
+                "openclaw_agent.agent_worker.tasks.dispatch_run",
+                args=[run_id],
+                queue=queue_name,
+            )
+            return {"executor": "celery", "queue": queue_name}
+        except Exception as exc:
+            if allow_local_fallback:
+                _dispatch_run_local(run_id)
+                return {
+                    "executor": "local",
+                    "queue": "local",
+                    "fallback_reason": str(exc),
+                }
+            raise HTTPException(status_code=503, detail=f"Không thể gửi run vào worker queue: {exc}") from exc
+
+    if preferred_executor == "local":
+        _dispatch_run_local(run_id)
+        return {"executor": "local", "queue": "local"}
+
+    raise HTTPException(status_code=503, detail="Không có executor sẵn sàng để xử lý run")
+
+
+def _mark_run_dispatch_failed(session: Session, run_id: str, detail: str) -> None:
+    run = session.get(AgentRun, run_id)
+    if run is None:
+        return
+    run.status = "failed"
+    run.finished_at = utcnow()
+    run.stats = {"dispatch_error": detail}
+    session.commit()
+
+
 @app.post("/agent/v1/runs", dependencies=[Depends(require_api_key)])
 def create_run(
     body: dict[str, Any],
@@ -373,36 +511,11 @@ def create_run(
     trigger_type = body.get("trigger_type")
     payload = body.get("payload") or {}
     requested_by = body.get("requested_by")
-    _VALID_RUN_TYPES = {
-        "attachment",
-        "tax_export",
-        "working_papers",
-        "soft_checks",
-        "ar_dunning",
-        "close_checklist",
-        "evidence_pack",
-        "kb_index",
-        "contract_obligation",
-        "journal_suggestion",
-        "bank_reconcile",
-        "cashflow_forecast",
-        "voucher_ingest",
-        "voucher_classify",
-    }
     if run_type not in _VALID_RUN_TYPES:
         raise HTTPException(status_code=400, detail=f"Loại tác vụ không hợp lệ: '{run_type}'. Hợp lệ: {sorted(_VALID_RUN_TYPES)}")
     if trigger_type not in {"schedule", "event", "manual"}:
         raise HTTPException(status_code=400, detail="Nguồn kích hoạt không hợp lệ (chỉ hỗ trợ: schedule, event, manual)")
 
-    # --- DEV-01: period validation for period-bound run types ---
-    _PERIOD_REQUIRED_RUN_TYPES = {
-        "voucher_ingest",
-        "soft_checks",
-        "journal_suggestion",
-        "cashflow_forecast",
-        "tax_export",
-        "bank_reconcile",
-    }
     if run_type in _PERIOD_REQUIRED_RUN_TYPES:
         period = (payload.get("period") or "").strip() if isinstance(payload, dict) else ""
         if not period:
@@ -429,6 +542,13 @@ def create_run(
     existing = session.execute(select(AgentRun).where(AgentRun.idempotency_key == idem)).scalar_one_or_none()
     if existing:
         return {"run_id": existing.run_id, "status": existing.status, "idempotency_key": existing.idempotency_key}
+
+    readiness = _executor_readiness()
+    if not readiness["dispatch_ready"]:
+        raise HTTPException(
+            status_code=503,
+            detail="Không có executor khả dụng (celery worker/local executor). Không thể tạo run mới.",
+        )
 
     run = AgentRun(
         run_id=new_uuid(),
@@ -464,30 +584,30 @@ def create_run(
                 )
             )
 
-    session.flush()
+    # Commit before dispatch to avoid worker race (worker cannot find uncommitted run row).
+    session.commit()
+    session.refresh(run)
 
-    queue_map = {
-        "attachment": "ocr",
-        "kb_index": "ocr",
-        "tax_export": "export",
-        "working_papers": "export",
-        "soft_checks": "default",
-        "close_checklist": "default",
-        "ar_dunning": "io",
-        "evidence_pack": "io",
-        "contract_obligation": "ocr",
-        "journal_suggestion": "default",
-        "bank_reconcile": "default",
-        "cashflow_forecast": "default",
-        "voucher_ingest": "default",
-        "voucher_classify": "default",
-    }
-    celery_app.send_task(
-        "openclaw_agent.agent_worker.tasks.dispatch_run",
-        args=[run.run_id],
-        queue=queue_map.get(run_type, "default"),
+    try:
+        dispatch_info = _dispatch_run(
+            run.run_id,
+            run_type,
+            preferred_executor=str(readiness["preferred_executor"]),
+            allow_local_fallback=readiness["mode"] == "auto",
+        )
+    except HTTPException as exc:
+        _mark_run_dispatch_failed(session, run.run_id, str(exc.detail))
+        raise
+    except Exception as exc:  # pragma: no cover - defensive
+        _mark_run_dispatch_failed(session, run.run_id, str(exc))
+        raise HTTPException(status_code=503, detail=f"Không thể dispatch run: {exc}") from exc
+    log.info(
+        "run_queued",
+        run_id=run.run_id,
+        run_type=run_type,
+        trigger_type=trigger_type,
+        executor=dispatch_info.get("executor"),
     )
-    log.info("run_queued", run_id=run.run_id, run_type=run_type, trigger_type=trigger_type)
 
     # Build task preview for immediate UI feedback
     task_rows = session.execute(
@@ -502,6 +622,7 @@ def create_run(
         "idempotency_key": run.idempotency_key,
         "created_at": run.created_at,
         "cursor_in": run.cursor_in,
+        "executor": dispatch_info,
         "tasks": task_preview,
     }
 
@@ -542,6 +663,7 @@ def list_runs(
                 "cursor_out": r.cursor_out,
                 "started_at": r.started_at,
                 "finished_at": r.finished_at,
+                "completed_at": r.finished_at,
                 "stats": r.stats,
                 "created_at": r.created_at,
             }
@@ -571,6 +693,7 @@ def get_run(run_id: str, session: Session = Depends(get_session)) -> dict[str, A
         "cursor_out": r.cursor_out,
         "started_at": r.started_at,
         "finished_at": r.finished_at,
+        "completed_at": r.finished_at,
         "stats": r.stats,
         "created_at": r.created_at,
         "tasks": [
@@ -612,14 +735,29 @@ def list_tasks(run_id: str, session: Session = Depends(get_session)) -> dict[str
 
 
 @app.get("/agent/v1/logs", dependencies=[Depends(require_api_key)])
-def list_logs(run_id: str, limit: int = 200, session: Session = Depends(get_session)) -> dict[str, Any]:
+def list_logs(
+    run_id: str | None = None,
+    filter_entity_id: str | None = None,
+    limit: int = 200,
+    session: Session = Depends(get_session),
+) -> dict[str, Any]:
+    resolved_run_id = (run_id or "").strip()
+    if not resolved_run_id and filter_entity_id:
+        voucher = session.get(AcctVoucher, str(filter_entity_id))
+        if voucher and voucher.run_id:
+            resolved_run_id = voucher.run_id
+
+    if not resolved_run_id:
+        return {"items": []}
+
     rows = session.execute(
         select(AgentLog)
-        .where(AgentLog.run_id == run_id)
+        .where(AgentLog.run_id == resolved_run_id)
         .order_by(AgentLog.ts.desc())
         .limit(min(limit, 500))
     ).scalars().all()
     return {
+        "run_id": resolved_run_id,
         "items": [
             {
                 "log_id": row.log_id,
@@ -629,6 +767,8 @@ def list_logs(run_id: str, limit: int = 200, session: Session = Depends(get_sess
                 "message": row.message,
                 "context": row.context,
                 "ts": row.ts,
+                "created_at": row.ts,
+                "timestamp": row.ts,
             }
             for row in rows
         ]
@@ -1663,17 +1803,24 @@ def review_journal_proposal(
 def list_anomaly_flags(
     limit: int = 100,
     resolution: str | None = None,
+    status: str | None = None,
     anomaly_type: str | None = None,
     session: Session = Depends(get_session),
 ) -> dict[str, Any]:
     q = select(AcctAnomalyFlag).order_by(AcctAnomalyFlag.created_at.desc()).limit(min(limit, 500))
-    if resolution:
-        q = q.where(AcctAnomalyFlag.resolution == resolution)
+    wanted_status = (resolution or status or "").strip().lower() or None
+    if wanted_status == "pending":
+        wanted_status = "open"
+    if wanted_status:
+        q = q.where(func.coalesce(AcctAnomalyFlag.resolution, "open") == wanted_status)
     if anomaly_type:
         q = q.where(AcctAnomalyFlag.anomaly_type == anomaly_type)
     rows = session.execute(q).scalars().all()
-    return {
-        "items": [
+    items = []
+    for r in rows:
+        raw_resolution = (r.resolution or "open").strip().lower()
+        normalized_status = "open" if raw_resolution in {"", "null", "none", "pending", "open"} else raw_resolution
+        items.append(
             {
                 "id": r.id,
                 "anomaly_type": r.anomaly_type,
@@ -1681,14 +1828,17 @@ def list_anomaly_flags(
                 "description": r.description,
                 "voucher_id": r.voucher_id,
                 "bank_tx_id": r.bank_tx_id,
-                "resolution": r.resolution,
+                "status": normalized_status,
+                "resolution": normalized_status,
                 "resolved_by": r.resolved_by,
                 "resolved_at": r.resolved_at,
                 "created_at": r.created_at,
                 "run_id": r.run_id,
             }
-            for r in rows
-        ]
+        )
+    return {
+        "total": len(items),
+        "items": items,
     }
 
 
@@ -1706,16 +1856,27 @@ def resolve_anomaly_flag(
     flag = session.get(AcctAnomalyFlag, flag_id)
     if not flag:
         raise HTTPException(status_code=404, detail="Không tìm thấy cảnh báo bất thường")
-    if flag.resolution != "open":
+    current_status = (flag.resolution or "open").strip().lower()
+    if current_status in {"", "null", "none", "pending"}:
+        current_status = "open"
+    if current_status != "open":
         raise HTTPException(
             status_code=409,
-            detail=f"Giao dịch bất thường đã được xử lý (trạng thái: {flag.resolution}). Không thể thay đổi.",
+            detail=(
+                f"Giao dịch bất thường đã được xử lý (trạng thái: {current_status}). "
+                "Không thể thay đổi."
+            ),
         )
     flag.resolution = body.resolution
     flag.resolved_by = body.resolved_by
     flag.resolved_at = utcnow()
     session.commit()
-    return {"id": flag.id, "resolution": flag.resolution, "resolved_by": flag.resolved_by}
+    return {
+        "id": flag.id,
+        "resolution": flag.resolution,
+        "status": flag.resolution,
+        "resolved_by": flag.resolved_by,
+    }
 
 
 @app.get("/agent/v1/acct/bank_transactions", dependencies=[Depends(require_api_key)])
@@ -2150,6 +2311,9 @@ def accounting_qna(
         raise HTTPException(status_code=400, detail="Vui lòng nhập câu hỏi")
 
     result = answer_question(session, question)
+    usage = result.get("usage")
+    confidence = result.get("confidence")
+    sources = result.get("sources") or []
 
     # Persist audit
     qna_row = AcctQnaAudit(
@@ -2169,7 +2333,13 @@ def accounting_qna(
             "qna_id": qna_row.id,
             "used_models": result.get("used_models", []),
             "llm_used": result.get("llm_used", False),
+            "usage": usage if isinstance(usage, dict) else None,
+            "confidence": confidence if isinstance(confidence, (int, float)) else None,
+            "sources": sources if isinstance(sources, list) else [],
         },
+        "usage": usage if isinstance(usage, dict) else None,
+        "confidence": confidence if isinstance(confidence, (int, float)) else None,
+        "sources": sources if isinstance(sources, list) else [],
     }
 
 
@@ -2218,8 +2388,10 @@ def get_graph_info(graph_name: str) -> dict[str, Any]:
 @app.get("/agent/v1/ray/status", dependencies=[Depends(require_api_key)])
 def ray_status() -> dict[str, Any]:
     """Check Ray availability and cluster resources."""
+    readiness = _executor_readiness()
     try:
         from openclaw_agent.kernel.swarm import get_swarm, is_available
+
         available = is_available()
         resources = {}
         if available:
@@ -2230,9 +2402,27 @@ def ray_status() -> dict[str, Any]:
             "ray_available": available,
             "initialized": available and get_swarm().is_initialized,
             "resources": resources,
+            "executor_mode": readiness["mode"],
+            "local_executor_enabled": readiness["local_executor_enabled"],
+            "celery_available": readiness["celery"]["available"],
+            "celery_worker_count": readiness["celery"]["worker_count"],
+            "celery_workers": readiness["celery"]["workers"],
+            "run_dispatch_ready": readiness["dispatch_ready"],
+            "preferred_executor": readiness["preferred_executor"],
         }
     except ImportError:
-        return {"ray_available": False, "initialized": False, "resources": {}}
+        return {
+            "ray_available": False,
+            "initialized": False,
+            "resources": {},
+            "executor_mode": readiness["mode"],
+            "local_executor_enabled": readiness["local_executor_enabled"],
+            "celery_available": readiness["celery"]["available"],
+            "celery_worker_count": readiness["celery"]["worker_count"],
+            "celery_workers": readiness["celery"]["workers"],
+            "run_dispatch_ready": readiness["dispatch_ready"],
+            "preferred_executor": readiness["preferred_executor"],
+        }
 
 
 # ---------------------------------------------------------------------------
@@ -2266,7 +2456,7 @@ _GOAL_CHAINS: dict[str, list[str]] = {
     ],
     "hỏi đáp": [],  # special: goes to Q&A, not a run chain
     "bất thường": [
-        "soft_checks", "anomaly_scan",
+        "soft_checks",
     ],
     "hợp đồng": [
         "contract_obligation",
@@ -2284,6 +2474,25 @@ _GOAL_CHAIN_LABELS: dict[str, str] = {
     "hỏi đáp": "Hỏi đáp kế toán",
     "bất thường": "Phát hiện bất thường",
     "hợp đồng": "Rà soát hợp đồng",
+}
+
+_GOAL_ALIASES: dict[str, str] = {
+    "close_period": "đóng sổ",
+    "close-book": "đóng sổ",
+    "close_book": "đóng sổ",
+    "reconcile": "đối chiếu",
+    "bank_reconcile": "đối chiếu",
+    "tax_report": "báo cáo thuế",
+    "voucher_ingest": "nhập chứng từ",
+    "forecast": "dự báo dòng tiền",
+    "cashflow_forecast": "dự báo dòng tiền",
+}
+
+_DIRECT_COMMAND_CHAINS: dict[str, list[str]] = {
+    "trigger_voucher_ingest": ["voucher_ingest"],
+    "trigger_bank_reconcile": ["bank_reconcile"],
+    "trigger_soft_checks": ["soft_checks"],
+    "trigger_cashflow_forecast": ["cashflow_forecast"],
 }
 
 
@@ -2311,8 +2520,30 @@ def _parse_goal_command(command: str) -> tuple[str, list[str]]:
 
 class AgentCommandRequest(BaseModel):
     command: str = Field(min_length=1, max_length=500)
+    goal: str | None = None
     period: str | None = None
     payload: dict[str, Any] | None = None
+
+
+def _resolve_agent_command_chain(body: AgentCommandRequest) -> tuple[str, list[str]]:
+    command = body.command.strip().lower()
+    goal_hint = (body.goal or "").strip().lower()
+
+    if command in _DIRECT_COMMAND_CHAINS:
+        return command, _DIRECT_COMMAND_CHAINS[command]
+
+    if command == "run_goal":
+        normalized_goal = _GOAL_ALIASES.get(goal_hint, goal_hint)
+        if not normalized_goal:
+            return "unknown", []
+        return _parse_goal_command(normalized_goal)
+
+    if command in _VALID_RUN_TYPES:
+        return command, [command]
+
+    if goal_hint:
+        return _parse_goal_command(_GOAL_ALIASES.get(goal_hint, goal_hint))
+    return _parse_goal_command(body.command)
 
 
 @app.post("/agent/v1/agent/commands", dependencies=[Depends(require_api_key)])
@@ -2322,25 +2553,43 @@ def execute_agent_command(
     session: Session = Depends(get_session),
     settings: Settings = Depends(get_settings),
 ) -> dict[str, Any]:
-    """Parse a Vietnamese goal command and execute the chain of run_types."""
-    goal_key, chain = _parse_goal_command(body.command)
-
+    """Parse command payload and dispatch mapped run chain."""
+    goal_key, chain = _resolve_agent_command_chain(body)
     if not chain:
-        return {
-            "status": "no_chain",
-            "goal": goal_key,
-            "message": "Không nhận diện được mục tiêu. Vui lòng thử lại với mô tả cụ thể hơn.",
-            "available_goals": list(_GOAL_CHAIN_LABELS.values()),
-            "runs": [],
-        }
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Không nhận diện được command/goal để thực thi. "
+                "Vui lòng chọn mục tiêu hợp lệ từ Agent Command Center."
+            ),
+        )
+
+    readiness = _executor_readiness()
+    if not readiness["dispatch_ready"]:
+        raise HTTPException(
+            status_code=503,
+            detail="Không có executor khả dụng để chạy command chain.",
+        )
 
     runs_created: list[dict[str, Any]] = []
-    payload = body.payload or {}
+    payload = dict(body.payload or {})
     if body.period:
         payload["period"] = body.period
 
     for run_type in chain:
-        idem = make_idempotency_key("cmd", goal_key, run_type, body.period or "")
+        run_payload = dict(payload)
+        if run_type in _PERIOD_REQUIRED_RUN_TYPES and not run_payload.get("period"):
+            run_payload["period"] = date.today().strftime("%Y-%m")
+
+        if run_type in _PERIOD_REQUIRED_RUN_TYPES:
+            period = str(run_payload.get("period") or "")
+            if not _re.fullmatch(r"\d{4}-(0[1-9]|1[0-2])", period):
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"period '{period}' không hợp lệ cho run_type={run_type}. Định dạng YYYY-MM.",
+                )
+
+        idem = make_idempotency_key("cmd", goal_key, run_type, str(run_payload.get("period") or ""))
         existing = session.execute(
             select(AgentRun).where(AgentRun.idempotency_key == idem)
         ).scalar_one_or_none()
@@ -2360,35 +2609,54 @@ def execute_agent_command(
             requested_by="agent-command-center",
             status="queued",
             idempotency_key=idem,
-            cursor_in=payload,
+            cursor_in=run_payload,
             cursor_out=None,
             started_at=None,
             finished_at=None,
             stats=None,
         )
         session.add(run)
-        session.flush()
 
-        queue_map = {
-            "attachment": "ocr", "kb_index": "ocr",
-            "tax_export": "export", "working_papers": "export",
-            "soft_checks": "default", "close_checklist": "default",
-            "ar_dunning": "io", "evidence_pack": "io",
-            "contract_obligation": "ocr",
-            "journal_suggestion": "default", "bank_reconcile": "default",
-            "cashflow_forecast": "default",
-            "voucher_ingest": "default", "voucher_classify": "default",
-        }
-        celery_app.send_task(
-            "openclaw_agent.agent_worker.tasks.dispatch_run",
-            args=[run.run_id],
-            queue=queue_map.get(run_type, "default"),
-        )
+        workflows = load_workflows()
+        wf = next((w for w in workflows.values() if w.run_type == run_type), None)
+        if wf:
+            for step in wf.steps:
+                session.add(
+                    AgentTask(
+                        task_id=new_uuid(),
+                        run_id=run.run_id,
+                        task_name=step.name,
+                        status="queued",
+                        input_ref=run_payload,
+                        output_ref=None,
+                        error=None,
+                        started_at=None,
+                        finished_at=None,
+                    )
+                )
+        session.commit()
+        session.refresh(run)
+
+        try:
+            dispatch_info = _dispatch_run(
+                run.run_id,
+                run_type,
+                preferred_executor=str(readiness["preferred_executor"]),
+                allow_local_fallback=readiness["mode"] == "auto",
+            )
+        except HTTPException as exc:
+            _mark_run_dispatch_failed(session, run.run_id, str(exc.detail))
+            raise
+        except Exception as exc:  # pragma: no cover
+            _mark_run_dispatch_failed(session, run.run_id, str(exc))
+            raise HTTPException(status_code=503, detail=f"Không thể dispatch run {run_type}: {exc}") from exc
+
         runs_created.append({
             "run_id": run.run_id,
             "run_type": run_type,
             "status": "queued",
             "reused": False,
+            "executor": dispatch_info,
         })
 
     log.info("agent_command", command=body.command, goal=goal_key, runs=len(runs_created))
@@ -2581,6 +2849,8 @@ def reports_history(
                 "period": r.period,
                 "version": r.version,
                 "has_file": bool(r.file_uri),
+                "format": (r.summary_json or {}).get("format") if isinstance(r.summary_json, dict) else None,
+                "download_url": f"/agent/v1/reports/{r.id}/download",
                 "summary": r.summary_json,
                 "created_at": r.created_at,
             }
@@ -2590,6 +2860,7 @@ def reports_history(
 
 
 _REPORT_TYPES = {"balance_sheet", "income_statement", "cashflow", "notes"}
+_REPORT_FORMATS = {"pdf", "xlsx", "json", "xml", "html"}
 
 
 def _validate_report_inputs(report_type: str | None, period: str | None) -> tuple[str, str]:
@@ -2606,6 +2877,237 @@ def _validate_report_inputs(report_type: str | None, period: str | None) -> tupl
     return rt, pd
 
 
+def _report_export_dir() -> Path:
+    path = Path(os.getenv("AGENT_REPORT_EXPORT_DIR", "/tmp/openclaw_reports"))
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _build_report_data(
+    session: Session,
+    *,
+    report_type: str,
+    period: str,
+    standard: str,
+    options: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    voucher_count = session.execute(
+        select(func.count()).select_from(AcctVoucher).where(AcctVoucher.date.like(period + "%"))
+    ).scalar() or 0
+    journal_lines = session.execute(
+        select(AcctJournalLine)
+        .join(AcctJournalProposal, AcctJournalProposal.id == AcctJournalLine.proposal_id)
+        .where(AcctJournalProposal.status == "approved")
+        .limit(2000)
+    ).scalars().all()
+
+    account_summary: dict[str, dict[str, float | str]] = {}
+    for line in journal_lines:
+        acc = line.account_code
+        if acc not in account_summary:
+            account_summary[acc] = {"debit": 0.0, "credit": 0.0, "name": line.account_name or acc}
+        account_summary[acc]["debit"] = float(account_summary[acc]["debit"]) + float(line.debit or 0)
+        account_summary[acc]["credit"] = float(account_summary[acc]["credit"]) + float(line.credit or 0)
+
+    total_debit = sum(float(v["debit"]) for v in account_summary.values())
+    total_credit = sum(float(v["credit"]) for v in account_summary.values())
+    imbalance = round(abs(total_debit - total_credit), 2)
+
+    issues: list[str] = []
+    if voucher_count == 0:
+        issues.append(f"Không có chứng từ cho kỳ {period}")
+    if not journal_lines:
+        issues.append("Không có bút toán đã duyệt để tổng hợp")
+    if imbalance > 1:
+        issues.append(f"Lệch cân đối Nợ/Có: {imbalance:,.0f} VND")
+
+    return {
+        "period": period,
+        "standard": standard,
+        "report_type": report_type,
+        "options": options or {},
+        "voucher_count": int(voucher_count),
+        "total_debit": total_debit,
+        "total_credit": total_credit,
+        "imbalance": imbalance,
+        "issues": issues,
+        "items": [
+            {
+                "account": account,
+                "name": summary["name"],
+                "debit": float(summary["debit"]),
+                "credit": float(summary["credit"]),
+            }
+            for account, summary in sorted(account_summary.items())
+        ],
+    }
+
+
+def _render_report_html(data: dict[str, Any]) -> str:
+    rows = data.get("items", [])
+    row_html = "\n".join(
+        (
+            "<tr>"
+            f"<td>{r.get('account', '')}</td>"
+            f"<td>{r.get('name', '')}</td>"
+            f"<td style='text-align:right'>{float(r.get('debit', 0.0)):,.0f}</td>"
+            f"<td style='text-align:right'>{float(r.get('credit', 0.0)):,.0f}</td>"
+            "</tr>"
+        )
+        for r in rows
+    )
+    issues = data.get("issues", [])
+    issue_html = "<br/>".join(str(i) for i in issues) if issues else "Không có cảnh báo"
+    return (
+        "<html><head><meta charset='utf-8'><title>OpenClaw Report</title></head><body>"
+        f"<h2>{data.get('report_type')} - {data.get('period')}</h2>"
+        f"<p>Chuẩn mực: {data.get('standard')}</p>"
+        f"<p>Voucher: {int(data.get('voucher_count', 0))}</p>"
+        "<table border='1' cellspacing='0' cellpadding='6' style='border-collapse:collapse;width:100%'>"
+        "<thead><tr><th>Tài khoản</th><th>Tên</th><th>Nợ</th><th>Có</th></tr></thead>"
+        f"<tbody>{row_html}</tbody></table>"
+        f"<p><strong>Tổng Nợ:</strong> {float(data.get('total_debit', 0.0)):,.0f} VND</p>"
+        f"<p><strong>Tổng Có:</strong> {float(data.get('total_credit', 0.0)):,.0f} VND</p>"
+        f"<p><strong>Cảnh báo:</strong><br/>{issue_html}</p>"
+        "</body></html>"
+    )
+
+
+def _report_media_type(fmt: str) -> str:
+    mapping = {
+        "pdf": "application/pdf",
+        "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "json": "application/json",
+        "xml": "application/xml",
+        "html": "text/html; charset=utf-8",
+    }
+    return mapping.get(fmt, mimetypes.guess_type(f"file.{fmt}")[0] or "application/octet-stream")
+
+
+def _write_report_artifact(
+    *,
+    report_type: str,
+    period: str,
+    version: int,
+    fmt: str,
+    data: dict[str, Any],
+) -> Path:
+    export_dir = _report_export_dir()
+    path = export_dir / f"{report_type}_{period}_v{version}.{fmt}"
+
+    if fmt == "json":
+        path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        return path
+
+    if fmt == "html":
+        path.write_text(_render_report_html(data), encoding="utf-8")
+        return path
+
+    if fmt == "xml":
+        from xml.etree.ElementTree import Element, SubElement, tostring
+
+        root = Element(
+            "report",
+            attrib={
+                "type": str(data.get("report_type", "")),
+                "period": str(data.get("period", "")),
+                "standard": str(data.get("standard", "")),
+            },
+        )
+        summary = SubElement(root, "summary")
+        SubElement(summary, "voucher_count").text = str(data.get("voucher_count", 0))
+        SubElement(summary, "total_debit").text = str(data.get("total_debit", 0))
+        SubElement(summary, "total_credit").text = str(data.get("total_credit", 0))
+        SubElement(summary, "imbalance").text = str(data.get("imbalance", 0))
+
+        issues = SubElement(root, "issues")
+        for msg in data.get("issues", []):
+            SubElement(issues, "issue").text = str(msg)
+
+        lines = SubElement(root, "lines")
+        for item in data.get("items", []):
+            line = SubElement(lines, "line")
+            SubElement(line, "account").text = str(item.get("account", ""))
+            SubElement(line, "name").text = str(item.get("name", ""))
+            SubElement(line, "debit").text = str(item.get("debit", 0))
+            SubElement(line, "credit").text = str(item.get("credit", 0))
+
+        xml_text = "<?xml version='1.0' encoding='utf-8'?>\n" + tostring(root, encoding="unicode")
+        path.write_text(xml_text, encoding="utf-8")
+        return path
+
+    if fmt == "xlsx":
+        from openpyxl import Workbook
+
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Summary"
+        ws.append(["Type", data.get("report_type")])
+        ws.append(["Period", data.get("period")])
+        ws.append(["Standard", data.get("standard")])
+        ws.append(["Voucher Count", data.get("voucher_count")])
+        ws.append(["Total Debit", data.get("total_debit")])
+        ws.append(["Total Credit", data.get("total_credit")])
+        ws.append(["Imbalance", data.get("imbalance")])
+        ws.append([])
+        ws.append(["Issues"])
+        for msg in data.get("issues", []) or ["Không có cảnh báo"]:
+            ws.append([msg])
+
+        detail = wb.create_sheet("Details")
+        detail.append(["Account", "Name", "Debit", "Credit"])
+        for item in data.get("items", []):
+            detail.append([item.get("account"), item.get("name"), item.get("debit"), item.get("credit")])
+
+        wb.save(path)
+        return path
+
+    if fmt == "pdf":
+        try:
+            from reportlab.lib.pagesizes import A4
+            from reportlab.pdfgen import canvas
+        except Exception as exc:
+            raise HTTPException(
+                status_code=501,
+                detail="Chưa hỗ trợ xuất PDF trên môi trường hiện tại (thiếu thư viện render PDF).",
+            ) from exc
+
+        c = canvas.Canvas(str(path), pagesize=A4)
+        width, height = A4
+        y = height - 40
+        c.setFont("Helvetica-Bold", 14)
+        c.drawString(40, y, f"{report_type} - {period}")
+        y -= 20
+        c.setFont("Helvetica", 10)
+        c.drawString(40, y, f"Standard: {data.get('standard')}")
+        y -= 16
+        c.drawString(40, y, f"Voucher count: {data.get('voucher_count', 0)}")
+        y -= 16
+        c.drawString(40, y, f"Total debit: {float(data.get('total_debit', 0.0)):,.0f} VND")
+        y -= 16
+        c.drawString(40, y, f"Total credit: {float(data.get('total_credit', 0.0)):,.0f} VND")
+        y -= 20
+        c.setFont("Helvetica-Bold", 11)
+        c.drawString(40, y, "Account Lines")
+        y -= 14
+        c.setFont("Helvetica", 9)
+        for item in data.get("items", [])[:45]:
+            line = (
+                f"{item.get('account', '')} | {item.get('name', '')} | "
+                f"Nợ {float(item.get('debit', 0.0)):,.0f} | Có {float(item.get('credit', 0.0)):,.0f}"
+            )
+            c.drawString(40, y, line[:130])
+            y -= 12
+            if y < 50:
+                c.showPage()
+                y = height - 40
+                c.setFont("Helvetica", 9)
+        c.save()
+        return path
+
+    raise HTTPException(status_code=400, detail=f"Định dạng export không hỗ trợ: {fmt}")
+
+
 class ReportPreviewBody(BaseModel):
     type: str
     standard: str = "VAS"
@@ -2620,64 +3122,14 @@ def reports_preview(
     """Generate a preview of a report based on current data."""
     report_type, period = _validate_report_inputs(body.type, body.period)
     standard = (body.standard or "VAS").strip() or "VAS"
-
-    snapshot = session.execute(
-        select(AcctReportSnapshot)
-        .where(AcctReportSnapshot.report_type == report_type)
-        .where(AcctReportSnapshot.period == period)
-        .order_by(AcctReportSnapshot.created_at.desc())
-        .limit(1)
-    ).scalar_one_or_none()
-    if snapshot and snapshot.summary_json:
-        return {
-            "html": f"<pre>{json.dumps(snapshot.summary_json, ensure_ascii=False, indent=2)}</pre>",
-            "data": snapshot.summary_json,
-            "source": "snapshot",
-            "snapshot_id": snapshot.id,
-        }
-
-    voucher_count = session.execute(
-        select(func.count()).select_from(AcctVoucher).where(AcctVoucher.date.like(period + "%"))
-    ).scalar() or 0
-    journal_lines = session.execute(
-        select(AcctJournalLine)
-        .join(AcctJournalProposal, AcctJournalProposal.id == AcctJournalLine.proposal_id)
-        .where(AcctJournalProposal.status == "approved")
-        .limit(500)
-    ).scalars().all()
-
-    account_summary: dict[str, dict[str, float | str]] = {}
-    for line in journal_lines:
-        acc = line.account_code
-        if acc not in account_summary:
-            account_summary[acc] = {"debit": 0.0, "credit": 0.0, "name": line.account_name or acc}
-        account_summary[acc]["debit"] = float(account_summary[acc]["debit"]) + float(line.debit or 0)
-        account_summary[acc]["credit"] = float(account_summary[acc]["credit"]) + float(line.credit or 0)
-
-    issues: list[str] = []
-    if voucher_count == 0:
-        issues.append(f"Không có chứng từ cho kỳ {period}")
-    if not journal_lines:
-        issues.append("Không có bút toán đã duyệt để tổng hợp")
-
-    data = {
-        "period": period,
-        "standard": standard,
-        "report_type": report_type,
-        "voucher_count": int(voucher_count),
-        "issues": issues,
-        "items": [
-            {
-                "account": account,
-                "name": summary["name"],
-                "debit": float(summary["debit"]),
-                "credit": float(summary["credit"]),
-            }
-            for account, summary in sorted(account_summary.items())
-        ],
-    }
+    data = _build_report_data(
+        session,
+        report_type=report_type,
+        period=period,
+        standard=standard,
+    )
     return {
-        "html": f"<pre>{json.dumps(data, ensure_ascii=False, indent=2)}</pre>",
+        "html": _render_report_html(data),
         "data": data,
         "source": "live",
     }
@@ -2735,7 +3187,11 @@ def reports_generate(
     """Generate and save a report snapshot."""
     report_type, period = _validate_report_inputs(body.type, body.period)
     fmt = (body.format or "pdf").strip().lower() or "pdf"
+    if fmt not in _REPORT_FORMATS:
+        raise HTTPException(status_code=400, detail=f"format không hỗ trợ: {fmt}")
     standard = (body.standard or "VAS").strip() or "VAS"
+    if standard not in {"VAS", "IFRS", "BOTH"}:
+        raise HTTPException(status_code=400, detail=f"standard không hỗ trợ: {standard}")
 
     latest = session.execute(
         select(AcctReportSnapshot)
@@ -2746,18 +3202,34 @@ def reports_generate(
     ).scalar_one_or_none()
     next_version = int(latest.version) + 1 if latest else 1
 
+    report_data = _build_report_data(
+        session,
+        report_type=report_type,
+        period=period,
+        standard=standard,
+        options=body.options or {},
+    )
+    artifact_path = _write_report_artifact(
+        report_type=report_type,
+        period=period,
+        version=next_version,
+        fmt=fmt,
+        data=report_data,
+    )
+
     snapshot = AcctReportSnapshot(
         id=new_uuid(),
         report_type=report_type,
         period=period,
         version=next_version,
-        summary_json={
+        summary_json=report_data
+        | {
             "standard": standard,
             "format": fmt,
             "options": body.options or {},
             "generated_at": utcnow().isoformat(),
         },
-        file_uri=None,
+        file_uri=str(artifact_path),
         run_id=None,
     )
     session.add(snapshot)
@@ -2770,7 +3242,7 @@ def reports_generate(
         "period": period,
         "version": snapshot.version,
         "format": fmt,
-        "download_url": f"/agent/v1/reports/{snapshot.id}/download",
+        "download_url": f"/agent/v1/reports/{snapshot.id}/download?format={fmt}",
         "created_at": snapshot.created_at,
     }
 
@@ -2778,23 +3250,37 @@ def reports_generate(
 @app.get("/agent/v1/reports/{report_id}/download", dependencies=[Depends(require_api_key)])
 def reports_download(
     report_id: str,
+    format: str | None = None,
     session: Session = Depends(get_session),
-) -> dict[str, Any]:
-    """Get download URL for a report."""
+) -> Any:
+    """Download a generated report artifact."""
     snapshot = session.get(AcctReportSnapshot, report_id)
     if not snapshot:
         raise HTTPException(status_code=404, detail="Report not found")
 
-    if snapshot.file_uri:
-        return {"url": snapshot.file_uri, "id": snapshot.id}
+    if not snapshot.file_uri:
+        raise HTTPException(status_code=409, detail="Báo cáo chưa được generate artifact")
 
-    return {
-        "id": snapshot.id,
-        "type": snapshot.report_type,
-        "period": snapshot.period,
-        "data": snapshot.summary_json,
-        "message": "PDF file not yet generated. Returning JSON data.",
-    }
+    artifact = Path(snapshot.file_uri)
+    req_fmt = (format or "").strip().lower()
+    if req_fmt:
+        expected_suffix = f".{req_fmt}"
+        if artifact.suffix.lower() != expected_suffix:
+            candidate = artifact.with_suffix(expected_suffix)
+            if candidate.exists():
+                artifact = candidate
+
+    if not artifact.exists():
+        raise HTTPException(status_code=404, detail="Không tìm thấy file artifact của báo cáo")
+
+    fmt = artifact.suffix.lower().lstrip(".")
+    media_type = _report_media_type(fmt)
+    filename = f"{snapshot.report_type}_{snapshot.period}_v{snapshot.version}.{fmt}"
+    return FileResponse(
+        path=str(artifact),
+        media_type=media_type,
+        filename=filename,
+    )
 
 
 # ---------------------------------------------------------------------------

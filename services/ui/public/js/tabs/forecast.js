@@ -1,7 +1,7 @@
 /**
  * Forecast Tab — Trend analysis, multi-scenario forecast, chart
  */
-const { api, formatVND, formatPercent, formatDate, toast, registerTab } = window.ERPX;
+const { api, apiPost, formatVND, formatPercent, formatDate, toast, registerTab } = window.ERPX;
 
 let initialized = false;
 let forecastData = [];
@@ -152,7 +152,7 @@ function bindForecastEvents() {
   });
 
   // Run forecast
-  document.getElementById('btn-run-forecast').addEventListener('click', loadForecast);
+  document.getElementById('btn-run-forecast').addEventListener('click', runForecast);
 
   // Exports
   document.getElementById('btn-export-png').addEventListener('click', exportPNG);
@@ -178,6 +178,56 @@ async function loadForecast() {
     renderChart();
     renderTable();
   }
+}
+
+function selectedPeriod() {
+  const from = document.getElementById('forecast-from')?.value;
+  if (!from || !/^\d{4}-\d{2}-\d{2}$/.test(from)) {
+    const now = new Date();
+    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+  }
+  return from.slice(0, 7);
+}
+
+async function runForecast() {
+  const btn = document.getElementById('btn-run-forecast');
+  const original = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = '⏳ Đang chạy...';
+  try {
+    const run = await apiPost('/runs', {
+      run_type: 'cashflow_forecast',
+      trigger_type: 'manual',
+      payload: {
+        period: selectedPeriod(),
+        horizon_days: 365,
+      },
+      requested_by: 'web-user',
+    });
+    if (run?.run_id) {
+      await waitForRun(run.run_id, 60);
+    }
+    await loadForecast();
+    toast('Đã cập nhật dự báo dòng tiền', 'success');
+  } catch (e) {
+    toast('Chạy dự báo thất bại: ' + e.message, 'error');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = original;
+  }
+}
+
+async function waitForRun(runId, timeoutSec = 45) {
+  const started = Date.now();
+  while (Date.now() - started < timeoutSec * 1000) {
+    const run = await api(`/runs/${runId}`);
+    const status = (run.status || '').toLowerCase();
+    if (!['queued', 'running'].includes(status)) {
+      return run;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+  }
+  return null;
 }
 
 function renderChart() {

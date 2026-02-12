@@ -259,9 +259,23 @@ async function handleRowAction(action, id) {
       URL.revokeObjectURL(url);
     }
   } else if (action === 'reprocess') {
+    const row = ocrResults.find((r) => r.id === id);
     try {
-      await apiPost('/runs', { run_type: 'voucher_reprocess', payload: { voucher_id: id } });
-      toast('Đã gửi yêu cầu xử lý lại', 'info');
+      const run = await apiPost('/runs', {
+        run_type: 'voucher_reprocess',
+        trigger_type: 'manual',
+        payload: {
+          voucher_id: id,
+          attachment_id: row?.source_ref || null,
+        },
+        requested_by: 'web-user',
+      });
+      if (run?.run_id) {
+        await waitForRun(run.run_id, 45);
+      }
+      toast('Đã xử lý lại chứng từ', 'success');
+      await loadResults();
+      await loadAuditLog(id, run?.run_id || row?.run_id);
     } catch (e) {
       toast('Lỗi: ' + e.message, 'error');
     }
@@ -287,13 +301,16 @@ function showPreview(id) {
     </div>
   `;
   openModal(`Chứng từ ${v.id}`, bodyHtml);
-  loadAuditLog(id);
+  loadAuditLog(id, v.run_id);
 }
 
-async function loadAuditLog(voucherId) {
+async function loadAuditLog(voucherId, runId = null) {
   const timeline = document.getElementById('ocr-audit-timeline');
   try {
-    const data = await api(`/logs?filter_entity_id=${voucherId}&limit=20`);
+    const query = runId
+      ? `/logs?run_id=${encodeURIComponent(runId)}&limit=20`
+      : `/logs?filter_entity_id=${encodeURIComponent(voucherId)}&limit=20`;
+    const data = await api(query);
     const items = data.items || data || [];
     if (!items.length) {
       timeline.innerHTML = '<p class="text-secondary">Không có log</p>';
@@ -303,7 +320,7 @@ async function loadAuditLog(voucherId) {
       .map(
         (it) => `
       <div class="timeline-item">
-        <div class="timeline-time">${formatDateTime(it.created_at)}</div>
+        <div class="timeline-time">${formatDateTime(it.created_at || it.timestamp || it.ts)}</div>
         <div class="timeline-text">${it.message || it.action || '—'} <a href="#" class="link-btn">${it.run_id || ''}</a></div>
       </div>`
       )
@@ -330,6 +347,19 @@ function exportCSV() {
   a.download = 'ocr_results.csv';
   a.click();
   URL.revokeObjectURL(url);
+}
+
+async function waitForRun(runId, timeoutSec = 30) {
+  const started = Date.now();
+  while (Date.now() - started < timeoutSec * 1000) {
+    const run = await api(`/runs/${runId}`);
+    const status = (run.status || '').toLowerCase();
+    if (!['queued', 'running'].includes(status)) {
+      return run;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+  }
+  return null;
 }
 
 registerTab('ocr', { init });

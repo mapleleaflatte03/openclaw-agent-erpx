@@ -12,6 +12,7 @@ from openclaw_agent.common.models import (
     AcctJournalProposal,
     AcctQnaAudit,
     AcctVoucher,
+    AgentRun,
 )
 from openclaw_agent.common.settings import get_settings
 from openclaw_agent.common.utils import new_uuid
@@ -67,6 +68,39 @@ def test_attachment_upload_creates_ocr_voucher(client_and_engine):
     assert vouchers.status_code == 200, vouchers.text
     items = vouchers.json().get("items", [])
     assert any(v.get("id") == body["voucher_id"] for v in items)
+
+
+def test_logs_accept_filter_entity_id(client_and_engine):
+    client, engine = client_and_engine
+    voucher_id = new_uuid()
+    run_id = new_uuid()
+
+    with db_session(engine) as s:
+        s.add(
+            AcctVoucher(
+                id=voucher_id,
+                erp_voucher_id=f"erp-{voucher_id[:8]}",
+                voucher_no="INV-LOG-001",
+                voucher_type="buy_invoice",
+                date="2026-02-12",
+                amount=250_000,
+                currency="VND",
+                partner_name="Demo",
+                has_attachment=True,
+                source="ocr_upload",
+                run_id=run_id,
+            )
+        )
+
+    resp = client.get(
+        "/agent/v1/logs",
+        params={"filter_entity_id": voucher_id, "limit": 20},
+        headers=_HEADERS,
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert "items" in body
+    assert body.get("run_id") == run_id
 
 
 def test_reports_endpoints_no_500_for_valid_payload(client_and_engine):
@@ -141,6 +175,94 @@ def test_reports_endpoints_no_500_for_valid_payload(client_and_engine):
     assert generate.status_code == 200, generate.text
     generated = generate.json()
     assert generated.get("report_id")
+
+    download = client.get(
+        f"/agent/v1/reports/{generated['report_id']}/download",
+        params={"format": "json"},
+        headers=_HEADERS,
+    )
+    assert download.status_code == 200, download.text
+    assert "application/json" in (download.headers.get("content-type") or "")
+    assert b'"report_type"' in download.content
+
+
+def test_create_run_local_executor_not_stuck_queued(client_and_engine, monkeypatch):
+    client, engine = client_and_engine
+    monkeypatch.setenv("RUN_EXECUTOR_MODE", "local")
+    from openclaw_agent.agent_service import main as svc_main
+
+    def _run_local_stub(run_id: str) -> None:
+        with db_session(engine) as s:
+            row = s.get(AgentRun, run_id)
+            assert row is not None
+            row.status = "success"
+            row.started_at = row.started_at or row.created_at
+            row.finished_at = row.finished_at or row.created_at
+            row.stats = {"stub": True}
+
+    monkeypatch.setattr(svc_main, "_dispatch_run_local", _run_local_stub)
+
+    create = client.post(
+        "/agent/v1/runs",
+        json={
+            "run_type": "bank_reconcile",
+            "trigger_type": "manual",
+            "payload": {"period": "2026-02"},
+        },
+        headers=_HEADERS,
+    )
+    assert create.status_code == 200, create.text
+    run_id = create.json()["run_id"]
+
+    fetched = client.get(f"/agent/v1/runs/{run_id}", headers=_HEADERS)
+    assert fetched.status_code == 200, fetched.text
+    assert fetched.json()["status"] == "success"
+
+
+def test_voucher_reprocess_run_type_accepted(client_and_engine, monkeypatch):
+    client, engine = client_and_engine
+    monkeypatch.setenv("RUN_EXECUTOR_MODE", "local")
+    from openclaw_agent.agent_service import main as svc_main
+
+    voucher_id = new_uuid()
+    with db_session(engine) as s:
+        s.add(
+            AcctVoucher(
+                id=voucher_id,
+                erp_voucher_id=f"erp-{voucher_id[:8]}",
+                voucher_no="INV-RP-001",
+                voucher_type="buy_invoice",
+                date="2026-02-12",
+                amount=450_000,
+                currency="VND",
+                partner_name="Demo",
+                has_attachment=True,
+                source="ocr_upload",
+                raw_payload={"status": "uploaded"},
+            )
+        )
+
+    def _run_local_stub(run_id: str) -> None:
+        with db_session(engine) as s:
+            run = s.get(AgentRun, run_id)
+            assert run is not None
+            run.status = "success"
+            run.started_at = run.created_at
+            run.finished_at = run.created_at
+
+    monkeypatch.setattr(svc_main, "_dispatch_run_local", _run_local_stub)
+
+    resp = client.post(
+        "/agent/v1/runs",
+        json={
+            "run_type": "voucher_reprocess",
+            "trigger_type": "manual",
+            "payload": {"voucher_id": voucher_id},
+        },
+        headers=_HEADERS,
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json().get("run_id")
 
 
 def test_qna_feedback_accepts_string_and_legacy_int(client_and_engine):

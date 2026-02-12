@@ -338,6 +338,16 @@ function bindEvents() {
       reportConfig.format = e.target.value;
     }
   });
+
+  document.getElementById('wizard-content').addEventListener('click', (e) => {
+    if (e.target.id === 'btn-export-final') {
+      exportReport();
+      return;
+    }
+    if (e.target.id === 'btn-email') {
+      toast('Tính năng gửi email sẽ được bổ sung ở vòng sau', 'info');
+    }
+  });
 }
 
 function updateWizardSteps() {
@@ -566,8 +576,12 @@ async function exportReport() {
       },
     });
 
-    if (resp.download_url) {
-      window.open(resp.download_url, '_blank');
+    const reportId = resp.report_id || resp.id;
+    if (reportId) {
+      const url = buildReportDownloadUrl(reportId, format);
+      window.open(url, '_blank', 'noopener');
+    } else if (resp.download_url) {
+      window.open(resp.download_url, '_blank', 'noopener');
     }
 
     toast('Xuất báo cáo thành công!', 'success');
@@ -594,8 +608,11 @@ async function quickExport(type) {
       period,
       format: 'pdf',
     });
-    if (resp.download_url) {
-      window.open(resp.download_url, '_blank');
+    const reportId = resp.report_id || resp.id;
+    if (reportId) {
+      window.open(buildReportDownloadUrl(reportId, 'pdf'), '_blank', 'noopener');
+    } else if (resp.download_url) {
+      window.open(resp.download_url, '_blank', 'noopener');
     }
     toast('Xuất thành công!', 'success');
   } catch (e) {
@@ -603,13 +620,18 @@ async function quickExport(type) {
   }
 }
 
+function buildReportDownloadUrl(reportId, format = 'pdf') {
+  const base = window.ERPX_API_BASE || '/agent/v1';
+  const fmt = format || 'pdf';
+  return `${base}/reports/${encodeURIComponent(reportId)}/download?format=${encodeURIComponent(fmt)}`;
+}
+
 // Global helper for history downloads
 window.downloadReport = async function (id) {
   try {
-    const resp = await api(`/reports/${id}/download`);
-    if (resp.url) {
-      window.open(resp.url, '_blank');
-    }
+    const item = reportHistory.find((r) => r.id === id);
+    const fmt = item?.format || 'pdf';
+    window.open(buildReportDownloadUrl(id, fmt), '_blank', 'noopener');
   } catch (e) {
     toast('Lỗi tải báo cáo', 'error');
   }

@@ -298,10 +298,20 @@ paths:
       parameters:
       - name: run_id
         in: query
-        required: true
+        required: false
         schema:
-          type: string
+          anyOf:
+          - type: string
+          - type: 'null'
           title: Run Id
+      - name: filter_entity_id
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Filter Entity Id
       - name: limit
         in: query
         required: false
@@ -1104,6 +1114,14 @@ paths:
           - type: string
           - type: 'null'
           title: Resolution
+      - name: status
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Status
       - name: anomaly_type
         in: query
         required: false
@@ -1891,7 +1909,7 @@ paths:
   /agent/v1/agent/commands:
     post:
       summary: Execute Agent Command
-      description: Parse a Vietnamese goal command and execute the chain of run_types.
+      description: Parse command payload and dispatch mapped run chain.
       operationId: execute_agent_command_agent_v1_agent_commands_post
       parameters:
       - name: X-API-Key
@@ -2215,7 +2233,7 @@ paths:
   /agent/v1/reports/{report_id}/download:
     get:
       summary: Reports Download
-      description: Get download URL for a report.
+      description: Download a generated report artifact.
       operationId: reports_download_agent_v1_reports__report_id__download_get
       parameters:
       - name: report_id
@@ -2224,6 +2242,14 @@ paths:
         schema:
           type: string
           title: Report Id
+      - name: format
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Format
       - name: X-API-Key
         in: header
         required: false
@@ -2238,8 +2264,6 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                additionalProperties: true
                 title: Response Reports Download Agent V1 Reports  Report Id  Download
                   Get
         '422':
@@ -2474,6 +2498,11 @@ components:
           maxLength: 500
           minLength: 1
           title: Command
+        goal:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Goal
         period:
           anyOf:
           - type: string

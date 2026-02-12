@@ -151,7 +151,7 @@ function renderCharts() {
   // Donut chart by anomaly type
   const typeCounts = {};
   anomalies.forEach((a) => {
-    const t = a.flag_type || a.type || 'other';
+    const t = a.anomaly_type || a.flag_type || a.type || 'other';
     typeCounts[t] = (typeCounts[t] || 0) + 1;
   });
   const labels = Object.keys(typeCounts);
@@ -224,24 +224,25 @@ function renderQueue() {
 
   queue.innerHTML = items
     .slice(0, 50)
-    .map(
-      (a) => `
+    .map((a) => {
+      const canResolve = isResolvable(a);
+      return `
     <div class="card mb-md" style="padding:var(--sp-md)">
       <div class="flex-between">
         <div>
-          <span class="text-bold">${a.title || a.flag_type || 'Anomaly'}</span>
+          <span class="text-bold">${a.title || a.anomaly_type || a.flag_type || 'Anomaly'}</span>
           <span class="badge ${severityBadge(a.severity)}" style="margin-left:8px">${a.severity || 'medium'}</span>
         </div>
         <span class="text-secondary" style="font-size:11px">${formatDateTime(a.detected_at || a.created_at)}</span>
       </div>
       <p class="text-secondary mt-md" style="font-size:13px">${a.description || a.message || '—'}</p>
       <div class="flex-row gap-sm mt-md">
-        <button class="btn btn-success btn-sm" data-action="resolve" data-id="${a.id}">✓ Giải quyết</button>
+        ${canResolve ? `<button class="btn btn-success btn-sm" data-action="resolve" data-id="${a.id}">✓ Giải quyết</button>` : '<span class="badge badge-neutral">Đã xử lý</span>'}
         <button class="btn btn-outline btn-sm" data-action="detail" data-id="${a.id}">Chi tiết</button>
       </div>
     </div>
-  `
-    )
+  `;
+    })
     .join('');
 
   // Bind actions
@@ -261,6 +262,16 @@ function severityBadge(sev) {
   return 'badge-neutral';
 }
 
+function normalizeStatus(anomaly) {
+  const raw = String(anomaly?.status || anomaly?.resolution || 'open').trim().toLowerCase();
+  if (!raw || raw === 'null' || raw === 'none' || raw === 'pending') return 'open';
+  return raw;
+}
+
+function isResolvable(anomaly) {
+  return normalizeStatus(anomaly) === 'open';
+}
+
 async function resolveAnomaly(id) {
   const action = confirm('Bấm OK = Đã giải quyết, Cancel = Bỏ qua') ? 'resolved' : 'ignored';
   try {
@@ -268,6 +279,11 @@ async function resolveAnomaly(id) {
     toast('Đã giải quyết rủi ro', 'success');
     await refresh();
   } catch (e) {
+    if (String(e?.message || '').includes('409')) {
+      toast('Mục này đã được xử lý ở phiên khác, đang tải lại danh sách', 'warning');
+      await refresh();
+      return;
+    }
     toast('Lỗi: ' + e.message, 'error');
   }
 }
