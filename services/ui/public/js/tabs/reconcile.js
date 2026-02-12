@@ -98,16 +98,25 @@ async function loadReconciliation() {
     const unmatched_bank = [];
 
     for (const tx of bankTxs) {
+      const bankAmount = Math.abs(Number(tx.amount || 0));
       if (isMatchedStatus(tx.match_status) && tx.matched_voucher_id) {
         const voucher = voucherById.get(tx.matched_voucher_id) || {
           id: tx.matched_voucher_id,
           date: tx.date,
           description: tx.memo || tx.counterparty || '—',
-          total_amount: Math.abs(Number(tx.amount || 0)),
+          total_amount: bankAmount,
         };
-        matchedVoucherIds.add(voucher.id);
         const voucherAmount = Number(voucher.total_amount ?? voucher.amount ?? 0);
-        const bankAmount = Math.abs(Number(tx.amount || 0));
+        if (bankAmount <= 0 || voucherAmount <= 0) {
+          unmatched_bank.push({
+            ...tx,
+            match_status: 'anomaly',
+            anomaly_reason: 'invalid_zero_amount_match',
+            matched_voucher_id: null,
+          });
+          continue;
+        }
+        matchedVoucherIds.add(voucher.id);
         const diffPct = voucherAmount > 0 ? (Math.abs(voucherAmount - bankAmount) / voucherAmount) * 100 : 0;
         matched.push({ voucher, bank: tx, diff_pct: diffPct });
       } else {
@@ -397,6 +406,11 @@ async function openManualMatchModal(voucherId) {
       toast('Ghép thủ công thành công', 'success');
       await loadReconciliation();
     } catch (e) {
+      if (String(e?.message || '').includes('INVALID_MATCH_AMOUNT')) {
+        toast('Không thể ghép giao dịch/chứng từ có số tiền <= 0', 'error');
+        await loadReconciliation();
+        return;
+      }
       toast(`Ghép thủ công thất bại: ${e.message}`, 'error');
     }
   });

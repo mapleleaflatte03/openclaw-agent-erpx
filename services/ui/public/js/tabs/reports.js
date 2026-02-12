@@ -97,27 +97,38 @@ function render() {
         <div class="card">
           <div class="card-title mb-sm">Kiểm tra hợp lệ</div>
           <div id="validation-checklist" class="flex-col gap-sm">
-            <div class="check-item pending">
+            <div class="check-item pending" data-check-key="period_data">
               <span class="check-icon">○</span>
               <span>Dữ liệu kỳ kế toán</span>
+              <span class="text-xs text-secondary check-detail">—</span>
             </div>
-            <div class="check-item pending">
+            <div class="check-item pending" data-check-key="input_quality">
+              <span class="check-icon">○</span>
+              <span>Chất lượng chứng từ đầu vào</span>
+              <span class="text-xs text-secondary check-detail">—</span>
+            </div>
+            <div class="check-item pending" data-check-key="opening_balance">
               <span class="check-icon">○</span>
               <span>Số dư đầu kỳ</span>
+              <span class="text-xs text-secondary check-detail">—</span>
             </div>
-            <div class="check-item pending">
+            <div class="check-item pending" data-check-key="period_activity">
               <span class="check-icon">○</span>
               <span>Phát sinh trong kỳ</span>
+              <span class="text-xs text-secondary check-detail">—</span>
             </div>
-            <div class="check-item pending">
+            <div class="check-item pending" data-check-key="trial_balance">
               <span class="check-icon">○</span>
               <span>Cân đối thử</span>
+              <span class="text-xs text-secondary check-detail">—</span>
             </div>
-            <div class="check-item pending">
+            <div class="check-item pending" data-check-key="compliance">
               <span class="check-icon">○</span>
               <span>Tuân thủ VAS/IFRS</span>
+              <span class="text-xs text-secondary check-detail">—</span>
             </div>
           </div>
+          <div id="validation-summary" class="text-xs text-secondary mt-sm">Chưa chạy kiểm tra</div>
           <button class="btn btn-outline btn-sm mt-md" id="btn-run-validation" style="width:100%">🔍 Chạy kiểm tra</button>
         </div>
 
@@ -479,10 +490,38 @@ function renderReportPreview(data) {
   `;
 }
 
+function normalizeValidationName(name) {
+  return String(name || '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function mapValidationCheckKey(name) {
+  const normalized = normalizeValidationName(name);
+  const aliases = {
+    'du lieu ky ke toan': 'period_data',
+    'chat luong chung tu dau vao': 'input_quality',
+    'so du dau ky': 'opening_balance',
+    'phat sinh trong ky': 'period_activity',
+    'can doi thu': 'trial_balance',
+    'tuan thu vas/ifrs': 'compliance',
+  };
+  return aliases[normalized] || null;
+}
+
 async function runValidation() {
+  if (!reportConfig.type) {
+    reportConfig.type = document.querySelector('input[name="report-type"]:checked')?.value || reportConfig.type;
+  }
   if (!reportConfig.type) {
     toast('Vui lòng chọn loại báo cáo trước khi kiểm tra', 'error');
     return;
+  }
+  if (!reportConfig.period) {
+    reportConfig.period = document.getElementById('report-period')?.value || currentPeriod();
   }
   if (!reportConfig.period || !/^\d{4}-\d{2}$/.test(reportConfig.period)) {
     toast('Vui lòng chọn kỳ báo cáo hợp lệ (YYYY-MM)', 'error');
@@ -490,32 +529,54 @@ async function runValidation() {
   }
 
   const items = document.querySelectorAll('.check-item');
+  const summary = document.getElementById('validation-summary');
   items.forEach((item) => {
     item.classList.remove('pass', 'fail', 'pending');
     item.classList.add('pending');
-    item.querySelector('.check-icon').textContent = '○';
+    item.querySelector('.check-icon').textContent = '⏳';
+    const detailNode = item.querySelector('.check-detail');
+    if (detailNode) detailNode.textContent = 'Đang kiểm tra...';
   });
+  if (summary) summary.textContent = 'Đang chạy kiểm tra...';
 
   try {
     const validation = await api(
       `/reports/validate?type=${encodeURIComponent(reportConfig.type)}&period=${encodeURIComponent(reportConfig.period)}`
     );
     const checks = validation.checks || [];
-    
-    items.forEach((item, i) => {
-      const check = checks[i];
-      const pass = check ? check.passed : true;
-      item.classList.remove('pending');
-      item.classList.add(pass ? 'pass' : 'fail');
-      item.querySelector('.check-icon').textContent = pass ? '✓' : '✗';
+    const keyedChecks = {};
+    checks.forEach((check) => {
+      const key = mapValidationCheckKey(check?.name);
+      if (key) keyedChecks[key] = check;
     });
+
+    items.forEach((item, i) => {
+      const key = item.dataset.checkKey;
+      const check = keyedChecks[key] || checks[i] || null;
+      const pass = check ? !!check.passed : false;
+      const icon = pass ? '✓' : '✗';
+      item.classList.remove('pending', 'pass', 'fail');
+      item.classList.add(pass ? 'pass' : 'fail');
+      item.querySelector('.check-icon').textContent = icon;
+      const detailNode = item.querySelector('.check-detail');
+      if (detailNode) detailNode.textContent = check?.detail || 'Không có dữ liệu kiểm tra';
+    });
+
+    if (summary) {
+      const passedCount = checks.filter((check) => check?.passed).length;
+      const totalCount = checks.length || items.length;
+      summary.textContent = `Kết quả: ${passedCount}/${totalCount} mục đạt • ${new Date().toLocaleTimeString('vi-VN')}`;
+    }
   } catch (e) {
     // On API error, mark all as pending
     items.forEach((item) => {
       item.classList.remove('pending');
       item.classList.add('fail');
-      item.querySelector('.check-icon').textContent = '?';
+      item.querySelector('.check-icon').textContent = '✗';
+      const detailNode = item.querySelector('.check-detail');
+      if (detailNode) detailNode.textContent = e.message || 'Lỗi API validate';
     });
+    if (summary) summary.textContent = `Lỗi kiểm tra: ${e.message || 'không xác định'}`;
     console.error('Validation error', e);
   }
 }

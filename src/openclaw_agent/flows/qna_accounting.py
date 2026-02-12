@@ -579,11 +579,15 @@ def _answer_data_driven_finance(session: Session, question: str) -> dict[str, An
                 "số liệu tháng này. Hiện tại chỉ hỗ trợ giải thích chuẩn mực (TT200/TT133)."
             ),
             "used_models": ["AcctVoucher"],
+            "confidence": 0.35,
+            "sources": [],
+            "related_vouchers": [],
             "question_type": "data_driven",
             "route": "data_unavailable",
         }
 
     answer_parts: list[str] = [f"Số liệu kỳ {period} (chỉ tính chứng từ hợp lệ):"]
+    source_rows: list[AcctVoucher] = []
     answered = False
     if asks_revenue:
         revenue_rows = [
@@ -595,6 +599,7 @@ def _answer_data_driven_finance(session: Session, question: str) -> dict[str, An
         if revenue_rows:
             total_revenue = sum(float(row.amount or 0) for row in revenue_rows)
             answer_parts.append(f"- Doanh thu ước tính: {total_revenue:,.0f} VND.")
+            source_rows.extend(sorted(revenue_rows, key=lambda r: float(r.amount or 0), reverse=True)[:3])
             answered = True
         else:
             answer_parts.append("- Chưa có chứng từ doanh thu hợp lệ trong kỳ này.")
@@ -613,6 +618,7 @@ def _answer_data_driven_finance(session: Session, question: str) -> dict[str, An
                 answer_parts.append(
                     f"  {idx}. {row.voucher_no or row.id}: {float(row.amount or 0):,.0f} VND"
                 )
+            source_rows.extend(top_expenses)
             answered = True
         else:
             answer_parts.append("- Chưa có chứng từ chi phí hợp lệ trong kỳ này.")
@@ -624,13 +630,40 @@ def _answer_data_driven_finance(session: Session, question: str) -> dict[str, An
                 "số liệu tháng này. Hiện tại chỉ hỗ trợ giải thích chuẩn mực (TT200/TT133)."
             ),
             "used_models": ["AcctVoucher"],
+            "confidence": 0.35,
+            "sources": [],
+            "related_vouchers": [],
             "question_type": "data_driven",
             "route": "data_unavailable",
         }
 
+    dedup_sources: list[dict[str, Any]] = []
+    seen_source_ids: set[str] = set()
+    for row in source_rows:
+        sid = str(row.id)
+        if sid in seen_source_ids:
+            continue
+        seen_source_ids.add(sid)
+        dedup_sources.append({
+            "type": "voucher",
+            "id": sid,
+            "title": row.voucher_no or sid,
+            "date": row.date,
+            "amount": float(row.amount or 0),
+            "currency": row.currency or "VND",
+        })
+
+    total_rows = len(rows)
+    usable_ratio = (len(usable) / total_rows) if total_rows > 0 else 0.0
+    confidence = 0.6 + min(usable_ratio, 1.0) * 0.3 + (0.05 if asks_revenue else 0.0) + (0.05 if asks_expense_top else 0.0)
+    confidence = round(max(0.0, min(confidence, 0.95)), 3)
+
     return {
         "answer": "\n".join(answer_parts),
         "used_models": ["AcctVoucher"],
+        "confidence": confidence,
+        "sources": dedup_sources,
+        "related_vouchers": dedup_sources[:5],
         "question_type": "data_driven",
         "route": "data",
     }
@@ -864,9 +897,13 @@ def _answer_regulation_query(session: Session, question: str) -> dict[str, Any] 
     else:
         answer = "Các văn bản liên quan đến câu hỏi:\n" + "\n".join(f"- {r}" for r in refs)
 
+    ref_sources = [{"type": "regulation", "title": ref} for ref in refs]
+
     return {
         "answer": answer,
         "used_models": [],
+        "confidence": 0.78,
+        "sources": ref_sources,
     }
 
 

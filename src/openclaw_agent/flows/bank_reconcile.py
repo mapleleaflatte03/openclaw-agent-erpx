@@ -35,8 +35,10 @@ def _parse_date(s: str) -> date_type | None:
 
 
 def _amount_close(a: float, b: float) -> bool:
-    if b == 0:
-        return a == 0
+    # Operational accounting rule: zero/negative amount rows are never
+    # auto-matched as "valid reconciled" records.
+    if a <= 0 or b <= 0:
+        return False
     return abs(a - b) / abs(b) <= AMOUNT_TOLERANCE_PCT
 
 
@@ -70,6 +72,25 @@ def flow_bank_reconcile(
         # Check if already mirrored
         existing = session.query(AcctBankTransaction).filter_by(bank_tx_ref=tx_ref).first()
         if existing:
+            if existing.amount <= 0 and str(existing.match_status or "").lower() in {
+                "matched",
+                "matched_auto",
+                "matched_manual",
+            }:
+                existing.match_status = "anomaly"
+                existing.matched_voucher_id = None
+                session.add(AcctAnomalyFlag(
+                    id=new_uuid(),
+                    anomaly_type="other",
+                    severity="high",
+                    description=(
+                        f"Bank tx {tx_ref} có amount <= 0 nhưng từng được đánh dấu matched. "
+                        "Hệ thống đã hạ trạng thái về anomaly để rà soát."
+                    ),
+                    bank_tx_id=existing.id,
+                    run_id=run_id,
+                ))
+                anomalies_created += 1
             continue
 
         tx_amount = float(tx.get("amount", 0))
@@ -82,6 +103,8 @@ def flow_bank_reconcile(
 
         for v in vouchers:
             v_amount = float(v.get("amount", 0))
+            if v_amount <= 0:
+                continue
             v_date = _parse_date(v.get("date", ""))
 
             if v_date and tx_date:
@@ -111,7 +134,10 @@ def flow_bank_reconcile(
         if best_match:
             matched_voucher_id = best_match.get("voucher_id") or best_match.get("erp_voucher_id")
 
-        if match_quality == "matched":
+        if tx_amount <= 0:
+            status = "anomaly"
+            match_quality = "invalid_amount"
+        elif match_quality == "matched":
             status = "matched"
             matched += 1
         elif match_quality in ("date_gap", "amount_mismatch"):
@@ -180,6 +206,19 @@ def flow_bank_reconcile(
                 description=(
                     f"Bank tx {tx_ref} ({tx_amount:,.0f} {tx.get('currency', 'VND')}) "
                     f"has no matching voucher"
+                ),
+                bank_tx_id=tx_id,
+                run_id=run_id,
+            ))
+            anomalies_created += 1
+        elif match_quality == "invalid_amount":
+            session.add(AcctAnomalyFlag(
+                id=new_uuid(),
+                anomaly_type="other",
+                severity="high",
+                description=(
+                    f"Bank tx {tx_ref} có amount {tx_amount:,.0f} {tx.get('currency', 'VND')} "
+                    "không hợp lệ để auto-match (<= 0)."
                 ),
                 bank_tx_id=tx_id,
                 run_id=run_id,

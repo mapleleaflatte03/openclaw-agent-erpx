@@ -1,7 +1,7 @@
 /**
  * Q&A Chat Tab — Expert chatbot interface with context panel
  */
-const { api, apiPost, apiPatch, formatDate, toast, registerTab, t } = window.ERPX;
+const { api, apiPost, apiPatch, formatDate, formatVND, toast, registerTab, t } = window.ERPX;
 
 let initialized = false;
 let messages = [];
@@ -297,7 +297,7 @@ function updateContextPanel(resp) {
         (s) => `
         <div class="flex-row gap-sm">
           <span class="badge badge-outline">${s.type || 'DOC'}</span>
-          <span class="text-sm">${s.title || s.name || s.id}</span>
+          <span class="text-sm">${s.title || s.name || s.id}${Number.isFinite(s.amount) ? ` • ${formatVND(s.amount)}` : ''}</span>
         </div>
       `
       )

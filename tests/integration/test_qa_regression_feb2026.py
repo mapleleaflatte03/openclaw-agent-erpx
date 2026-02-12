@@ -461,6 +461,55 @@ def test_qna_data_driven_vs_knowledge_routing(client_and_engine):
     assert "thông tư" in knowledge_body.get("answer", "").lower() or "tt200" in knowledge_body.get("answer", "").lower()
 
 
+def test_qna_data_driven_includes_sources_and_confidence(client_and_engine):
+    client, engine = client_and_engine
+    with db_session(engine) as s:
+        s.add(
+            AcctVoucher(
+                id=new_uuid(),
+                erp_voucher_id="erp-qna-sell-1",
+                voucher_no="INV-QNA-001",
+                voucher_type="sell_invoice",
+                date="2026-02-12",
+                amount=900_000,
+                currency="VND",
+                partner_name="Demo A",
+                has_attachment=True,
+                source="ocr_upload",
+                raw_payload={"status": "valid"},
+            )
+        )
+        s.add(
+            AcctVoucher(
+                id=new_uuid(),
+                erp_voucher_id="erp-qna-exp-1",
+                voucher_no="PT-QNA-001",
+                voucher_type="payment",
+                date="2026-02-12",
+                amount=620_000,
+                currency="VND",
+                partner_name="Demo B",
+                has_attachment=True,
+                source="ocr_upload",
+                raw_payload={"status": "valid"},
+            )
+        )
+
+    resp = client.post(
+        "/agent/v1/acct/qna",
+        json={"question": "Doanh thu tháng này và 3 khoản chi phí lớn nhất tháng này là gì?"},
+        headers=_HEADERS,
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    meta = body.get("meta", {})
+    assert meta.get("route") == "data"
+    assert isinstance(meta.get("confidence"), (int, float))
+    assert meta.get("confidence") > 0
+    assert isinstance(meta.get("sources"), list)
+    assert len(meta.get("sources")) >= 1
+
+
 def test_cashflow_forecast_sufficiency_and_clean_items(client_and_engine):
     client, engine = client_and_engine
     forecast_id_ok = new_uuid()
@@ -661,6 +710,48 @@ def test_bank_manual_match_unmatch_and_ignore(client_and_engine):
     )
     assert ignored.status_code == 200, ignored.text
     assert ignored.json()["match_status"] == "ignored"
+
+
+def test_bank_manual_match_rejects_zero_amount_rows(client_and_engine):
+    client, engine = client_and_engine
+    voucher_id = new_uuid()
+    bank_id = new_uuid()
+
+    with db_session(engine) as s:
+        s.add(
+            AcctVoucher(
+                id=voucher_id,
+                erp_voucher_id=f"erp-{voucher_id[:8]}",
+                voucher_no="INV-BANK-000",
+                voucher_type="sell_invoice",
+                date="2026-02-11",
+                amount=0,
+                currency="VND",
+                partner_name="Demo",
+                has_attachment=True,
+                source="erpx",
+            )
+        )
+        s.add(
+            AcctBankTransaction(
+                id=bank_id,
+                bank_tx_ref="BANK-TX-000",
+                bank_account="VCB-001",
+                date="2026-02-11",
+                amount=0,
+                currency="VND",
+                match_status="unmatched",
+            )
+        )
+
+    blocked = client.post(
+        "/agent/v1/acct/bank_match",
+        json={"bank_tx_id": bank_id, "voucher_id": voucher_id, "method": "manual"},
+        headers=_HEADERS,
+    )
+    assert blocked.status_code == 422, blocked.text
+    payload = blocked.json().get("detail", {})
+    assert payload.get("error") == "INVALID_MATCH_AMOUNT"
 
 
 def test_vn_feeder_control_update_config_and_status(client_and_engine, monkeypatch):

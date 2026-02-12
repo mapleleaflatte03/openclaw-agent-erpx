@@ -1029,6 +1029,13 @@ paths:
           - type: string
           - type: 'null'
           title: Status
+      - name: include_invalid
+        in: query
+        required: false
+        schema:
+          type: boolean
+          default: false
+          title: Include Invalid
       - name: X-API-Key
         in: header
         required: false
@@ -1723,6 +1730,14 @@ paths:
           type: integer
           default: 0
           title: Offset
+      - name: quality_scope
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Quality Scope
       - name: X-API-Key
         in: header
         required: false

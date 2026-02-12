@@ -1061,6 +1061,36 @@ def _evaluate_ocr_quality(filename: str, blob: bytes, pipeline: str) -> dict[str
     }
 
 
+def _normalize_quality_reasons(raw_reasons: Any) -> list[str]:
+    if not isinstance(raw_reasons, list):
+        return []
+    normalized: list[str] = []
+    for reason in raw_reasons:
+        text = str(reason or "").strip().lower()
+        if text:
+            normalized.append(text)
+    return sorted(set(normalized))
+
+
+def _canonical_ocr_status(amount: float, raw_status: str | None, reasons: list[str]) -> str:
+    status = str(raw_status or "").strip().lower()
+    reason_set = {str(r or "").strip().lower() for r in reasons}
+    if amount <= 0:
+        reason_set.add("zero_amount")
+
+    if "non_invoice_pattern" in reason_set or status == "non_invoice":
+        return "non_invoice"
+    if "zero_amount" in reason_set or "no_line_items" in reason_set:
+        return "quarantined"
+    if "low_confidence" in reason_set or status == "low_quality":
+        return "low_quality"
+    if amount > 0:
+        return "valid"
+    if status in {"uploaded", "pending", "queued"}:
+        return "pending"
+    return status or "quarantined"
+
+
 def _safe_filename(name: str) -> str:
     base = os.path.basename(name or "").strip()
     if not base:
@@ -2037,6 +2067,7 @@ def list_contract_audit_log(
 def list_journal_proposals(
     limit: int = 100,
     status: str | None = None,
+    include_invalid: bool = False,
     session: Session = Depends(get_session),
 ) -> dict[str, Any]:
     q = select(AcctJournalProposal).order_by(AcctJournalProposal.created_at.desc()).limit(min(limit, 500))
@@ -2047,6 +2078,15 @@ def list_journal_proposals(
     for r in rows:
         lines_q = select(AcctJournalLine).where(AcctJournalLine.proposal_id == r.id)
         lines = session.execute(lines_q).scalars().all()
+        invalid_accounts: list[str] = []
+        for ln in lines:
+            code = str(ln.account_code or "").strip()
+            if _is_undefined_like(code):
+                invalid_accounts.append(code or "<empty>")
+
+        if invalid_accounts and not include_invalid and (r.status or "pending") == "pending":
+            continue
+
         items.append({
             "id": r.id,
             "voucher_id": r.voucher_id,
@@ -2058,6 +2098,8 @@ def list_journal_proposals(
             "reviewed_at": r.reviewed_at,
             "created_at": r.created_at,
             "run_id": r.run_id,
+            "has_invalid_accounts": len(invalid_accounts) > 0,
+            "invalid_accounts": invalid_accounts,
             "lines": [
                 {
                     "id": ln.id,
@@ -2213,24 +2255,29 @@ def list_bank_transactions(
     if match_status:
         q = q.where(AcctBankTransaction.match_status == match_status)
     rows = session.execute(q).scalars().all()
+    matched_statuses = {"matched", "matched_auto", "matched_manual"}
+    items: list[dict[str, Any]] = []
+    for r in rows:
+        row_amount = _safe_float(r.amount)
+        raw_status = str(r.match_status or "").strip().lower()
+        invalid_zero_match = row_amount <= 0 and raw_status in matched_statuses
+        items.append({
+            "id": r.id,
+            "bank_tx_ref": r.bank_tx_ref,
+            "bank_account": r.bank_account,
+            "date": r.date,
+            "amount": r.amount,
+            "currency": r.currency,
+            "counterparty": r.counterparty,
+            "memo": r.memo,
+            "matched_voucher_id": None if invalid_zero_match else r.matched_voucher_id,
+            "match_status": "anomaly" if invalid_zero_match else r.match_status,
+            "anomaly_reason": "invalid_zero_amount_match" if invalid_zero_match else None,
+            "synced_at": r.synced_at,
+            "run_id": r.run_id,
+        })
     return {
-        "items": [
-            {
-                "id": r.id,
-                "bank_tx_ref": r.bank_tx_ref,
-                "bank_account": r.bank_account,
-                "date": r.date,
-                "amount": r.amount,
-                "currency": r.currency,
-                "counterparty": r.counterparty,
-                "memo": r.memo,
-                "matched_voucher_id": r.matched_voucher_id,
-                "match_status": r.match_status,
-                "synced_at": r.synced_at,
-                "run_id": r.run_id,
-            }
-            for r in rows
-        ]
+        "items": items
     }
 
 
@@ -2253,6 +2300,19 @@ def bank_match(
     voucher = session.get(AcctVoucher, body.voucher_id)
     if voucher is None:
         raise HTTPException(status_code=404, detail="Không tìm thấy chứng từ")
+
+    tx_amount = _safe_float(tx.amount)
+    voucher_amount = _safe_float(voucher.amount)
+    if tx_amount <= 0 or voucher_amount <= 0:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": "INVALID_MATCH_AMOUNT",
+                "detail": "Không thể ghép giao dịch/chứng từ có số tiền <= 0.",
+                "bank_amount": tx_amount,
+                "voucher_amount": voucher_amount,
+            },
+        )
 
     status_val = "matched_auto" if body.method == "auto" else "matched_manual"
     tx.matched_voucher_id = voucher.id
@@ -2599,6 +2659,7 @@ def list_vouchers(
     period: str | None = None,
     limit: int = 50,
     offset: int = 0,
+    quality_scope: str | None = None,
     session: Session = Depends(get_session),
 ) -> dict[str, Any]:
     """List AcctVoucher rows with optional filter by classification_tag or source."""
@@ -2616,7 +2677,7 @@ def list_vouchers(
         select(AcctVoucher)
         .where(*filters)
         .order_by(AcctVoucher.synced_at.desc())
-        .limit(min(limit, 200))
+        .limit(min(limit, 500))
         .offset(max(offset, 0))
     )
     total = session.execute(select(func.count()).select_from(AcctVoucher).where(*filters)).scalar() or 0
@@ -2624,6 +2685,21 @@ def list_vouchers(
     items = []
     for r in rows:
         payload = r.raw_payload if isinstance(r.raw_payload, dict) else {}
+        source_tag = payload.get("source_tag") or getattr(r, "source", None)
+        raw_status = str(payload.get("status", payload.get("quality_status", "processed")) or "").strip().lower()
+        amount = _safe_float(r.amount)
+        quality_reasons = _normalize_quality_reasons(payload.get("quality_reasons"))
+        canonical_status = raw_status or "processed"
+        if str(source_tag or "").strip().lower() == "ocr_upload":
+            canonical_status = _canonical_ocr_status(amount, raw_status, quality_reasons)
+            if amount <= 0 and "zero_amount" not in quality_reasons:
+                quality_reasons.append("zero_amount")
+                quality_reasons = sorted(set(quality_reasons))
+        is_operational = not (
+            str(source_tag or "").strip().lower() == "ocr_upload"
+            and (canonical_status in _INVALID_OCR_STATUSES or amount <= 0)
+        )
+
         vat_amount = payload.get("vat_amount", 0)
         line_items = payload.get("line_items", [])
         items.append({
@@ -2640,12 +2716,13 @@ def list_vouchers(
             "partner_tax_code": getattr(r, "partner_tax_code", None),
             "description": r.description,
             "source": getattr(r, "source", None),
-            "source_tag": payload.get("source_tag") or getattr(r, "source", None),
+            "source_tag": source_tag,
             "source_ref": payload.get("attachment_id"),
             "original_filename": payload.get("original_filename"),
             "confidence": payload.get("ocr_confidence"),
-            "status": payload.get("status", payload.get("quality_status", "processed")),
-            "quality_reasons": payload.get("quality_reasons", []),
+            "status": canonical_status,
+            "quality_reasons": quality_reasons,
+            "is_operational": is_operational,
             "line_items_count": len(line_items) if isinstance(line_items, list) else payload.get("line_items_count"),
             "type_hint": getattr(r, "type_hint", None),
             "classification_tag": getattr(r, "classification_tag", None),
@@ -2653,10 +2730,20 @@ def list_vouchers(
             "synced_at": r.synced_at,
             "run_id": r.run_id,
         })
+
+    scope = (quality_scope or "").strip().lower()
+    if scope:
+        if scope in {"valid", "operational"}:
+            items = [item for item in items if item.get("is_operational")]
+        elif scope in {"review", "invalid", "quarantine"}:
+            items = [item for item in items if not item.get("is_operational")]
+        elif scope != "all":
+            raise HTTPException(status_code=400, detail="quality_scope không hợp lệ")
+
     return {
         "items": items,
-        "total": int(total),
-        "limit": min(limit, 200),
+        "total": len(items) if scope else int(total),
+        "limit": min(limit, 500),
         "offset": max(offset, 0),
     }
 
@@ -2700,6 +2787,7 @@ def accounting_qna(
     usage = result.get("usage")
     confidence = result.get("confidence")
     sources = result.get("sources") or []
+    related_vouchers = result.get("related_vouchers") or []
     question_type = str(result.get("question_type") or "").strip() or None
     route = str(result.get("route") or "").strip() or None
 
@@ -2708,7 +2796,12 @@ def accounting_qna(
         id=new_uuid(),
         question=question,
         answer=result["answer"],
-        sources=result.get("meta"),
+        sources={
+            "sources": sources if isinstance(sources, list) else [],
+            "question_type": question_type,
+            "route": route,
+            "confidence": confidence if isinstance(confidence, (int, float)) else None,
+        },
         user_id=body.get("user_id"),
     )
     session.add(qna_row)
@@ -2731,6 +2824,7 @@ def accounting_qna(
         "usage": usage if isinstance(usage, dict) else None,
         "confidence": confidence if isinstance(confidence, (int, float)) else None,
         "sources": sources if isinstance(sources, list) else [],
+        "related_vouchers": related_vouchers if isinstance(related_vouchers, list) else [],
         "question_type": question_type,
         "route": route,
     }

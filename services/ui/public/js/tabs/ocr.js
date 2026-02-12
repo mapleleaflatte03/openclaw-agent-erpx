@@ -5,8 +5,11 @@ const { api, apiPost, formatVND, formatDateTime, toast, openModal, closeModal, s
 
 let initialized = false;
 let ocrResults = [];
+let ocrAllResults = [];
+let ocrScopedResults = [];
 let currentPage = 1;
 const PAGE_SIZE = 50;
+let ocrViewScope = 'operational';
 
 async function init() {
   if (initialized) {
@@ -44,6 +47,12 @@ function render() {
     <div class="flex-between mt-md mb-md">
       <span class="text-bold">Kết quả OCR</span>
       <div class="flex-row gap-sm">
+        <select class="form-select" id="ocr-view-scope" style="width:auto">
+          <option value="operational" selected>Hợp lệ cho hạch toán</option>
+          <option value="review">Cần kiểm tra</option>
+          <option value="all">Tất cả</option>
+        </select>
+        <span id="ocr-view-count" class="text-secondary text-sm" style="align-self:center">—</span>
         <button class="btn btn-outline" id="btn-export-csv">📥 Xuất CSV</button>
         <button class="btn btn-outline" id="btn-refresh-ocr">🔄 Làm mới</button>
       </div>
@@ -107,6 +116,11 @@ function bindOcrEvents() {
 
   document.getElementById('btn-export-csv').addEventListener('click', exportCSV);
   document.getElementById('btn-refresh-ocr').addEventListener('click', loadResults);
+  document.getElementById('ocr-view-scope').addEventListener('change', (e) => {
+    ocrViewScope = e.target.value;
+    currentPage = 1;
+    renderResultsTable();
+  });
 
   document.getElementById('ocr-audit-toggle').addEventListener('click', () => {
     const toggle = document.getElementById('ocr-audit-toggle');
@@ -164,51 +178,13 @@ async function handleFiles(files) {
 }
 
 async function loadResults() {
-  const tbody = document.getElementById('ocr-results-body');
   try {
-    const data = await api(`/acct/vouchers?source=ocr_upload&limit=${PAGE_SIZE}&offset=${(currentPage - 1) * PAGE_SIZE}`);
-    ocrResults = data.items || data.vouchers || [];
-    const total = data.total || ocrResults.length;
-
-    if (!ocrResults.length) {
-      tbody.innerHTML = '<tr><td colspan="9" class="text-center text-secondary">Chưa có dữ liệu</td></tr>';
-      document.getElementById('ocr-pagination').innerHTML = '';
-      return;
-    }
-
-    tbody.innerHTML = ocrResults
-      .map((v) => {
-        const reasons = Array.isArray(v.quality_reasons) ? v.quality_reasons : [];
-        const reasonTitle = reasons.length ? reasons.join(', ') : (v.status || 'processed');
-        const blockedReprocess = v.status === 'non_invoice' || reasons.includes('zero_amount');
-        return `
-      <tr data-id="${v.id}">
-        <td class="truncate" style="max-width:100px">${v.id}</td>
-        <td class="truncate" style="max-width:180px">${v.original_filename || v.source_ref || v.voucher_no || '—'}</td>
-        <td><span class="badge badge-info">${v.source_tag || v.source || '—'}</span></td>
-        <td>${renderConfidenceGauge(v.confidence ?? v.ocr_confidence)}</td>
-        <td><span class="badge ${statusBadgeClass(v.status)}" title="${reasonTitle}">${v.status || 'processed'}</span></td>
-        <td class="text-right">${formatVND(v.total_amount ?? v.amount)}</td>
-        <td class="text-right">${formatVND(v.vat_amount ?? 0)}</td>
-        <td class="text-center">${v.line_items_count ?? v.line_count ?? '—'}</td>
-        <td>
-          <button class="btn btn-icon btn-outline" data-action="preview" data-id="${v.id}" title="Xem chi tiết">👁️</button>
-          <button class="btn btn-icon btn-outline" data-action="download" data-id="${v.id}" title="Tải JSON">📥</button>
-          <button class="btn btn-icon btn-outline" data-action="reprocess" data-id="${v.id}" title="${blockedReprocess ? 'Voucher bị chặn reprocess do chất lượng dữ liệu' : 'Xử lý lại'}" ${blockedReprocess ? 'disabled' : ''}>🔄</button>
-        </td>
-      </tr>`;
-      })
-      .join('');
-
-    // Pagination
-    const pages = Math.ceil(total / PAGE_SIZE);
-    renderPagination(pages);
-
-    // Row actions
-    tbody.querySelectorAll('button[data-action]').forEach((btn) => {
-      btn.addEventListener('click', () => handleRowAction(btn.dataset.action, btn.dataset.id));
-    });
+    const data = await api('/acct/vouchers?source=ocr_upload&limit=500&offset=0');
+    const rawItems = data.items || data.vouchers || [];
+    ocrAllResults = rawItems.map(normalizeOcrVoucher);
+    renderResultsTable();
   } catch (e) {
+    const tbody = document.getElementById('ocr-results-body');
     tbody.innerHTML = `<tr><td colspan="9" class="text-center text-danger">Lỗi: ${e.message}</td></tr>`;
   }
 }
@@ -228,6 +204,107 @@ function statusBadgeClass(status) {
   if (status === 'pending') return 'badge-warning';
   if (status === 'error' || status === 'failed') return 'badge-danger';
   return 'badge-neutral';
+}
+
+function normalizeQualityReasons(rawReasons) {
+  if (!Array.isArray(rawReasons)) return [];
+  const normalized = rawReasons
+    .map((reason) => String(reason || '').trim().toLowerCase())
+    .filter(Boolean);
+  return Array.from(new Set(normalized));
+}
+
+function normalizeOcrVoucher(v) {
+  const amount = Number(v.total_amount ?? v.amount ?? 0);
+  const reasons = normalizeQualityReasons(v.quality_reasons);
+  const rawStatus = String(v.status || '').trim().toLowerCase();
+  const hasNonInvoice = rawStatus === 'non_invoice' || reasons.includes('non_invoice_pattern');
+  const hasZeroAmount = amount <= 0 || reasons.includes('zero_amount');
+  const hasNoLineItems = reasons.includes('no_line_items');
+  const hasLowConfidence = rawStatus === 'low_quality' || reasons.includes('low_confidence');
+
+  let status = rawStatus || 'pending';
+  if (hasNonInvoice) {
+    status = 'non_invoice';
+  } else if (hasZeroAmount || hasNoLineItems) {
+    status = 'quarantined';
+  } else if (hasLowConfidence) {
+    status = 'low_quality';
+  } else if (amount > 0) {
+    status = 'valid';
+  }
+
+  const normalizedReasons = [...reasons];
+  if (amount <= 0 && !normalizedReasons.includes('zero_amount')) {
+    normalizedReasons.push('zero_amount');
+  }
+
+  return {
+    ...v,
+    status,
+    quality_reasons: normalizeQualityReasons(normalizedReasons),
+    is_operational: status === 'valid' && amount > 0,
+  };
+}
+
+function applyOcrScope(items) {
+  if (ocrViewScope === 'all') return items;
+  if (ocrViewScope === 'review') return items.filter((item) => !item.is_operational);
+  return items.filter((item) => item.is_operational);
+}
+
+function renderResultsTable() {
+  const tbody = document.getElementById('ocr-results-body');
+  const countEl = document.getElementById('ocr-view-count');
+  ocrScopedResults = applyOcrScope(ocrAllResults);
+
+  const pages = Math.max(1, Math.ceil(ocrScopedResults.length / PAGE_SIZE));
+  if (currentPage > pages) {
+    currentPage = 1;
+  }
+  const start = (currentPage - 1) * PAGE_SIZE;
+  const end = start + PAGE_SIZE;
+  ocrResults = ocrScopedResults.slice(start, end);
+
+  if (countEl) {
+    countEl.textContent = `${ocrScopedResults.length}/${ocrAllResults.length}`;
+  }
+
+  if (!ocrResults.length) {
+    tbody.innerHTML = '<tr><td colspan="9" class="text-center text-secondary">Chưa có dữ liệu</td></tr>';
+    document.getElementById('ocr-pagination').innerHTML = '';
+    return;
+  }
+
+  tbody.innerHTML = ocrResults
+    .map((v) => {
+      const reasons = Array.isArray(v.quality_reasons) ? v.quality_reasons : [];
+      const reasonTitle = reasons.length ? reasons.join(', ') : v.status || 'processed';
+      const blockedReprocess = v.status === 'non_invoice' || reasons.includes('zero_amount');
+      return `
+      <tr data-id="${v.id}">
+        <td class="truncate" style="max-width:100px">${v.id}</td>
+        <td class="truncate" style="max-width:180px">${v.original_filename || v.source_ref || v.voucher_no || '—'}</td>
+        <td><span class="badge badge-info">${v.source_tag || v.source || '—'}</span></td>
+        <td>${renderConfidenceGauge(v.confidence ?? v.ocr_confidence)}</td>
+        <td><span class="badge ${statusBadgeClass(v.status)}" title="${reasonTitle}">${v.status || 'processed'}</span></td>
+        <td class="text-right">${formatVND(v.total_amount ?? v.amount)}</td>
+        <td class="text-right">${formatVND(v.vat_amount ?? 0)}</td>
+        <td class="text-center">${v.line_items_count ?? v.line_count ?? '—'}</td>
+        <td>
+          <button class="btn btn-icon btn-outline" data-action="preview" data-id="${v.id}" title="Xem chi tiết">👁️</button>
+          <button class="btn btn-icon btn-outline" data-action="download" data-id="${v.id}" title="Tải JSON">📥</button>
+          <button class="btn btn-icon btn-outline" data-action="reprocess" data-id="${v.id}" title="${blockedReprocess ? 'Voucher bị chặn reprocess do chất lượng dữ liệu' : 'Xử lý lại'}" ${blockedReprocess ? 'disabled' : ''}>🔄</button>
+        </td>
+      </tr>`;
+    })
+    .join('');
+
+  renderPagination(pages);
+
+  tbody.querySelectorAll('button[data-action]').forEach((btn) => {
+    btn.addEventListener('click', () => handleRowAction(btn.dataset.action, btn.dataset.id));
+  });
 }
 
 function renderPagination(pages) {
@@ -341,12 +418,12 @@ async function loadAuditLog(voucherId, runId = null) {
 }
 
 function exportCSV() {
-  if (!ocrResults.length) {
+  if (!ocrScopedResults.length) {
     toast('Không có dữ liệu để xuất', 'error');
     return;
   }
   const headers = ['id', 'filename', 'source', 'confidence', 'status', 'total_amount', 'vat_amount', 'line_items_count'];
-  const rows = ocrResults.map((v) =>
+  const rows = ocrScopedResults.map((v) =>
     [v.id, v.original_filename || '', v.source_tag || '', v.confidence || '', v.status || '', v.total_amount || '', v.vat_amount || '', v.line_items_count || ''].join(',')
   );
   const csv = [headers.join(','), ...rows].join('\n');
