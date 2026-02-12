@@ -26,6 +26,20 @@ function buildPeriodOptions(monthCount = 18) {
   return opts.join('');
 }
 
+function createDefaultReportConfig() {
+  return {
+    type: 'balance_sheet',
+    standard: 'VAS',
+    period: currentPeriod(),
+    format: 'pdf',
+    currency: 'VND',
+    compare: 'prev_period',
+    showDetails: true,
+    showNotes: true,
+    sign: false,
+  };
+}
+
 async function init() {
   if (!initialized) {
     initialized = true;
@@ -36,6 +50,7 @@ async function init() {
 }
 
 function render() {
+  reportConfig = { ...createDefaultReportConfig(), ...reportConfig };
   const pane = document.getElementById('tab-reports');
   pane.innerHTML = `
     <div class="grid-2" style="grid-template-columns:1fr 400px;">
@@ -654,7 +669,7 @@ async function exportReport() {
 
     // Reset wizard
     currentStep = 1;
-    reportConfig = {};
+    reportConfig = createDefaultReportConfig();
     renderCurrentStep();
     updateWizardSteps();
     document.getElementById('preview-panel').style.display = 'none';
