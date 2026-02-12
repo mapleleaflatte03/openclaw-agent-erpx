@@ -28,6 +28,7 @@ import json as _json
 import logging
 import os
 import re
+from datetime import datetime
 from typing import Any
 
 from sqlalchemy import func, select
@@ -510,6 +511,131 @@ def _extract_voucher_no(question: str) -> str | None:
     return None
 
 
+def _classify_question_type(question: str) -> str:
+    q = question.lower()
+    knowledge_keywords = (
+        "tt200",
+        "tt133",
+        "thông tư",
+        "chuẩn mực",
+        "ifrs",
+        "vas",
+        "quy định",
+        "luật kế toán",
+        "phân biệt",
+    )
+    data_keywords = (
+        "doanh thu",
+        "chi phí",
+        "lớn nhất",
+        "top",
+        "tháng này",
+        "quý này",
+        "bao nhiêu tiền",
+        "số liệu",
+        "thu bao nhiêu",
+        "chi bao nhiêu",
+    )
+    if any(kw in q for kw in knowledge_keywords):
+        return "knowledge"
+    if any(kw in q for kw in data_keywords):
+        return "data_driven"
+    return "general"
+
+
+def _period_from_question_or_current(question: str) -> str:
+    extracted = _extract_period(question)
+    if extracted:
+        return extracted
+    now = datetime.now()
+    return f"{now.year:04d}-{now.month:02d}"
+
+
+def _voucher_usable_for_data(voucher: AcctVoucher) -> bool:
+    amount = float(voucher.amount or 0)
+    if amount <= 0:
+        return False
+    payload = voucher.raw_payload if isinstance(voucher.raw_payload, dict) else {}
+    status = str(payload.get("status") or payload.get("quality_status") or "").strip().lower()
+    return status not in {"quarantined", "non_invoice", "low_quality"}
+
+
+def _answer_data_driven_finance(session: Session, question: str) -> dict[str, Any] | None:
+    q = question.lower()
+    asks_revenue = "doanh thu" in q
+    asks_expense_top = ("chi phí" in q or "khoản chi" in q or "chi " in q) and (
+        "lớn nhất" in q or "top" in q
+    )
+    if not asks_revenue and not asks_expense_top:
+        return None
+
+    period = _period_from_question_or_current(question)
+    rows = session.execute(select(AcctVoucher).where(AcctVoucher.date.like(f"{period}%"))).scalars().all()
+    usable = [row for row in rows if _voucher_usable_for_data(row)]
+    if not usable:
+        return {
+            "answer": (
+                "Hệ thống chưa được kết nối dữ liệu doanh thu/chi phí thực tế, nên chưa thể trả lời "
+                "số liệu tháng này. Hiện tại chỉ hỗ trợ giải thích chuẩn mực (TT200/TT133)."
+            ),
+            "used_models": ["AcctVoucher"],
+            "question_type": "data_driven",
+            "route": "data_unavailable",
+        }
+
+    answer_parts: list[str] = [f"Số liệu kỳ {period} (chỉ tính chứng từ hợp lệ):"]
+    answered = False
+    if asks_revenue:
+        revenue_rows = [
+            row
+            for row in usable
+            if str(row.voucher_type or "").lower() in {"sell_invoice", "receipt"}
+            or str(row.classification_tag or "").upper() in {"SALES_INVOICE", "CASH_RECEIPT"}
+        ]
+        if revenue_rows:
+            total_revenue = sum(float(row.amount or 0) for row in revenue_rows)
+            answer_parts.append(f"- Doanh thu ước tính: {total_revenue:,.0f} VND.")
+            answered = True
+        else:
+            answer_parts.append("- Chưa có chứng từ doanh thu hợp lệ trong kỳ này.")
+
+    if asks_expense_top:
+        expense_rows = [
+            row
+            for row in usable
+            if str(row.voucher_type or "").lower() in {"buy_invoice", "payment"}
+            or str(row.classification_tag or "").upper() in {"PURCHASE_INVOICE", "CASH_DISBURSEMENT"}
+        ]
+        if expense_rows:
+            top_expenses = sorted(expense_rows, key=lambda r: float(r.amount or 0), reverse=True)[:3]
+            answer_parts.append("- 3 khoản chi lớn nhất:")
+            for idx, row in enumerate(top_expenses, start=1):
+                answer_parts.append(
+                    f"  {idx}. {row.voucher_no or row.id}: {float(row.amount or 0):,.0f} VND"
+                )
+            answered = True
+        else:
+            answer_parts.append("- Chưa có chứng từ chi phí hợp lệ trong kỳ này.")
+
+    if not answered:
+        return {
+            "answer": (
+                "Hệ thống chưa được kết nối dữ liệu doanh thu/chi phí thực tế, nên chưa thể trả lời "
+                "số liệu tháng này. Hiện tại chỉ hỗ trợ giải thích chuẩn mực (TT200/TT133)."
+            ),
+            "used_models": ["AcctVoucher"],
+            "question_type": "data_driven",
+            "route": "data_unavailable",
+        }
+
+    return {
+        "answer": "\n".join(answer_parts),
+        "used_models": ["AcctVoucher"],
+        "question_type": "data_driven",
+        "route": "data",
+    }
+
+
 def _answer_voucher_count(session: Session, question: str) -> dict[str, Any] | None:
     """Answer: how many vouchers in a period?"""
     keywords = ["bao nhiêu chứng từ", "số lượng chứng từ", "có bao nhiêu", "tổng chứng từ"]
@@ -759,20 +885,52 @@ def answer_question(session: Session, question: str) -> dict[str, Any]:
     if graph_result is not None:
         return graph_result
 
+    question_type = _classify_question_type(question)
+
+    if question_type == "data_driven":
+        data_handlers = [
+            _answer_data_driven_finance,
+            _answer_voucher_count,
+            _answer_journal_explanation,
+            _answer_anomaly_summary,
+            _answer_cashflow_summary,
+            _answer_classification_summary,
+        ]
+        for handler in data_handlers:
+            result = handler(session, question)
+            if result is None:
+                continue
+            result.pop("reasoning_chain", None)
+            result.setdefault("question_type", "data_driven")
+            result.setdefault("route", "data")
+            return result
+        return {
+            "answer": (
+                "Hệ thống chưa được kết nối dữ liệu doanh thu/chi phí thực tế, nên chưa thể trả lời "
+                "số liệu tháng này. Hiện tại chỉ hỗ trợ giải thích chuẩn mực (TT200/TT133)."
+            ),
+            "used_models": ["AcctVoucher"],
+            "question_type": "data_driven",
+            "route": "data_unavailable",
+        }
+
+    # Knowledge/general path
     handlers = [
+        _answer_regulation_query,
         _answer_voucher_count,
         _answer_journal_explanation,
         _answer_anomaly_summary,
         _answer_cashflow_summary,
         _answer_classification_summary,
     ]
-
     for handler in handlers:
         result = handler(session, question)
-        if result is not None:
-            # Strip reasoning_chain — internal audit only, not for API/UI
-            result.pop("reasoning_chain", None)
-            return result
+        if result is None:
+            continue
+        result.pop("reasoning_chain", None)
+        result.setdefault("question_type", "knowledge" if handler is _answer_regulation_query else "general")
+        result.setdefault("route", "knowledge" if handler is _answer_regulation_query else "data")
+        return result
 
     # --- Try LLM for free-form questions when enabled ---
     # Check if this is a PO benchmark question first
@@ -795,6 +953,8 @@ def answer_question(session: Session, question: str) -> dict[str, Any]:
         llm_result["answer"] = _clean_llm_answer(llm_result.get("answer", ""))
         llm_result.setdefault("used_models", [])
         llm_result["llm_used"] = True
+        llm_result.setdefault("question_type", "knowledge")
+        llm_result.setdefault("route", "knowledge")
 
         # Quality guardrail: if answer fails quality check, use PO template or TT context
         ans = llm_result["answer"].strip()
@@ -816,6 +976,8 @@ def answer_question(session: Session, question: str) -> dict[str, Any]:
             "answer": _po_template,
             "used_models": [],
             "llm_used": False,
+            "question_type": "knowledge",
+            "route": "knowledge",
         }
 
     # Default fallback (no handler, no LLM) — try to provide useful TT133 context
@@ -839,4 +1001,6 @@ def answer_question(session: Session, question: str) -> dict[str, Any]:
     return {
         "answer": _fallback_answer,
         "used_models": [],
+        "question_type": "knowledge",
+        "route": "knowledge",
     }

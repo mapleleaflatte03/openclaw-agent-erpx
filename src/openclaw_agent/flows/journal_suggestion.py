@@ -57,6 +57,34 @@ _ACCOUNT_MAP: dict[str, dict[str, Any]] = {
 }
 
 
+def _invalid_account(code: Any) -> bool:
+    normalized = str(code or "").strip().lower()
+    return normalized in {"", "undefined", "null", "none", "nan", "n/a", "na", "-"}
+
+
+def _ensure_valid_account_mapping(vtype: str, result: dict[str, Any]) -> dict[str, Any]:
+    mapping = _ACCOUNT_MAP.get(vtype, _ACCOUNT_MAP["other"])
+    fallback_debit, fallback_debit_name = mapping["debit"]
+    fallback_credit, fallback_credit_name = mapping["credit"]
+    adjusted = dict(result)
+    changed = False
+    if _invalid_account(adjusted.get("debit_account")):
+        adjusted["debit_account"] = fallback_debit
+        adjusted["debit_name"] = fallback_debit_name
+        changed = True
+    if _invalid_account(adjusted.get("credit_account")):
+        adjusted["credit_account"] = fallback_credit
+        adjusted["credit_name"] = fallback_credit_name
+        changed = True
+    if changed:
+        adjusted["confidence"] = min(float(adjusted.get("confidence", mapping["confidence"])), 0.65)
+        adjusted["reasoning"] = (
+            f"{adjusted.get('reasoning', '')} "
+            f"(Đã thay thế tài khoản không hợp lệ bằng mapping mặc định {fallback_debit}/{fallback_credit})."
+        ).strip()
+    return adjusted
+
+
 def _classify_voucher(voucher: dict[str, Any]) -> dict[str, Any]:
     """Rule-based voucher classifier, enhanced with TT133 journal module.
 
@@ -104,7 +132,7 @@ def _classify_voucher(voucher: dict[str, Any]) -> dict[str, Any]:
                             })
                     except Exception:
                         log.exception("LLM refinement failed \u2014 keeping TT133 result")
-                return result
+                return _ensure_valid_account_mapping(vtype, result)
     except Exception:
         log.debug("TT133 journal module unavailable \u2014 falling back to rule-based")
 
@@ -154,7 +182,7 @@ def _classify_voucher(voucher: dict[str, Any]) -> dict[str, Any]:
         except Exception:
             log.exception("LLM refinement failed — keeping rule-based result")
 
-    return result
+    return _ensure_valid_account_mapping(vtype, result)
 
 
 def flow_journal_suggestion(

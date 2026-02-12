@@ -8,6 +8,20 @@ let proposals = [];
 let filterStatus = 'pending';
 let filterConfidence = 0;
 
+function normalizeAccountCode(line) {
+  return String(line?.account_code || line?.account || '').trim();
+}
+
+function hasInvalidAccountCode(code) {
+  const normalized = String(code || '').trim().toLowerCase();
+  return !normalized || ['undefined', 'null', 'none', 'nan', 'n/a', 'na', '-'].includes(normalized);
+}
+
+function proposalHasInvalidAccounts(proposal) {
+  const lines = proposal?.lines || [];
+  return lines.some((line) => hasInvalidAccountCode(normalizeAccountCode(line)));
+}
+
 async function init() {
   if (initialized) {
     await loadProposals();
@@ -120,6 +134,7 @@ function renderProposalCard(p) {
   const totalDebit = lines.reduce((s, l) => s + (l.debit || 0), 0);
   const totalCredit = lines.reduce((s, l) => s + (l.credit || 0), 0);
   const balanced = Math.abs(totalDebit - totalCredit) < 1;
+  const invalidAccount = proposalHasInvalidAccounts(p);
 
   return `
     <div class="card proposal-card" data-id="${p.id}">
@@ -136,7 +151,13 @@ function renderProposalCard(p) {
       <table class="data-table" style="font-size:12px;">
         <thead><tr><th>TK</th><th>Nợ</th><th>Có</th></tr></thead>
         <tbody>
-          ${lines.map((l) => `<tr><td>${l.account}</td><td class="text-right">${formatVND(l.debit || 0)}</td><td class="text-right">${formatVND(l.credit || 0)}</td></tr>`).join('')}
+          ${lines
+            .map((l) => {
+              const accountCode = normalizeAccountCode(l);
+              const invalidClass = hasInvalidAccountCode(accountCode) ? 'text-danger text-bold' : '';
+              return `<tr><td class="${invalidClass}">${accountCode || 'undefined'}</td><td class="text-right">${formatVND(l.debit || 0)}</td><td class="text-right">${formatVND(l.credit || 0)}</td></tr>`;
+            })
+            .join('')}
           <tr style="font-weight:700;background:var(--c-surface-alt)">
             <td>Tổng</td>
             <td class="text-right" style="color:${balanced ? 'var(--c-success)' : 'var(--c-danger)'}">${formatVND(totalDebit)}</td>
@@ -172,7 +193,7 @@ function renderProposalCard(p) {
         p.status === 'pending' || !p.status
           ? `
       <div class="flex-row gap-sm mt-md">
-        <button class="btn btn-success btn-approve">✓ Duyệt</button>
+        <button class="btn btn-success btn-approve" ${invalidAccount ? 'disabled title="Không thể duyệt: có tài khoản undefined"' : ''}>✓ Duyệt</button>
         <button class="btn btn-danger btn-reject">✗ Từ chối</button>
         <button class="btn btn-outline btn-edit">✏️ Sửa</button>
       </div>`
@@ -200,6 +221,11 @@ function getSelectedIds() {
 }
 
 function showApproveModal(id) {
+  const proposal = proposals.find((x) => x.id === id);
+  if (proposalHasInvalidAccounts(proposal)) {
+    toast('Không thể duyệt: proposal có tài khoản kế toán undefined', 'error');
+    return;
+  }
   const bodyHtml = `
     <p>Xác nhận duyệt bút toán này?</p>
     <div class="form-group mt-md">
@@ -215,8 +241,10 @@ function showApproveModal(id) {
   document.getElementById('modal-cancel').onclick = closeModal;
   document.getElementById('modal-confirm').onclick = async () => {
     const note = document.getElementById('approve-note').value;
-    await reviewProposal(id, 'approve', note);
-    closeModal();
+    const ok = await reviewProposal(id, 'approve', note);
+    if (ok) {
+      closeModal();
+    }
   };
 }
 
@@ -247,8 +275,10 @@ function showRejectModal(id) {
       toast('Vui lòng nhập ghi chú', 'error');
       return;
     }
-    await reviewProposal(id, 'reject', `${reason}: ${note}`);
-    closeModal();
+    const ok = await reviewProposal(id, 'reject', `${reason}: ${note}`);
+    if (ok) {
+      closeModal();
+    }
   };
 }
 
@@ -263,7 +293,7 @@ function showEditModal(id) {
       <tbody>
         ${lines.map((l, i) => `
           <tr data-idx="${i}">
-            <td><input class="form-input" value="${l.account}" data-field="account" style="width:80px"></td>
+            <td><input class="form-input" value="${normalizeAccountCode(l)}" data-field="account" style="width:80px"></td>
             <td><input class="form-input" type="number" value="${l.debit || 0}" data-field="debit" style="width:120px"></td>
             <td><input class="form-input" type="number" value="${l.credit || 0}" data-field="credit" style="width:120px"></td>
             <td><button class="btn btn-icon btn-outline" data-remove="${i}">✕</button></td>
@@ -283,13 +313,15 @@ function showEditModal(id) {
     // Collect edited lines from table inputs
     const rows = document.querySelectorAll('#edit-lines-table tbody tr');
     const editedLines = Array.from(rows).map((row) => ({
-      account: row.querySelector('[data-field="account"]').value,
+      account_code: row.querySelector('[data-field="account"]').value,
       debit: parseFloat(row.querySelector('[data-field="debit"]').value) || 0,
       credit: parseFloat(row.querySelector('[data-field="credit"]').value) || 0,
     }));
     // For now just approve with note
-    await reviewProposal(id, 'approve', `Đã chỉnh sửa: ${JSON.stringify(editedLines)}`);
-    closeModal();
+    const ok = await reviewProposal(id, 'approve', `Đã chỉnh sửa: ${JSON.stringify(editedLines)}`);
+    if (ok) {
+      closeModal();
+    }
   };
 }
 
@@ -299,8 +331,14 @@ async function reviewProposal(id, action, note) {
     await apiPost(`/acct/journal_proposals/${id}/review`, { status, reviewed_by: 'web-user' });
     toast(`Đã ${action === 'approve' ? 'duyệt' : 'từ chối'} bút toán`, 'success');
     loadProposals();
+    return true;
   } catch (e) {
+    if (String(e?.message || '').includes('INVALID_ACCOUNT_CODE')) {
+      toast('Không thể duyệt: Proposal có tài khoản không hợp lệ (undefined)', 'error');
+      return false;
+    }
     toast('Lỗi: ' + e.message, 'error');
+    return false;
   }
 }
 

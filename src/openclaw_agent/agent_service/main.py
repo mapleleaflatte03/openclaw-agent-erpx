@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import io
 import json
+import math
 import mimetypes
 import os
 import re as _re
 import threading
 import time
+from collections import Counter
 from datetime import date, datetime
 from hashlib import sha256
 from pathlib import Path
@@ -836,6 +839,189 @@ _ATTACH_ALLOWED_EXT = {
     ".jpeg": "image/jpeg",
     ".png": "image/png",
 }
+_INVALID_OCR_STATUSES = {"quarantined", "non_invoice", "low_quality"}
+_NON_INVOICE_HINTS = {
+    "dog",
+    "dogs",
+    "cat",
+    "cats",
+    "dogs-vs-cats",
+    "pet",
+    "kitten",
+    "puppy",
+}
+_INVOICE_HINTS = {
+    "invoice",
+    "hoa don",
+    "hóa đơn",
+    "vat",
+    "tax code",
+    "mst",
+    "tổng tiền",
+    "thanh tien",
+    "thành tiền",
+    "receipt",
+    "so hoa don",
+    "số hóa đơn",
+}
+try:
+    _OCR_MIN_CONFIDENCE = float(os.getenv("OCR_MIN_CONFIDENCE", "0.70"))
+except Exception:
+    _OCR_MIN_CONFIDENCE = 0.70
+_OCR_MIN_CONFIDENCE = max(0.0, min(_OCR_MIN_CONFIDENCE, 1.0))
+
+
+def _is_undefined_like(value: Any) -> bool:
+    txt = str(value or "").strip().lower()
+    return txt in {"", "undefined", "null", "none", "nan", "n/a", "na", "-"}
+
+
+def _safe_float(value: Any, default: float = 0.0) -> float:
+    try:
+        num = float(value)
+    except Exception:
+        return default
+    if not math.isfinite(num):
+        return default
+    return num
+
+
+def _parse_amount_token(token: str) -> float:
+    # Keep this parser deterministic and permissive for VN-style separators.
+    cleaned = _re.sub(r"[^\d,.\-]", "", token or "")
+    if not cleaned:
+        return 0.0
+    # Heuristic: keep only digits when separators are ambiguous.
+    digits = _re.sub(r"[^\d\-]", "", cleaned)
+    if not digits or digits in {"-", "--"}:
+        return 0.0
+    try:
+        return abs(float(int(digits)))
+    except Exception:
+        return 0.0
+
+
+def _extract_upload_text_preview(blob: bytes, pipeline: str) -> str:
+    if not blob:
+        return ""
+    # XML path: strict UTF-8 decode handled above, reuse it here.
+    if pipeline == "xml_parse":
+        try:
+            return blob.decode("utf-8", errors="ignore")
+        except Exception:
+            return ""
+    if pipeline == "pdf_ocr":
+        try:
+            import pdfplumber
+
+            pages: list[str] = []
+            with pdfplumber.open(io.BytesIO(blob)) as pdf:
+                for page in pdf.pages[:2]:
+                    txt = (page.extract_text() or "").strip()
+                    if txt:
+                        pages.append(txt)
+            return "\n".join(pages)
+        except Exception:
+            return ""
+    if pipeline == "image_ocr":
+        try:
+            import pytesseract
+            from PIL import Image
+
+            with Image.open(io.BytesIO(blob)) as image:
+                return pytesseract.image_to_string(image, lang="eng+vie", timeout=8)
+        except Exception:
+            return ""
+    return ""
+
+
+def _estimate_line_items(text: str) -> int:
+    if not text:
+        return 0
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    # Rough heuristic: invoice row often contains quantity + amount and some label.
+    hits = 0
+    for line in lines:
+        has_digit = bool(_re.search(r"\d", line))
+        has_money = bool(_re.search(r"(vnd|₫|đ|dong)", line, _re.I)) or bool(_re.search(r"\d[\d.,]{2,}", line))
+        if has_digit and has_money and len(line) >= 6:
+            hits += 1
+    if hits == 0:
+        lowered = text.lower()
+        if any(word in lowered for word in {"item", "hàng", "dịch vụ", "đơn giá", "quantity"}):
+            return 1
+    return hits
+
+
+def _extract_total_amount(filename: str, text: str) -> float:
+    joined = f"{filename}\n{text}"
+    # Prefer amount near total keywords first.
+    patterns = [
+        r"(?:tong\s*tien|tổng\s*tiền|thanh\s*tien|thành\s*tiền|total)\s*[:=]?\s*([0-9][0-9.,\s]{2,})",
+        r"(?:amount|grand\s*total)\s*[:=]?\s*([0-9][0-9.,\s]{2,})",
+    ]
+    for pat in patterns:
+        m = _re.search(pat, joined, flags=_re.I)
+        if not m:
+            continue
+        amt = _parse_amount_token(m.group(1))
+        if amt > 0:
+            return amt
+    # Fallback: largest numeric token in document.
+    candidates = [_parse_amount_token(tok) for tok in _re.findall(r"\d[\d.,\s]{3,}", joined)]
+    candidates = [val for val in candidates if val > 0]
+    return max(candidates) if candidates else 0.0
+
+
+def _evaluate_ocr_quality(filename: str, blob: bytes, pipeline: str) -> dict[str, Any]:
+    text_preview = _extract_upload_text_preview(blob, pipeline)
+    lowered = f"{filename} {text_preview}".lower()
+    non_invoice = any(hint in lowered for hint in _NON_INVOICE_HINTS)
+    invoice_hint_count = sum(1 for hint in _INVOICE_HINTS if hint in lowered)
+    invoice_like = (not non_invoice) and invoice_hint_count >= 2
+
+    total_amount = _extract_total_amount(filename, text_preview)
+    line_items_count = _estimate_line_items(text_preview)
+
+    confidence = 0.35
+    if invoice_like:
+        confidence += 0.35
+    if total_amount > 0:
+        confidence += 0.15
+    if line_items_count >= 1:
+        confidence += 0.10
+    if len(text_preview.strip()) >= 60:
+        confidence += 0.05
+    if pipeline == "xml_parse":
+        confidence = max(confidence, 0.9)
+    confidence = round(max(0.0, min(confidence, 0.99)), 3)
+
+    reasons: list[str] = []
+    if non_invoice or not invoice_like:
+        reasons.append("non_invoice_pattern")
+    if total_amount <= 0:
+        reasons.append("zero_amount")
+    if line_items_count < 1:
+        reasons.append("no_line_items")
+    if confidence < _OCR_MIN_CONFIDENCE:
+        reasons.append("low_confidence")
+
+    status = "valid"
+    if "non_invoice_pattern" in reasons:
+        status = "non_invoice"
+    elif "zero_amount" in reasons or "no_line_items" in reasons:
+        status = "quarantined"
+    elif "low_confidence" in reasons:
+        status = "low_quality"
+
+    return {
+        "status": status,
+        "total_amount": total_amount,
+        "line_items_count": line_items_count,
+        "confidence": confidence,
+        "reasons": reasons,
+        "invoice_like": invoice_like,
+    }
 
 
 def _safe_filename(name: str) -> str:
@@ -958,22 +1144,31 @@ async def post_attachment(
     )
     session.add(attachment)
 
+    quality = _evaluate_ocr_quality(safe_name, blob, pipeline)
     payload = {
         "attachment_id": attachment.id,
         "original_filename": safe_name,
         "source_tag": tag,
-        "status": "uploaded",
+        "status": quality["status"],
+        "quality_status": quality["status"],
+        "quality_reasons": quality["reasons"],
+        "ocr_confidence": quality["confidence"],
+        "line_items_count": quality["line_items_count"],
+        "total_amount": quality["total_amount"],
         "content_type": normalized_type,
         "size_bytes": len(blob),
         "pipeline": pipeline,
+        "invoice_like": quality["invoice_like"],
     }
+    if quality["line_items_count"] > 0:
+        payload["line_items"] = [{"index": idx + 1} for idx in range(int(quality["line_items_count"]))]
     voucher = AcctVoucher(
         id=voucher_id,
         erp_voucher_id=f"upload-{voucher_id[:8]}",
         voucher_no=Path(safe_name).stem[:64] or f"UPLOAD-{voucher_id[:8]}",
         voucher_type="other",
         date=now.date().isoformat(),
-        amount=0.0,
+        amount=float(quality["total_amount"]) if _safe_float(quality["total_amount"]) > 0 else 0.0,
         currency="VND",
         partner_name=None,
         partner_tax_code=None,
@@ -981,10 +1176,30 @@ async def post_attachment(
         has_attachment=True,
         raw_payload=payload,
         source=tag,
-        type_hint="invoice_vat" if pipeline in {"pdf_ocr", "image_ocr"} else "other",
+        type_hint="invoice_vat" if quality["status"] == "valid" else "other",
         run_id=run_id,
     )
     session.add(voucher)
+
+    if quality["status"] != "valid":
+        reason_text = ", ".join(quality["reasons"]) or quality["status"]
+        anomaly_type = "non_invoice" if quality["status"] == "non_invoice" else "invalid_voucher_data"
+        severity = "high" if quality["status"] == "non_invoice" else "medium"
+        session.add(
+            AcctAnomalyFlag(
+                id=new_uuid(),
+                anomaly_type=anomaly_type,
+                severity=severity,
+                description=(
+                    f"Chứng từ OCR '{safe_name}' bị loại khỏi luồng kế toán "
+                    f"({quality['status']}): {reason_text}"
+                ),
+                voucher_id=voucher_id,
+                bank_tx_id=None,
+                resolution="open",
+                run_id=run_id,
+            )
+        )
     session.commit()
 
     return {
@@ -994,6 +1209,9 @@ async def post_attachment(
         "filename": safe_name,
         "source_tag": tag,
         "status": payload["status"],
+        "quality_reasons": payload["quality_reasons"],
+        "ocr_confidence": payload["ocr_confidence"],
+        "line_items_count": payload["line_items_count"],
         "created_at": now,
         "pipeline": pipeline,
         "content_type": normalized_type,
@@ -1807,6 +2025,7 @@ def list_journal_proposals(
                 {
                     "id": ln.id,
                     "account_code": ln.account_code,
+                    "account": ln.account_code,  # legacy UI compatibility
                     "account_name": ln.account_name,
                     "debit": ln.debit,
                     "credit": ln.credit,
@@ -1820,6 +2039,19 @@ def list_journal_proposals(
 class JournalProposalReviewIn(BaseModel):
     status: Literal["approved", "rejected"]
     reviewed_by: str
+
+
+def _validate_journal_accounts_before_approve(
+    proposal_id: str,
+    session: Session,
+) -> tuple[bool, list[str]]:
+    lines = session.execute(select(AcctJournalLine).where(AcctJournalLine.proposal_id == proposal_id)).scalars().all()
+    invalid_codes: list[str] = []
+    for ln in lines:
+        code = str(ln.account_code or "").strip()
+        if _is_undefined_like(code):
+            invalid_codes.append(code or "<empty>")
+    return len(invalid_codes) == 0, invalid_codes
 
 
 @app.post("/agent/v1/acct/journal_proposals/{proposal_id}/review", dependencies=[Depends(require_api_key)])
@@ -1836,6 +2068,17 @@ def review_journal_proposal(
             status_code=409,
             detail=f"Bút toán đã được xử lý (trạng thái: {proposal.status}). Không thể thay đổi.",
         )
+    if body.status == "approved":
+        is_valid, invalid_codes = _validate_journal_accounts_before_approve(proposal_id, session)
+        if not is_valid:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "error": "INVALID_ACCOUNT_CODE",
+                    "detail": "Proposal contains undefined account in debit/credit lines.",
+                    "invalid_accounts": invalid_codes,
+                },
+            )
     proposal.status = body.status
     proposal.reviewed_by = body.reviewed_by
     proposal.reviewed_at = utcnow()
@@ -2041,22 +2284,43 @@ def list_soft_check_results(
     if period:
         q = q.where(AcctSoftCheckResult.period == period)
     rows = session.execute(q).scalars().all()
-    return {
-        "items": [
+    items = [
+        {
+            "id": r.id,
+            "period": r.period,
+            "total_checks": r.total_checks,
+            "passed": r.passed,
+            "warnings": r.warnings,
+            "errors": r.errors,
+            "score": r.score,
+            "created_at": r.created_at,
+            "run_id": r.run_id,
+        }
+        for r in rows
+    ]
+    period_for_quality = period or datetime.now().strftime("%Y-%m")
+    quality = _collect_period_voucher_quality(session, period_for_quality)
+    if quality["excluded_vouchers"] > 0:
+        items.insert(
+            0,
             {
-                "id": r.id,
-                "period": r.period,
-                "total_checks": r.total_checks,
-                "passed": r.passed,
-                "warnings": r.warnings,
-                "errors": r.errors,
-                "score": r.score,
-                "created_at": r.created_at,
-                "run_id": r.run_id,
-            }
-            for r in rows
-        ]
-    }
+                "id": f"quality-{period_for_quality}",
+                "period": period_for_quality,
+                "total_checks": quality["excluded_vouchers"],
+                "passed": 0,
+                "warnings": quality["excluded_vouchers"],
+                "errors": 0,
+                "score": 0.0,
+                "created_at": utcnow(),
+                "run_id": None,
+                "source": "voucher_quality_gate",
+                "message": (
+                    f"Phát hiện {quality['excluded_vouchers']} chứng từ bất thường "
+                    "(amount=0/chất lượng OCR thấp/thiếu thông tin)."
+                ),
+            },
+        )
+    return {"items": items}
 
 
 @app.get("/agent/v1/acct/validation_issues", dependencies=[Depends(require_api_key)])
@@ -2158,28 +2422,68 @@ def list_cashflow_forecast(
     if direction:
         q = q.where(AcctCashflowForecast.direction == direction)
     rows = session.execute(q).scalars().all()
-    total_inflow = sum(r.amount for r in rows if r.direction == "inflow")
-    total_outflow = sum(r.amount for r in rows if r.direction == "outflow")
+    items: list[dict[str, Any]] = []
+    for r in rows:
+        amount = _safe_float(r.amount)
+        if amount <= 0:
+            continue
+        forecast_date = str(r.forecast_date or "").strip()
+        if not forecast_date:
+            continue
+        if r.direction not in {"inflow", "outflow"}:
+            continue
+        items.append(
+            {
+                "id": r.id,
+                "forecast_date": forecast_date,
+                "period": forecast_date[:7],
+                "direction": r.direction,
+                "amount": amount,
+                "currency": r.currency,
+                "source_type": r.source_type,
+                "source_ref": r.source_ref,
+                "confidence": _safe_float(r.confidence, 0.0),
+                "run_id": r.run_id,
+            }
+        )
+
+    total_inflow = sum(item["amount"] for item in items if item["direction"] == "inflow")
+    total_outflow = sum(item["amount"] for item in items if item["direction"] == "outflow")
+    voucher_rows = session.execute(select(AcctVoucher)).scalars().all()
+    non_zero_periods: set[str] = set()
+    for voucher in voucher_rows:
+        is_valid, _reasons = _voucher_quality_state(voucher)
+        if not is_valid:
+            continue
+        amount = _safe_float(voucher.amount)
+        if amount <= 0:
+            continue
+        d = str(voucher.date or "")
+        if len(d) >= 7:
+            non_zero_periods.add(d[:7])
+    min_periods = 6
+    enough_data = len(non_zero_periods) >= min_periods
+    sufficiency_reason = (
+        ""
+        if enough_data
+        else (
+            "Chưa đủ dữ liệu lịch sử để dự báo dòng tiền có ý nghĩa. "
+            "Vui lòng kiểm tra lại số liệu thực tế."
+        )
+    )
     return {
         "summary": {
             "total_inflow": total_inflow,
             "total_outflow": total_outflow,
             "net": total_inflow - total_outflow,
         },
-        "items": [
-            {
-                "id": r.id,
-                "forecast_date": r.forecast_date,
-                "direction": r.direction,
-                "amount": r.amount,
-                "currency": r.currency,
-                "source_type": r.source_type,
-                "source_ref": r.source_ref,
-                "confidence": r.confidence,
-                "run_id": r.run_id,
-            }
-            for r in rows
-        ],
+        "sufficiency": {
+            "enough": enough_data,
+            "observed_periods": len(non_zero_periods),
+            "min_periods_required": min_periods,
+            "reason": sufficiency_reason,
+        },
+        "items": items,
     }
 
 
@@ -2303,7 +2607,8 @@ def list_vouchers(
             "source_ref": payload.get("attachment_id"),
             "original_filename": payload.get("original_filename"),
             "confidence": payload.get("ocr_confidence"),
-            "status": payload.get("status", "processed"),
+            "status": payload.get("status", payload.get("quality_status", "processed")),
+            "quality_reasons": payload.get("quality_reasons", []),
             "line_items_count": len(line_items) if isinstance(line_items, list) else payload.get("line_items_count"),
             "type_hint": getattr(r, "type_hint", None),
             "classification_tag": getattr(r, "classification_tag", None),
@@ -2358,6 +2663,8 @@ def accounting_qna(
     usage = result.get("usage")
     confidence = result.get("confidence")
     sources = result.get("sources") or []
+    question_type = str(result.get("question_type") or "").strip() or None
+    route = str(result.get("route") or "").strip() or None
 
     # Persist audit
     qna_row = AcctQnaAudit(
@@ -2380,10 +2687,15 @@ def accounting_qna(
             "usage": usage if isinstance(usage, dict) else None,
             "confidence": confidence if isinstance(confidence, (int, float)) else None,
             "sources": sources if isinstance(sources, list) else [],
+            "question_type": question_type,
+            "route": route,
+            "data_available": route != "data_unavailable" if route else None,
         },
         "usage": usage if isinstance(usage, dict) else None,
         "confidence": confidence if isinstance(confidence, (int, float)) else None,
         "sources": sources if isinstance(sources, list) else [],
+        "question_type": question_type,
+        "route": route,
     }
 
 
@@ -2948,6 +3260,53 @@ def _report_export_dir() -> Path:
     return path
 
 
+def _voucher_quality_state(voucher: AcctVoucher) -> tuple[bool, list[str]]:
+    payload = voucher.raw_payload if isinstance(voucher.raw_payload, dict) else {}
+    reasons: list[str] = []
+    status = str(payload.get("status") or payload.get("quality_status") or "").strip().lower()
+    source = str(voucher.source or "").strip().lower()
+    amount = _safe_float(voucher.amount)
+    if source == "ocr_upload" and status in _INVALID_OCR_STATUSES:
+        reasons.append(status)
+    if amount <= 0:
+        reasons.append("zero_amount")
+    if source == "ocr_upload":
+        if _is_undefined_like(voucher.partner_name):
+            reasons.append("missing_partner")
+        if _is_undefined_like(voucher.date):
+            reasons.append("missing_date")
+    raw_reasons = payload.get("quality_reasons")
+    if isinstance(raw_reasons, list):
+        for item in raw_reasons:
+            text = str(item).strip().lower()
+            if text:
+                reasons.append(text)
+    unique_reasons = sorted(set(reasons))
+    return len(unique_reasons) == 0, unique_reasons
+
+
+def _collect_period_voucher_quality(session: Session, period: str) -> dict[str, Any]:
+    rows = session.execute(select(AcctVoucher).where(AcctVoucher.date.like(period + "%"))).scalars().all()
+    excluded_ids: list[str] = []
+    reason_counts: Counter[str] = Counter()
+    for row in rows:
+        is_valid, reasons = _voucher_quality_state(row)
+        if is_valid:
+            continue
+        excluded_ids.append(row.id)
+        reason_counts.update(reasons)
+    total = len(rows)
+    excluded = len(excluded_ids)
+    valid = max(total - excluded, 0)
+    return {
+        "total_vouchers": total,
+        "valid_vouchers": valid,
+        "excluded_vouchers": excluded,
+        "excluded_ids": excluded_ids,
+        "reason_counts": dict(reason_counts),
+    }
+
+
 def _build_report_data(
     session: Session,
     *,
@@ -2956,15 +3315,17 @@ def _build_report_data(
     standard: str,
     options: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    voucher_count = session.execute(
-        select(func.count()).select_from(AcctVoucher).where(AcctVoucher.date.like(period + "%"))
-    ).scalar() or 0
-    journal_lines = session.execute(
-        select(AcctJournalLine)
+    quality = _collect_period_voucher_quality(session, period)
+    excluded_ids = set(quality["excluded_ids"])
+    journal_rows = session.execute(
+        select(AcctJournalLine, AcctJournalProposal.voucher_id)
         .join(AcctJournalProposal, AcctJournalProposal.id == AcctJournalLine.proposal_id)
+        .join(AcctVoucher, AcctVoucher.id == AcctJournalProposal.voucher_id)
         .where(AcctJournalProposal.status == "approved")
+        .where(AcctVoucher.date.like(period + "%"))
         .limit(2000)
-    ).scalars().all()
+    ).all()
+    journal_lines = [line for line, voucher_id in journal_rows if voucher_id not in excluded_ids]
 
     account_summary: dict[str, dict[str, float | str]] = {}
     for line in journal_lines:
@@ -2979,19 +3340,28 @@ def _build_report_data(
     imbalance = round(abs(total_debit - total_credit), 2)
 
     issues: list[str] = []
-    if voucher_count == 0:
+    if quality["valid_vouchers"] == 0:
         issues.append(f"Không có chứng từ cho kỳ {period}")
     if not journal_lines:
         issues.append("Không có bút toán đã duyệt để tổng hợp")
     if imbalance > 1:
         issues.append(f"Lệch cân đối Nợ/Có: {imbalance:,.0f} VND")
+    if quality["excluded_vouchers"] > 0:
+        issues.append(
+            "Có "
+            f"{quality['excluded_vouchers']} chứng từ bị loại khỏi báo cáo do lỗi dữ liệu "
+            "(amount=0/thiếu thông tin/chất lượng OCR thấp). Xem chi tiết tab Rủi ro."
+        )
 
     return {
         "period": period,
         "standard": standard,
         "report_type": report_type,
         "options": options or {},
-        "voucher_count": int(voucher_count),
+        "voucher_count": int(quality["valid_vouchers"]),
+        "voucher_total": int(quality["total_vouchers"]),
+        "excluded_voucher_count": int(quality["excluded_vouchers"]),
+        "excluded_reason_counts": quality["reason_counts"],
         "total_debit": total_debit,
         "total_credit": total_credit,
         "imbalance": imbalance,
@@ -3027,7 +3397,7 @@ def _render_report_html(data: dict[str, Any]) -> str:
         "<html><head><meta charset='utf-8'><title>OpenClaw Report</title></head><body>"
         f"<h2>{data.get('report_type')} - {data.get('period')}</h2>"
         f"<p>Chuẩn mực: {data.get('standard')}</p>"
-        f"<p>Voucher: {int(data.get('voucher_count', 0))}</p>"
+        f"<p>Voucher hợp lệ: {int(data.get('voucher_count', 0))} / {int(data.get('voucher_total', data.get('voucher_count', 0)))}</p>"
         "<table border='1' cellspacing='0' cellpadding='6' style='border-collapse:collapse;width:100%'>"
         "<thead><tr><th>Tài khoản</th><th>Tên</th><th>Nợ</th><th>Có</th></tr></thead>"
         f"<tbody>{row_html}</tbody></table>"
@@ -3208,19 +3578,46 @@ def reports_validate(
 ) -> dict[str, Any]:
     """Validate report data before generation."""
     report_type, period_value = _validate_report_inputs(type, period)
+    quality = _collect_period_voucher_quality(session, period_value)
+    excluded_ids = set(quality["excluded_ids"])
 
-    voucher_count = session.execute(
-        select(func.count()).select_from(AcctVoucher).where(AcctVoucher.date.like(period_value + "%"))
-    ).scalar() or 0
-    proposal_count = session.execute(
-        select(func.count()).select_from(AcctJournalProposal).where(AcctJournalProposal.status == "approved")
-    ).scalar() or 0
-    total_debit = float(session.execute(select(func.sum(AcctJournalLine.debit))).scalar() or 0)
-    total_credit = float(session.execute(select(func.sum(AcctJournalLine.credit))).scalar() or 0)
+    proposal_count_query = (
+        select(func.count())
+        .select_from(AcctJournalProposal)
+        .join(AcctVoucher, AcctVoucher.id == AcctJournalProposal.voucher_id)
+        .where(AcctJournalProposal.status == "approved")
+        .where(AcctVoucher.date.like(period_value + "%"))
+    )
+    if excluded_ids:
+        proposal_count_query = proposal_count_query.where(AcctJournalProposal.voucher_id.not_in(excluded_ids))
+    proposal_count = session.execute(proposal_count_query).scalar() or 0
+    line_rows = session.execute(
+        select(AcctJournalLine, AcctJournalProposal.voucher_id)
+        .join(AcctJournalProposal, AcctJournalProposal.id == AcctJournalLine.proposal_id)
+        .join(AcctVoucher, AcctVoucher.id == AcctJournalProposal.voucher_id)
+        .where(AcctJournalProposal.status == "approved")
+        .where(AcctVoucher.date.like(period_value + "%"))
+    ).all()
+    filtered_lines = [line for line, voucher_id in line_rows if voucher_id not in excluded_ids]
+    total_debit = float(sum(_safe_float(line.debit) for line in filtered_lines))
+    total_credit = float(sum(_safe_float(line.credit) for line in filtered_lines))
     imbalance = abs(total_debit - total_credit)
 
     checks = [
-        {"name": "Dữ liệu kỳ kế toán", "passed": voucher_count > 0, "detail": f"{voucher_count} chứng từ"},
+        {
+            "name": "Dữ liệu kỳ kế toán",
+            "passed": quality["valid_vouchers"] > 0,
+            "detail": f"{quality['valid_vouchers']} chứng từ hợp lệ / {quality['total_vouchers']} tổng",
+        },
+        {
+            "name": "Chất lượng chứng từ đầu vào",
+            "passed": quality["excluded_vouchers"] == 0,
+            "detail": (
+                "Không có chứng từ lỗi"
+                if quality["excluded_vouchers"] == 0
+                else f"Loại {quality['excluded_vouchers']} chứng từ lỗi dữ liệu"
+            ),
+        },
         {"name": "Số dư đầu kỳ", "passed": proposal_count > 0, "detail": f"{proposal_count} bút toán"},
         {"name": "Phát sinh trong kỳ", "passed": total_debit > 0, "detail": f"{total_debit:,.0f} VND"},
         {"name": "Cân đối thử", "passed": imbalance < 1, "detail": f"Chênh lệch: {imbalance:,.0f}"},

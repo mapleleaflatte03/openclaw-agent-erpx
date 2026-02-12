@@ -2719,6 +2719,13 @@ def _wf_voucher_reprocess(run_id: str) -> dict[str, Any]:
                 raise RuntimeError("Không tìm thấy voucher để reprocess")
 
             raw_payload = dict(voucher.raw_payload or {})
+            quality_status = str(raw_payload.get("status") or raw_payload.get("quality_status") or "").strip().lower()
+            quality_reasons = raw_payload.get("quality_reasons")
+            quality_reasons = quality_reasons if isinstance(quality_reasons, list) else []
+            if quality_status == "non_invoice" or "zero_amount" in [str(x).lower() for x in quality_reasons]:
+                raise RuntimeError(
+                    "Voucher bị chặn reprocess vì chất lượng dữ liệu không hợp lệ (non_invoice/zero_amount)"
+                )
             raw_payload["status"] = "reprocessed"
             raw_payload["reprocess_count"] = int(raw_payload.get("reprocess_count") or 0) + 1
             raw_payload["reprocessed_at"] = utcnow().isoformat()

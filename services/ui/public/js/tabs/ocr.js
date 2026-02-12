@@ -177,24 +177,27 @@ async function loadResults() {
     }
 
     tbody.innerHTML = ocrResults
-      .map(
-        (v) => `
+      .map((v) => {
+        const reasons = Array.isArray(v.quality_reasons) ? v.quality_reasons : [];
+        const reasonTitle = reasons.length ? reasons.join(', ') : (v.status || 'processed');
+        const blockedReprocess = v.status === 'non_invoice' || reasons.includes('zero_amount');
+        return `
       <tr data-id="${v.id}">
         <td class="truncate" style="max-width:100px">${v.id}</td>
         <td class="truncate" style="max-width:180px">${v.original_filename || v.source_ref || v.voucher_no || '—'}</td>
         <td><span class="badge badge-info">${v.source_tag || v.source || '—'}</span></td>
         <td>${renderConfidenceGauge(v.confidence ?? v.ocr_confidence)}</td>
-        <td><span class="badge ${statusBadgeClass(v.status)}">${v.status || 'processed'}</span></td>
+        <td><span class="badge ${statusBadgeClass(v.status)}" title="${reasonTitle}">${v.status || 'processed'}</span></td>
         <td class="text-right">${formatVND(v.total_amount ?? v.amount)}</td>
         <td class="text-right">${formatVND(v.vat_amount ?? 0)}</td>
         <td class="text-center">${v.line_items_count ?? v.line_count ?? '—'}</td>
         <td>
           <button class="btn btn-icon btn-outline" data-action="preview" data-id="${v.id}" title="Xem chi tiết">👁️</button>
           <button class="btn btn-icon btn-outline" data-action="download" data-id="${v.id}" title="Tải JSON">📥</button>
-          <button class="btn btn-icon btn-outline" data-action="reprocess" data-id="${v.id}" title="Xử lý lại">🔄</button>
+          <button class="btn btn-icon btn-outline" data-action="reprocess" data-id="${v.id}" title="${blockedReprocess ? 'Voucher bị chặn reprocess do chất lượng dữ liệu' : 'Xử lý lại'}" ${blockedReprocess ? 'disabled' : ''}>🔄</button>
         </td>
-      </tr>`
-      )
+      </tr>`;
+      })
       .join('');
 
     // Pagination
@@ -219,7 +222,9 @@ function renderConfidenceGauge(conf) {
 
 function statusBadgeClass(status) {
   if (!status) return 'badge-neutral';
-  if (status === 'processed' || status === 'success') return 'badge-success';
+  if (status === 'valid' || status === 'processed' || status === 'success') return 'badge-success';
+  if (status === 'quarantined' || status === 'low_quality') return 'badge-warning';
+  if (status === 'non_invoice') return 'badge-danger';
   if (status === 'pending') return 'badge-warning';
   if (status === 'error' || status === 'failed') return 'badge-danger';
   return 'badge-neutral';
@@ -260,6 +265,11 @@ async function handleRowAction(action, id) {
     }
   } else if (action === 'reprocess') {
     const row = ocrResults.find((r) => r.id === id);
+    const reasons = Array.isArray(row?.quality_reasons) ? row.quality_reasons : [];
+    if (row?.status === 'non_invoice' || reasons.includes('zero_amount')) {
+      toast('Voucher này bị chặn reprocess do non_invoice/zero_amount', 'warning');
+      return;
+    }
     try {
       const run = await apiPost('/runs', {
         run_type: 'voucher_reprocess',

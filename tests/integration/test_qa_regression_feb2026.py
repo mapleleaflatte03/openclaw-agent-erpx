@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 from openclaw_agent.common.db import Base, db_session, make_engine
 from openclaw_agent.common.models import (
     AcctBankTransaction,
+    AcctCashflowForecast,
     AcctJournalLine,
     AcctJournalProposal,
     AcctQnaAudit,
@@ -60,7 +61,7 @@ def test_attachment_upload_creates_ocr_voucher(client_and_engine):
     )
     assert resp.status_code == 200, resp.text
     body = resp.json()
-    assert body["status"] == "uploaded"
+    assert body["status"] in {"valid", "quarantined", "non_invoice", "low_quality"}
     assert body["source_tag"] == "ocr_upload"
     assert body.get("voucher_id")
 
@@ -293,6 +294,287 @@ def test_qna_feedback_accepts_string_and_legacy_int(client_and_engine):
     )
     assert legacy.status_code == 200, legacy.text
     assert legacy.json()["feedback"] == "not_helpful"
+
+
+def test_journal_review_blocks_invalid_account_code(client_and_engine):
+    client, engine = client_and_engine
+    voucher_id = new_uuid()
+    proposal_id = new_uuid()
+    line_debit = new_uuid()
+    line_credit = new_uuid()
+
+    with db_session(engine) as s:
+        s.add(
+            AcctVoucher(
+                id=voucher_id,
+                erp_voucher_id=f"erp-{voucher_id[:8]}",
+                voucher_no="INV-JRN-001",
+                voucher_type="buy_invoice",
+                date="2026-02-12",
+                amount=585_000,
+                currency="VND",
+                partner_name="Demo",
+                has_attachment=True,
+                source="ocr_upload",
+                raw_payload={"status": "valid"},
+            )
+        )
+        s.add(
+            AcctJournalProposal(
+                id=proposal_id,
+                voucher_id=voucher_id,
+                confidence=0.82,
+                status="pending",
+            )
+        )
+        s.add(
+            AcctJournalLine(
+                id=line_debit,
+                proposal_id=proposal_id,
+                account_code="undefined",
+                account_name="Invalid",
+                debit=585_000,
+                credit=0,
+            )
+        )
+        s.add(
+            AcctJournalLine(
+                id=line_credit,
+                proposal_id=proposal_id,
+                account_code="331",
+                account_name="Phải trả",
+                debit=0,
+                credit=585_000,
+            )
+        )
+
+    blocked = client.post(
+        f"/agent/v1/acct/journal_proposals/{proposal_id}/review",
+        json={"status": "approved", "reviewed_by": "tester"},
+        headers=_HEADERS,
+    )
+    assert blocked.status_code == 422, blocked.text
+    payload = blocked.json().get("detail", {})
+    assert payload.get("error") == "INVALID_ACCOUNT_CODE"
+
+    with db_session(engine) as s:
+        line = s.get(AcctJournalLine, line_debit)
+        assert line is not None
+        line.account_code = "621"
+        line.account_name = "Chi phí NVL trực tiếp"
+
+    approved = client.post(
+        f"/agent/v1/acct/journal_proposals/{proposal_id}/review",
+        json={"status": "approved", "reviewed_by": "tester"},
+        headers=_HEADERS,
+    )
+    assert approved.status_code == 200, approved.text
+    assert approved.json()["status"] == "approved"
+
+
+def test_ocr_quality_gate_valid_vs_non_invoice(client_and_engine):
+    client, _engine = client_and_engine
+    valid_xml = b"""
+    <invoice>
+      <meta>Hoa don VAT MST 1234567890</meta>
+      <line>1 x Dich vu A 750000 VND</line>
+      <summary>Tong tien: 750000</summary>
+    </invoice>
+    """.strip()
+    valid_upload = client.post(
+        "/agent/v1/attachments",
+        files={"file": ("invoice-vat-001.xml", valid_xml, "application/xml")},
+        data={"source_tag": "ocr_upload"},
+        headers=_HEADERS,
+    )
+    assert valid_upload.status_code == 200, valid_upload.text
+    assert valid_upload.json()["status"] == "valid"
+
+    noisy_upload = client.post(
+        "/agent/v1/attachments",
+        files={"file": ("dogs-vs-cats__sample.jpg", b"\xff\xd8\xff\xe0\x00\x10JFIF", "image/jpeg")},
+        data={"source_tag": "ocr_upload"},
+        headers=_HEADERS,
+    )
+    assert noisy_upload.status_code == 200, noisy_upload.text
+    noisy_body = noisy_upload.json()
+    assert noisy_body["status"] in {"non_invoice", "quarantined", "low_quality"}
+    assert noisy_body.get("quality_reasons")
+
+    vouchers = client.get("/agent/v1/acct/vouchers?source=ocr_upload&limit=10", headers=_HEADERS)
+    assert vouchers.status_code == 200, vouchers.text
+    items = vouchers.json().get("items", [])
+    by_id = {item["id"]: item for item in items}
+    assert by_id[valid_upload.json()["voucher_id"]]["status"] == "valid"
+    assert by_id[noisy_body["voucher_id"]]["status"] in {"non_invoice", "quarantined", "low_quality"}
+
+
+def test_qna_data_driven_vs_knowledge_routing(client_and_engine):
+    client, _engine = client_and_engine
+    no_data = client.post(
+        "/agent/v1/acct/qna",
+        json={"question": "Doanh thu tháng này là bao nhiêu và 3 khoản chi lớn nhất?"},
+        headers=_HEADERS,
+    )
+    assert no_data.status_code == 200, no_data.text
+    body = no_data.json()
+    assert body.get("meta", {}).get("route") == "data_unavailable"
+    assert "chưa được kết nối dữ liệu doanh thu/chi phí thực tế" in body.get("answer", "").lower()
+
+    knowledge = client.post(
+        "/agent/v1/acct/qna",
+        json={"question": "Phân biệt TT200 và TT133 về ghi nhận doanh thu?"},
+        headers=_HEADERS,
+    )
+    assert knowledge.status_code == 200, knowledge.text
+    knowledge_body = knowledge.json()
+    assert knowledge_body.get("meta", {}).get("route") == "knowledge"
+    assert "thông tư" in knowledge_body.get("answer", "").lower() or "tt200" in knowledge_body.get("answer", "").lower()
+
+
+def test_cashflow_forecast_sufficiency_and_clean_items(client_and_engine):
+    client, engine = client_and_engine
+    forecast_id_ok = new_uuid()
+    forecast_id_zero = new_uuid()
+    voucher_id = new_uuid()
+
+    with db_session(engine) as s:
+        s.add(
+            AcctVoucher(
+                id=voucher_id,
+                erp_voucher_id=f"erp-{voucher_id[:8]}",
+                voucher_no="INV-FC-001",
+                voucher_type="sell_invoice",
+                date="2026-02-12",
+                amount=500_000,
+                currency="VND",
+                partner_name="Demo",
+                has_attachment=True,
+                source="ocr_upload",
+                raw_payload={"status": "valid"},
+            )
+        )
+        s.add(
+            AcctCashflowForecast(
+                id=forecast_id_ok,
+                forecast_date="2026-03-10",
+                direction="inflow",
+                amount=500_000,
+                currency="VND",
+                source_type="invoice_receivable",
+                source_ref="INV-FC-001",
+                confidence=0.8,
+                run_id=new_uuid(),
+            )
+        )
+        s.add(
+            AcctCashflowForecast(
+                id=forecast_id_zero,
+                forecast_date="2026-03-11",
+                direction="inflow",
+                amount=0,
+                currency="VND",
+                source_type="invoice_receivable",
+                source_ref="INV-FC-002",
+                confidence=0.8,
+                run_id=new_uuid(),
+            )
+        )
+
+    resp = client.get("/agent/v1/acct/cashflow_forecast?limit=10", headers=_HEADERS)
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["sufficiency"]["enough"] is False
+    assert body["sufficiency"]["observed_periods"] < body["sufficiency"]["min_periods_required"]
+    assert all(item["amount"] > 0 for item in body["items"])
+    assert all(item.get("period") for item in body["items"])
+
+
+def test_reports_warn_when_invalid_voucher_exists(client_and_engine):
+    client, engine = client_and_engine
+    valid_voucher_id = new_uuid()
+    invalid_voucher_id = new_uuid()
+    proposal_id = new_uuid()
+    with db_session(engine) as s:
+        s.add(
+            AcctVoucher(
+                id=valid_voucher_id,
+                erp_voucher_id=f"erp-{valid_voucher_id[:8]}",
+                voucher_no="INV-RPT-VALID",
+                voucher_type="sell_invoice",
+                date="2026-02-10",
+                amount=1_200_000,
+                currency="VND",
+                partner_name="Demo",
+                has_attachment=True,
+                source="ocr_upload",
+                raw_payload={"status": "valid"},
+            )
+        )
+        s.add(
+            AcctVoucher(
+                id=invalid_voucher_id,
+                erp_voucher_id=f"erp-{invalid_voucher_id[:8]}",
+                voucher_no="INV-RPT-BAD",
+                voucher_type="other",
+                date="2026-02-11",
+                amount=0,
+                currency="VND",
+                partner_name=None,
+                has_attachment=True,
+                source="ocr_upload",
+                raw_payload={"status": "quarantined", "quality_reasons": ["zero_amount"]},
+            )
+        )
+        s.add(
+            AcctJournalProposal(
+                id=proposal_id,
+                voucher_id=valid_voucher_id,
+                confidence=0.9,
+                status="approved",
+            )
+        )
+        s.add(
+            AcctJournalLine(
+                id=new_uuid(),
+                proposal_id=proposal_id,
+                account_code="131",
+                account_name="Phải thu KH",
+                debit=1_200_000,
+                credit=0,
+            )
+        )
+        s.add(
+            AcctJournalLine(
+                id=new_uuid(),
+                proposal_id=proposal_id,
+                account_code="511",
+                account_name="Doanh thu",
+                debit=0,
+                credit=1_200_000,
+            )
+        )
+
+    validate = client.get(
+        "/agent/v1/reports/validate",
+        params={"type": "balance_sheet", "period": "2026-02"},
+        headers=_HEADERS,
+    )
+    assert validate.status_code == 200, validate.text
+    checks = validate.json()["checks"]
+    quality_check = next(c for c in checks if c["name"] == "Chất lượng chứng từ đầu vào")
+    assert quality_check["passed"] is False
+
+    preview = client.post(
+        "/agent/v1/reports/preview",
+        json={"type": "balance_sheet", "standard": "VAS", "period": "2026-02"},
+        headers=_HEADERS,
+    )
+    assert preview.status_code == 200, preview.text
+    report_data = preview.json()["data"]
+    assert report_data["voucher_count"] == 1
+    assert report_data["excluded_voucher_count"] >= 1
+    assert any("bị loại khỏi báo cáo" in issue for issue in report_data["issues"])
 
 
 def test_bank_manual_match_unmatch_and_ignore(client_and_engine):

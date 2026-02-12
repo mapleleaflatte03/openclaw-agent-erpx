@@ -84,6 +84,7 @@ function render() {
               <span>Độ tin cậy:</span>
               <span id="answer-confidence">—</span>
             </div>
+            <div id="qna-scope-warning" class="badge badge-warning" style="display:none;margin-top:6px;"></div>
           </div>
         </div>
 
@@ -273,6 +274,17 @@ function updateContextPanel(resp) {
     `;
   } else {
     confSpan.textContent = '—';
+  }
+
+  const scopeWarning = document.getElementById('qna-scope-warning');
+  const route = meta.route || resp?.route || null;
+  const questionType = meta.question_type || resp?.question_type || null;
+  if (questionType === 'data_driven' && route === 'data_unavailable') {
+    scopeWarning.style.display = 'inline-flex';
+    scopeWarning.textContent = 'Chỉ trả lời chuẩn mực, không có số liệu thật';
+  } else {
+    scopeWarning.style.display = 'none';
+    scopeWarning.textContent = '';
   }
 
   // Knowledge references

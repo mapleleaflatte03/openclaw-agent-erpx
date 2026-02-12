@@ -7,6 +7,7 @@ let initialized = false;
 let forecastData = [];
 let chart = null;
 let selectedScenarios = ['base', 'optimistic', 'pessimistic'];
+let forecastSufficiency = null;
 
 async function init() {
   if (initialized) {
@@ -79,6 +80,7 @@ function render() {
 
       <!-- Right: Chart + Table -->
       <div class="flex-col">
+        <div class="alert alert-warning mb-md" id="forecast-sufficiency-msg" style="display:none;"></div>
         <!-- Chart -->
         <div class="card">
           <div class="card-header">
@@ -163,21 +165,72 @@ async function loadForecast() {
   try {
     const horizon = 365;
     const data = await api(`/acct/cashflow_forecast?horizon_days=${horizon}`);
-    forecastData = data.items || data.forecasts || [];
+    const rawItems = data.items || data.forecasts || [];
+    forecastSufficiency = data.sufficiency || null;
+    const alertEl = document.getElementById('forecast-sufficiency-msg');
 
+    forecastData = aggregateForecastItems(rawItems);
+    if (forecastSufficiency && forecastSufficiency.enough === false) {
+      alertEl.style.display = 'block';
+      alertEl.textContent =
+        forecastSufficiency.reason ||
+        'Chưa đủ dữ liệu lịch sử để dự báo dòng tiền có ý nghĩa. Vui lòng kiểm tra lại số liệu thực tế.';
+      forecastData = [];
+      renderChart();
+      renderTable();
+      return;
+    }
+
+    alertEl.style.display = 'none';
+    alertEl.textContent = '';
     if (!forecastData.length) {
       toast('Không có dữ liệu dự báo cho kỳ này', 'info');
     }
-
     renderChart();
     renderTable();
   } catch (e) {
     console.error('Forecast load error', e);
     forecastData = [];
+    forecastSufficiency = null;
+    const alertEl = document.getElementById('forecast-sufficiency-msg');
+    alertEl.style.display = 'none';
+    alertEl.textContent = '';
     toast('Lỗi tải dữ liệu dự báo', 'error');
     renderChart();
     renderTable();
   }
+}
+
+function aggregateForecastItems(items) {
+  const grouped = new Map();
+  (items || []).forEach((item) => {
+    const period = item.forecast_date || item.period;
+    const amount = Number(item.amount);
+    if (!period || !Number.isFinite(amount) || amount <= 0) return;
+    const key = String(period).slice(0, 10);
+    const row = grouped.get(key) || {
+      period: key,
+      inflow: 0,
+      outflow: 0,
+      net: 0,
+      base: null,
+      optimistic: null,
+      pessimistic: null,
+      actual: null,
+      note: '',
+    };
+    if ((item.direction || '').toLowerCase() === 'inflow') {
+      row.inflow += amount;
+    } else if ((item.direction || '').toLowerCase() === 'outflow') {
+      row.outflow += amount;
+    }
+    row.net = row.inflow - row.outflow;
+    row.base = row.net;
+    row.optimistic = row.net * 1.1;
+    row.pessimistic = row.net * 0.9;
+    grouped.set(key, row);
+  });
+  return Array.from(grouped.values()).sort((a, b) => a.period.localeCompare(b.period));
 }
 
 function selectedPeriod() {
@@ -240,7 +293,13 @@ function renderChart() {
   const datasets = [];
 
   // Actual data (solid line)
-  const actualData = forecastData.map((d) => d.actual ?? d[kpi] ?? null);
+  const actualData = forecastData.map((d) => {
+    if (kpi === 'inflow') return d.inflow ?? null;
+    if (kpi === 'outflow') return d.outflow ?? null;
+    if (kpi === 'net') return d.net ?? null;
+    if (kpi === 'balance') return d.base ?? d.net ?? null;
+    return d.actual ?? null;
+  });
   if (actualData.some((v) => v !== null)) {
     datasets.push({
       label: 'Thực tế',
@@ -257,7 +316,7 @@ function renderChart() {
   if (selectedScenarios.includes('base')) {
     datasets.push({
       label: 'Base',
-      data: forecastData.map((d) => d.base ?? d.forecast ?? null),
+      data: forecastData.map((d) => (Number.isFinite(d.base) ? d.base : null)),
       borderColor: '#6b7280',
       borderDash: [5, 5],
       fill: false,
@@ -267,7 +326,7 @@ function renderChart() {
   if (selectedScenarios.includes('optimistic')) {
     datasets.push({
       label: 'Optimistic',
-      data: forecastData.map((d) => d.optimistic ?? (d.base ?? 0) * 1.15),
+      data: forecastData.map((d) => (Number.isFinite(d.optimistic) ? d.optimistic : null)),
       borderColor: '#16a34a',
       borderDash: [5, 5],
       fill: false,
@@ -277,7 +336,7 @@ function renderChart() {
   if (selectedScenarios.includes('pessimistic')) {
     datasets.push({
       label: 'Pessimistic',
-      data: forecastData.map((d) => d.pessimistic ?? (d.base ?? 0) * 0.85),
+      data: forecastData.map((d) => (Number.isFinite(d.pessimistic) ? d.pessimistic : null)),
       borderColor: '#dc2626',
       borderDash: [5, 5],
       fill: false,
@@ -313,23 +372,28 @@ function renderChart() {
 function renderTable() {
   const tbody = document.getElementById('forecast-tbody');
   if (!forecastData.length) {
-    tbody.innerHTML = '<tr><td colspan="7" class="text-center text-secondary">Không có dữ liệu</td></tr>';
+    const msg = forecastSufficiency && forecastSufficiency.enough === false
+      ? (forecastSufficiency.reason || 'Chưa đủ dữ liệu lịch sử để dự báo.')
+      : 'Không có dữ liệu';
+    tbody.innerHTML = `<tr><td colspan="7" class="text-center text-secondary">${msg}</td></tr>`;
     return;
   }
 
   tbody.innerHTML = forecastData
     .map((d) => {
-      const actual = d.actual;
-      const base = d.base ?? d.forecast ?? 0;
-      const delta = actual != null && base > 0 ? ((actual - base) / base) * 100 : null;
+      const actual = Number.isFinite(d.actual) ? d.actual : null;
+      const base = Number.isFinite(d.base) ? d.base : null;
+      const optimistic = Number.isFinite(d.optimistic) ? d.optimistic : null;
+      const pessimistic = Number.isFinite(d.pessimistic) ? d.pessimistic : null;
+      const delta = actual != null && base != null && Math.abs(base) > 0 ? ((actual - base) / base) * 100 : null;
       const deltaClass = delta != null ? (delta < -10 ? 'text-danger text-bold' : delta > 10 ? 'text-success' : '') : '';
       return `
       <tr>
-        <td>${d.period}</td>
+        <td>${d.period || 'N/A'}</td>
         <td class="text-right">${actual != null ? formatVND(actual) : '—'}</td>
-        <td class="text-right">${formatVND(base)}</td>
-        <td class="text-right">${formatVND(d.optimistic ?? base * 1.15)}</td>
-        <td class="text-right">${formatVND(d.pessimistic ?? base * 0.85)}</td>
+        <td class="text-right">${base != null ? formatVND(base) : 'N/A'}</td>
+        <td class="text-right">${optimistic != null ? formatVND(optimistic) : 'N/A'}</td>
+        <td class="text-right">${pessimistic != null ? formatVND(pessimistic) : 'N/A'}</td>
         <td class="text-right ${deltaClass}">${delta != null ? `${delta > 0 ? '+' : ''}${delta.toFixed(1)}%` : '—'}</td>
         <td class="${d.note ? 'text-danger' : ''}">${d.note || ''}</td>
       </tr>
