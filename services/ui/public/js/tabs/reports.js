@@ -518,13 +518,29 @@ function normalizeValidationName(name) {
   return String(name || '')
     .toLowerCase()
     .normalize('NFD')
+    .replace(/đ/g, 'd')
     .replace(/[\u0300-\u036f]/g, '')
     .replace(/\s+/g, ' ')
     .trim();
 }
 
 function mapValidationCheckKey(name) {
-  const normalized = normalizeValidationName(name);
+  const raw = String(name || '')
+    .trim()
+    .toLowerCase();
+  const normalized = normalizeValidationName(raw);
+  const compact = normalized.replace(/[^\w]+/g, ' ').trim();
+  const snakeLike = raw.replace(/[\s-]+/g, '_');
+  const knownKeys = new Set([
+    'period_data',
+    'input_quality',
+    'opening_balance',
+    'period_activity',
+    'trial_balance',
+    'compliance',
+  ]);
+  if (knownKeys.has(raw)) return raw;
+  if (knownKeys.has(snakeLike)) return snakeLike;
   const aliases = {
     'du lieu ky ke toan': 'period_data',
     'chat luong chung tu dau vao': 'input_quality',
@@ -532,8 +548,14 @@ function mapValidationCheckKey(name) {
     'phat sinh trong ky': 'period_activity',
     'can doi thu': 'trial_balance',
     'tuan thu vas/ifrs': 'compliance',
+    'period data': 'period_data',
+    'input quality': 'input_quality',
+    'opening balance': 'opening_balance',
+    'period activity': 'period_activity',
+    'trial balance': 'trial_balance',
+    compliance: 'compliance',
   };
-  return aliases[normalized] || null;
+  return aliases[compact] || aliases[normalized] || null;
 }
 
 async function runValidation() {
