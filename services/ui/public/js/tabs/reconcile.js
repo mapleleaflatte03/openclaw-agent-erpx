@@ -8,6 +8,8 @@ let reconData = { matched: [], unmatched_vouchers: [], unmatched_bank: [] };
 let viewMode = 'merged'; // 'merged' | 'split'
 
 const MATCHED_STATUSES = new Set(['matched', 'matched_auto', 'matched_manual']);
+const MANUAL_MATCH_REL_TOLERANCE = 0.03;
+const MANUAL_MATCH_ABS_TOLERANCE = 5000;
 
 function currentPeriod() {
   const now = new Date();
@@ -16,6 +18,38 @@ function currentPeriod() {
 
 function isMatchedStatus(status) {
   return MATCHED_STATUSES.has((status || '').toLowerCase());
+}
+
+function bankAmountValue(tx) {
+  return Math.abs(Number(tx?.amount || 0));
+}
+
+function voucherAmountValue(voucher) {
+  return Number(voucher?.total_amount ?? voucher?.amount ?? 0);
+}
+
+function calcMatchTolerance(bankAmount, voucherAmount) {
+  const diff = Math.abs(bankAmount - voucherAmount);
+  const allowed = Math.max(MANUAL_MATCH_ABS_TOLERANCE, Math.max(bankAmount, voucherAmount) * MANUAL_MATCH_REL_TOLERANCE);
+  return { diff, allowed, within: diff <= allowed };
+}
+
+function findVoucherById(voucherId) {
+  if (!voucherId) return null;
+  return (
+    reconData.unmatched_vouchers.find((v) => String(v.id) === String(voucherId)) ||
+    reconData.matched.find((m) => String(m.voucher?.id) === String(voucherId))?.voucher ||
+    null
+  );
+}
+
+function findBankById(bankId) {
+  if (!bankId) return null;
+  return (
+    reconData.unmatched_bank.find((b) => String(b.id) === String(bankId)) ||
+    reconData.matched.find((m) => String(m.bank?.id) === String(bankId))?.bank ||
+    null
+  );
 }
 
 async function init() {
@@ -304,9 +338,34 @@ async function handleAction(action, data) {
       return;
     }
     if (action === 'unmatch') {
-      await apiPost(`/acct/bank_match/${data.bid}/unmatch`, { unmatched_by: 'web-user' });
-      toast('Đã bỏ ghép giao dịch', 'success');
-      await loadReconciliation();
+      const tx = findBankById(data.bid);
+      const txRef = tx?.bank_tx_ref || data.bid;
+      const txAmount = bankAmountValue(tx);
+      openModal(
+        'Xác nhận bỏ ghép',
+        `
+          <div class="flex-col gap-md">
+            <div>Bạn sắp bỏ ghép giao dịch <strong>${txRef}</strong>.</div>
+            <div>Số tiền: <strong>${formatVND(txAmount)}</strong></div>
+            <div class="alert alert-warning">Thao tác này sẽ đổi trạng thái đối chiếu ngay lập tức.</div>
+          </div>
+        `,
+        `
+          <button class="btn btn-outline" id="btn-cancel-unmatch">Hủy</button>
+          <button class="btn btn-danger" id="btn-confirm-unmatch">Xác nhận bỏ ghép</button>
+        `
+      );
+      document.getElementById('btn-cancel-unmatch')?.addEventListener('click', () => closeModal());
+      document.getElementById('btn-confirm-unmatch')?.addEventListener('click', async () => {
+        try {
+          await apiPost(`/acct/bank_match/${data.bid}/unmatch`, { unmatched_by: 'web-user' });
+          closeModal();
+          toast('Đã bỏ ghép giao dịch', 'success');
+          await loadReconciliation();
+        } catch (e) {
+          toast(`Lỗi thao tác đối chiếu: ${e.message}`, 'error');
+        }
+      });
       return;
     }
     if (action === 'ignore') {
@@ -360,15 +419,35 @@ async function waitForRun(runId, timeoutSec = 30) {
 
 async function openManualMatchModal(voucherId) {
   if (!voucherId) return;
-  if (!reconData.unmatched_bank.length) {
+  const voucher = findVoucherById(voucherId);
+  const voucherAmount = voucherAmountValue(voucher);
+  if (!voucher || voucherAmount <= 0) {
+    toast('Không thể ghép: chứng từ không hợp lệ hoặc số tiền <= 0', 'error');
+    return;
+  }
+  const candidates = reconData.unmatched_bank
+    .map((b) => {
+      const bankAmount = bankAmountValue(b);
+      const { diff, allowed, within } = calcMatchTolerance(bankAmount, voucherAmount);
+      return { bank: b, bankAmount, diff, allowed, within };
+    })
+    .filter((c) => c.bankAmount > 0)
+    .sort((a, b) => {
+      if (a.within !== b.within) return a.within ? -1 : 1;
+      return a.diff - b.diff;
+    });
+
+  if (!candidates.length) {
     toast('Không còn giao dịch ngân hàng chưa khớp để ghép', 'info');
     return;
   }
 
-  const optionsHtml = reconData.unmatched_bank
+  const optionsHtml = candidates
     .map(
-      (b) =>
-        `<option value="${b.id}">${b.bank_tx_ref || b.id} | ${formatDate(b.date)} | ${formatVND(Math.abs(Number(b.amount || 0)))}</option>`
+      (c, idx) =>
+        `<option value="${c.bank.id}" data-diff="${c.diff}" data-allowed="${c.allowed}" data-within="${c.within ? '1' : '0'}" ${
+          idx === 0 ? 'selected' : ''
+        }>${c.bank.bank_tx_ref || c.bank.id} | ${formatDate(c.bank.date)} | ${formatVND(c.bankAmount)} | lệch ${formatVND(c.diff)}</option>`
     )
     .join('');
 
@@ -377,10 +456,12 @@ async function openManualMatchModal(voucherId) {
     `
       <div class="flex-col gap-md">
         <div><strong>Chứng từ:</strong> ${voucherId}</div>
+        <div><strong>Số tiền chứng từ:</strong> ${formatVND(voucherAmount)}</div>
         <div>
           <label class="form-label">Chọn giao dịch ngân hàng</label>
           <select class="form-select" id="manual-bank-id">${optionsHtml}</select>
         </div>
+        <div class="text-sm" id="manual-match-hint"></div>
       </div>
     `,
     `
@@ -389,11 +470,36 @@ async function openManualMatchModal(voucherId) {
     `
   );
 
+  const updateHint = () => {
+    const select = document.getElementById('manual-bank-id');
+    const option = select?.selectedOptions?.[0];
+    const hint = document.getElementById('manual-match-hint');
+    if (!option || !hint) return;
+    const within = option.dataset.within === '1';
+    const diff = Number(option.dataset.diff || 0);
+    const allowed = Number(option.dataset.allowed || 0);
+    if (within) {
+      hint.className = 'text-sm text-success';
+      hint.textContent = `Sai lệch ${formatVND(diff)} trong ngưỡng cho phép ${formatVND(allowed)}.`;
+    } else {
+      hint.className = 'text-sm text-danger';
+      hint.textContent = `Sai lệch ${formatVND(diff)} vượt ngưỡng ${formatVND(allowed)}. Hệ thống sẽ chặn ghép thủ công.`;
+    }
+  };
+  document.getElementById('manual-bank-id')?.addEventListener('change', updateHint);
+  updateHint();
+
   document.getElementById('btn-cancel-manual-match')?.addEventListener('click', () => closeModal());
   document.getElementById('btn-confirm-manual-match')?.addEventListener('click', async () => {
-    const bankId = document.getElementById('manual-bank-id')?.value;
+    const select = document.getElementById('manual-bank-id');
+    const bankId = select?.value;
     if (!bankId) {
       toast('Vui lòng chọn giao dịch ngân hàng', 'error');
+      return;
+    }
+    const selectedOption = select?.selectedOptions?.[0];
+    if (selectedOption?.dataset.within !== '1') {
+      toast('Không thể ghép: sai lệch số tiền vượt ngưỡng kiểm soát', 'error');
       return;
     }
     try {
@@ -407,8 +513,14 @@ async function openManualMatchModal(voucherId) {
       toast('Ghép thủ công thành công', 'success');
       await loadReconciliation();
     } catch (e) {
-      if (String(e?.message || '').includes('INVALID_MATCH_AMOUNT')) {
+      const msg = String(e?.message || '');
+      if (msg.includes('INVALID_MATCH_AMOUNT')) {
         toast('Không thể ghép giao dịch/chứng từ có số tiền <= 0', 'error');
+        await loadReconciliation();
+        return;
+      }
+      if (msg.includes('BANK_MATCH_AMOUNT_MISMATCH')) {
+        toast('Không thể ghép: chênh lệch số tiền vượt ngưỡng', 'error');
         await loadReconciliation();
         return;
       }

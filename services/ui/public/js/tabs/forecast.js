@@ -161,7 +161,7 @@ function bindForecastEvents() {
   document.getElementById('btn-export-excel').addEventListener('click', exportExcel);
 }
 
-async function loadForecast() {
+async function loadForecast({ showEmptyToast = true } = {}) {
   try {
     const horizon = 365;
     const data = await api(`/acct/cashflow_forecast?horizon_days=${horizon}`);
@@ -178,16 +178,22 @@ async function loadForecast() {
       forecastData = [];
       renderChart();
       renderTable();
-      return;
+      return { enough: false, hasData: false, reason: alertEl.textContent };
     }
 
     alertEl.style.display = 'none';
     alertEl.textContent = '';
     if (!forecastData.length) {
-      toast('Không có dữ liệu dự báo cho kỳ này', 'info');
+      if (showEmptyToast) {
+        toast('Không có dữ liệu dự báo cho kỳ này', 'info');
+      }
+      renderChart();
+      renderTable();
+      return { enough: true, hasData: false, reason: 'empty' };
     }
     renderChart();
     renderTable();
+    return { enough: true, hasData: true, reason: null };
   } catch (e) {
     console.error('Forecast load error', e);
     forecastData = [];
@@ -198,6 +204,7 @@ async function loadForecast() {
     toast('Lỗi tải dữ liệu dự báo', 'error');
     renderChart();
     renderTable();
+    return { enough: null, hasData: false, reason: String(e?.message || 'load_error') };
   }
 }
 
@@ -260,8 +267,14 @@ async function runForecast() {
     if (run?.run_id) {
       await waitForRun(run.run_id, 60);
     }
-    await loadForecast();
-    toast('Đã cập nhật dự báo dòng tiền', 'success');
+    const refreshed = await loadForecast({ showEmptyToast: false });
+    if (refreshed?.enough === false) {
+      toast('Đã chạy dự báo nhưng chưa đủ dữ liệu để cho kết quả tin cậy', 'warning');
+    } else if (refreshed?.hasData) {
+      toast('Đã cập nhật dự báo dòng tiền', 'success');
+    } else {
+      toast('Đã chạy dự báo nhưng chưa có dữ liệu hiển thị', 'info');
+    }
   } catch (e) {
     toast('Chạy dự báo thất bại: ' + e.message, 'error');
   } finally {

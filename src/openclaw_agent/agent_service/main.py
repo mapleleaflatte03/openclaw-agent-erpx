@@ -882,6 +882,18 @@ except Exception:
     _OCR_MIN_CONFIDENCE = 0.70
 _OCR_MIN_CONFIDENCE = max(0.0, min(_OCR_MIN_CONFIDENCE, 1.0))
 
+try:
+    _BANK_MATCH_REL_TOLERANCE = float(os.getenv("BANK_MATCH_REL_TOLERANCE", "0.03"))
+except Exception:
+    _BANK_MATCH_REL_TOLERANCE = 0.03
+_BANK_MATCH_REL_TOLERANCE = max(0.0, min(_BANK_MATCH_REL_TOLERANCE, 1.0))
+
+try:
+    _BANK_MATCH_ABS_TOLERANCE = float(os.getenv("BANK_MATCH_ABS_TOLERANCE", "5000"))
+except Exception:
+    _BANK_MATCH_ABS_TOLERANCE = 5000.0
+_BANK_MATCH_ABS_TOLERANCE = max(0.0, _BANK_MATCH_ABS_TOLERANCE)
+
 
 def _is_undefined_like(value: Any) -> bool:
     txt = str(value or "").strip().lower()
@@ -896,6 +908,13 @@ def _safe_float(value: Any, default: float = 0.0) -> float:
     if not math.isfinite(num):
         return default
     return num
+
+
+def _bank_match_amount_delta(bank_amount: float, voucher_amount: float) -> tuple[float, float]:
+    diff = abs(_safe_float(bank_amount) - _safe_float(voucher_amount))
+    anchor = max(_safe_float(bank_amount), _safe_float(voucher_amount))
+    allowed = max(_BANK_MATCH_ABS_TOLERANCE, anchor * _BANK_MATCH_REL_TOLERANCE)
+    return diff, allowed
 
 
 def _parse_amount_token(token: str) -> float:
@@ -2306,11 +2325,39 @@ def list_bank_transactions(
     q = q.order_by(AcctBankTransaction.synced_at.desc()).limit(min(limit, 500))
     rows = session.execute(q).scalars().all()
     matched_statuses = {"matched", "matched_auto", "matched_manual"}
+    matched_voucher_ids = {
+        str(r.matched_voucher_id).strip()
+        for r in rows
+        if str(r.match_status or "").strip().lower() in matched_statuses and r.matched_voucher_id
+    }
+    voucher_amount_map: dict[str, float] = {}
+    if matched_voucher_ids:
+        voucher_rows = session.execute(
+            select(AcctVoucher.id, AcctVoucher.amount).where(AcctVoucher.id.in_(matched_voucher_ids))
+        ).all()
+        voucher_amount_map = {str(vid): _safe_float(amount) for vid, amount in voucher_rows}
     items: list[dict[str, Any]] = []
     for r in rows:
         row_amount = _safe_float(r.amount)
         raw_status = str(r.match_status or "").strip().lower()
-        invalid_zero_match = row_amount <= 0 and raw_status in matched_statuses
+        is_matched = raw_status in matched_statuses
+        anomaly_reason: str | None = None
+        amount_diff: float | None = None
+        allowed_diff: float | None = None
+        if is_matched:
+            if row_amount <= 0:
+                anomaly_reason = "invalid_zero_amount_match"
+            elif not r.matched_voucher_id:
+                anomaly_reason = "missing_voucher_link"
+            else:
+                voucher_amount = _safe_float(voucher_amount_map.get(str(r.matched_voucher_id)))
+                if voucher_amount <= 0:
+                    anomaly_reason = "invalid_voucher_amount_match"
+                else:
+                    amount_diff, allowed_diff = _bank_match_amount_delta(row_amount, voucher_amount)
+                    if amount_diff > allowed_diff:
+                        anomaly_reason = "amount_mismatch_large"
+        is_anomaly_match = bool(anomaly_reason)
         items.append({
             "id": r.id,
             "bank_tx_ref": r.bank_tx_ref,
@@ -2320,9 +2367,11 @@ def list_bank_transactions(
             "currency": r.currency,
             "counterparty": r.counterparty,
             "memo": r.memo,
-            "matched_voucher_id": None if invalid_zero_match else r.matched_voucher_id,
-            "match_status": "anomaly" if invalid_zero_match else r.match_status,
-            "anomaly_reason": "invalid_zero_amount_match" if invalid_zero_match else None,
+            "matched_voucher_id": r.matched_voucher_id,
+            "match_status": "anomaly" if is_anomaly_match else r.match_status,
+            "anomaly_reason": anomaly_reason,
+            "amount_diff": amount_diff,
+            "allowed_diff": allowed_diff,
             "synced_at": r.synced_at,
             "run_id": r.run_id,
         })
@@ -2361,6 +2410,22 @@ def bank_match(
                 "detail": "Không thể ghép giao dịch/chứng từ có số tiền <= 0.",
                 "bank_amount": tx_amount,
                 "voucher_amount": voucher_amount,
+            },
+        )
+    amount_diff, allowed_diff = _bank_match_amount_delta(tx_amount, voucher_amount)
+    if amount_diff > allowed_diff:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": "BANK_MATCH_AMOUNT_MISMATCH",
+                "detail": (
+                    "Không thể ghép do lệch số tiền vượt ngưỡng cho phép. "
+                    "Vui lòng chọn giao dịch khớp số tiền."
+                ),
+                "bank_amount": tx_amount,
+                "voucher_amount": voucher_amount,
+                "amount_diff": amount_diff,
+                "allowed_diff": allowed_diff,
             },
         )
 
@@ -4051,6 +4116,15 @@ _USER_SETTINGS: dict[str, Any] = {
     "advanced": {},
 }
 
+_EMAIL_PATTERN = _re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
+
+
+def _is_valid_email(value: str) -> bool:
+    text = str(value or "").strip()
+    if not text:
+        return True
+    return bool(_EMAIL_PATTERN.fullmatch(text))
+
 
 @app.get("/agent/v1/settings", dependencies=[Depends(require_api_key)])
 def get_settings_all() -> dict[str, Any]:
@@ -4061,6 +4135,21 @@ def get_settings_all() -> dict[str, Any]:
 @app.patch("/agent/v1/settings/profile", dependencies=[Depends(require_api_key)])
 def update_settings_profile(body: dict[str, Any]) -> dict[str, Any]:
     """Update profile settings."""
+    if "email" in body:
+        email = str(body.get("email") or "").strip()
+        if not _is_valid_email(email):
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "error": "INVALID_EMAIL_FORMAT",
+                    "detail": "Email không hợp lệ. Vui lòng nhập đúng định dạng user@company.com.",
+                },
+            )
+        body["email"] = email
+    if "name" in body:
+        body["name"] = str(body.get("name") or "").strip()
+    if "role" in body:
+        body["role"] = str(body.get("role") or "").strip()
     for key in ["name", "email", "role"]:
         if key in body:
             _USER_SETTINGS[key] = body[key]

@@ -155,6 +155,8 @@ async function handleFiles(files) {
   listEl.innerHTML = fileArr.map((f) => `<div class="flex-row gap-sm"><span class="badge badge-neutral">${f.name}</span></div>`).join('');
 
   let done = 0;
+  let failed = 0;
+  const failedReasons = [];
   for (const file of fileArr) {
     try {
       // Upload binary directly; backend persists attachment + OCR voucher mirror row.
@@ -167,8 +169,23 @@ async function handleFiles(files) {
         body: formData,
       });
       if (!uploadRes.ok) {
-        const errText = await uploadRes.text();
-        throw new Error(`HTTP ${uploadRes.status}: ${errText.slice(0, 160)}`);
+        const rawBody = await uploadRes.text();
+        let detail = '';
+        try {
+          const errJson = rawBody ? JSON.parse(rawBody) : {};
+          if (typeof errJson?.detail === 'string') {
+            detail = errJson.detail;
+          } else if (errJson?.detail?.detail) {
+            detail = String(errJson.detail.detail);
+          } else if (errJson?.error) {
+            detail = String(errJson.error);
+          } else {
+            detail = JSON.stringify(errJson).slice(0, 160);
+          }
+        } catch {
+          detail = rawBody.slice(0, 160);
+        }
+        throw new Error(`HTTP ${uploadRes.status}: ${detail || 'Upload thất bại'}`);
       }
       await uploadRes.json();
 
@@ -177,11 +194,21 @@ async function handleFiles(files) {
       bar.style.width = `${(done / fileArr.length) * 100}%`;
     } catch (e) {
       console.error('Upload error', file.name, e);
-      toast(`Lỗi upload ${file.name}`, 'error');
+      failed++;
+      const reason = String(e?.message || 'Upload thất bại');
+      failedReasons.push(`${file.name}: ${reason}`);
+      toast(`Lỗi upload ${file.name}: ${reason}`, 'error', 6500);
     }
   }
 
-  toast(`Đã upload ${done} file`, 'success');
+  if (done > 0 && failed === 0) {
+    toast(`Đã upload ${done}/${fileArr.length} file`, 'success');
+  } else if (done > 0 && failed > 0) {
+    toast(`Upload hoàn tất: ${done} thành công, ${failed} lỗi`, 'warning', 6000);
+  } else {
+    const firstReason = failedReasons[0] || 'Không thể tải tệp lên hệ thống';
+    toast(`Upload thất bại (${failed}/${fileArr.length}). ${firstReason}`, 'error', 8000);
+  }
   setTimeout(() => {
     card.classList.add('hidden');
     bar.style.width = '0%';

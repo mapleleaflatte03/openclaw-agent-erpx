@@ -917,6 +917,105 @@ def test_bank_manual_match_rejects_zero_amount_rows(client_and_engine):
     assert payload.get("error") == "INVALID_MATCH_AMOUNT"
 
 
+def test_bank_manual_match_rejects_large_amount_mismatch(client_and_engine):
+    client, engine = client_and_engine
+    voucher_id = new_uuid()
+    bank_id = new_uuid()
+
+    with db_session(engine) as s:
+        s.add(
+            AcctVoucher(
+                id=voucher_id,
+                erp_voucher_id=f"erp-{voucher_id[:8]}",
+                voucher_no="INV-BANK-MISMATCH",
+                voucher_type="sell_invoice",
+                date="2026-02-11",
+                amount=580_000,
+                currency="VND",
+                partner_name="Demo",
+                has_attachment=True,
+                source="erpx",
+            )
+        )
+        s.add(
+            AcctBankTransaction(
+                id=bank_id,
+                bank_tx_ref="BANK-TX-2230K",
+                bank_account="VCB-001",
+                date="2026-02-11",
+                amount=2_230_000,
+                currency="VND",
+                match_status="unmatched",
+            )
+        )
+
+    blocked = client.post(
+        "/agent/v1/acct/bank_match",
+        json={"bank_tx_id": bank_id, "voucher_id": voucher_id, "method": "manual"},
+        headers=_HEADERS,
+    )
+    assert blocked.status_code == 422, blocked.text
+    payload = blocked.json().get("detail", {})
+    assert payload.get("error") == "BANK_MATCH_AMOUNT_MISMATCH"
+
+
+def test_bank_transactions_marks_large_mismatch_as_anomaly(client_and_engine):
+    client, engine = client_and_engine
+    voucher_id = new_uuid()
+    bank_id = new_uuid()
+
+    with db_session(engine) as s:
+        s.add(
+            AcctVoucher(
+                id=voucher_id,
+                erp_voucher_id=f"erp-{voucher_id[:8]}",
+                voucher_no="INV-BANK-MARK-ANOMALY",
+                voucher_type="sell_invoice",
+                date="2026-02-11",
+                amount=580_000,
+                currency="VND",
+                partner_name="Demo",
+                has_attachment=True,
+                source="erpx",
+            )
+        )
+        s.add(
+            AcctBankTransaction(
+                id=bank_id,
+                bank_tx_ref="BANK-TX-WRONG-MATCH",
+                bank_account="VCB-001",
+                date="2026-02-11",
+                amount=2_230_000,
+                currency="VND",
+                match_status="matched_manual",
+                matched_voucher_id=voucher_id,
+            )
+        )
+
+    listed = client.get(
+        "/agent/v1/acct/bank_transactions",
+        params={"period": "2026-02", "limit": 100},
+        headers=_HEADERS,
+    )
+    assert listed.status_code == 200, listed.text
+    row = next((item for item in listed.json().get("items", []) if item.get("id") == bank_id), None)
+    assert row is not None
+    assert row.get("match_status") == "anomaly"
+    assert row.get("anomaly_reason") == "amount_mismatch_large"
+
+
+def test_settings_profile_rejects_invalid_email(client_and_engine):
+    client, _engine = client_and_engine
+    invalid = client.patch(
+        "/agent/v1/settings/profile",
+        json={"name": "Tester", "email": "abc", "role": "accountant"},
+        headers=_HEADERS,
+    )
+    assert invalid.status_code == 422, invalid.text
+    detail = invalid.json().get("detail", {})
+    assert detail.get("error") == "INVALID_EMAIL_FORMAT"
+
+
 def test_vn_feeder_control_update_config_and_status(client_and_engine, monkeypatch):
     client, _engine = client_and_engine
     import openclaw_agent.agent_service.vn_feeder_engine as feeder_engine

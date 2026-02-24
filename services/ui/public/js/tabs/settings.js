@@ -465,9 +465,14 @@ async function loadSettings() {
 }
 
 async function saveProfile() {
+  const email = String(document.getElementById('setting-email').value || '').trim();
+  if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    toast('Email không hợp lệ. Vui lòng nhập đúng định dạng (ví dụ: user@company.com)', 'error');
+    return;
+  }
   const payload = {
-    name: document.getElementById('setting-name').value,
-    email: document.getElementById('setting-email').value,
+    name: String(document.getElementById('setting-name').value || '').trim(),
+    email,
     role: document.getElementById('setting-role').value,
   };
   try {
