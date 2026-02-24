@@ -7,6 +7,8 @@ let initialized = false;
 let reportHistory = [];
 let currentStep = 1;
 let reportConfig = {};
+let latestValidation = null;
+const REPORT_CRITICAL_CHECK_KEYS = new Set(['period_data', 'input_quality', 'trial_balance', 'compliance']);
 
 function currentPeriod() {
   const now = new Date();
@@ -38,6 +40,10 @@ function createDefaultReportConfig() {
     showNotes: true,
     sign: false,
   };
+}
+
+function resetValidationState() {
+  latestValidation = null;
 }
 
 async function init() {
@@ -352,11 +358,13 @@ function bindEvents() {
   document.getElementById('wizard-content').addEventListener('change', (e) => {
     if (e.target.name === 'report-type') {
       reportConfig.type = e.target.value;
+      resetValidationState();
       document.querySelectorAll('.report-type-card').forEach((c) => c.classList.remove('selected'));
       e.target.closest('.report-type-card').classList.add('selected');
     }
     if (e.target.name === 'standard') {
       reportConfig.standard = e.target.value;
+      resetValidationState();
     }
     if (e.target.name === 'export-format') {
       document.querySelectorAll('.export-format-card').forEach((c) => c.classList.remove('selected'));
@@ -402,6 +410,7 @@ function nextStep() {
     reportConfig.showDetails = document.getElementById('opt-details')?.checked;
     reportConfig.showNotes = document.getElementById('opt-notes')?.checked;
     reportConfig.sign = document.getElementById('opt-sign')?.checked;
+    resetValidationState();
     if (!/^\d{4}-\d{2}$/.test(reportConfig.period)) {
       toast('Kỳ báo cáo phải theo định dạng YYYY-MM', 'error');
       return;
@@ -582,6 +591,14 @@ async function runValidation() {
       const totalCount = checks.length || items.length;
       summary.textContent = `Kết quả: ${passedCount}/${totalCount} mục đạt • ${new Date().toLocaleTimeString('vi-VN')}`;
     }
+    latestValidation = {
+      type: reportConfig.type,
+      period: reportConfig.period,
+      checks,
+      issues: validation.issues || [],
+      all_passed: !!validation.all_passed,
+    };
+    return validation;
   } catch (e) {
     // On API error, mark all as pending
     items.forEach((item) => {
@@ -593,7 +610,75 @@ async function runValidation() {
     });
     if (summary) summary.textContent = `Lỗi kiểm tra: ${e.message || 'không xác định'}`;
     console.error('Validation error', e);
+    return null;
   }
+}
+
+function getCriticalValidationFailures(validation) {
+  const checks = validation?.checks || [];
+  return checks.filter((check) => {
+    const key = mapValidationCheckKey(check?.name || '');
+    return REPORT_CRITICAL_CHECK_KEYS.has(key) && !check?.passed;
+  });
+}
+
+function requestRiskApproval(failures) {
+  return new Promise((resolve) => {
+    const failList = failures
+      .map((f) => `<li><strong>${f.name}</strong>: ${f.detail || 'Không đạt'}</li>`)
+      .join('');
+    openModal(
+      'Phê duyệt rủi ro trước khi xuất',
+      `
+      <div class="flex-col gap-md">
+        <div class="alert alert-warning">
+          Soft-check critical đang fail. Cần phê duyệt rủi ro để tiếp tục xuất báo cáo.
+        </div>
+        <ul class="text-sm">${failList}</ul>
+        <div>
+          <label class="form-label">Người phê duyệt</label>
+          <input class="form-input" id="risk-approved-by" placeholder="Kế toán trưởng / QA lead">
+        </div>
+        <div>
+          <label class="form-label">Lý do phê duyệt</label>
+          <textarea class="form-textarea" id="risk-approval-reason" rows="3" placeholder="Nêu rõ lý do nghiệp vụ"></textarea>
+        </div>
+      </div>
+      `,
+      `
+      <button class="btn btn-outline" id="btn-risk-cancel">Hủy</button>
+      <button class="btn btn-primary" id="btn-risk-approve">Phê duyệt và xuất</button>
+      `
+    );
+
+    let settled = false;
+    const done = (value) => {
+      if (settled) return;
+      settled = true;
+      resolve(value);
+    };
+
+    document.getElementById('btn-risk-cancel')?.addEventListener('click', () => {
+      closeModal();
+      done(null);
+    });
+
+    document.getElementById('btn-risk-approve')?.addEventListener('click', () => {
+      const approvedBy = document.getElementById('risk-approved-by')?.value?.trim() || '';
+      const reason = document.getElementById('risk-approval-reason')?.value?.trim() || '';
+      if (!approvedBy || reason.length < 8) {
+        toast('Vui lòng nhập người phê duyệt và lý do (>= 8 ký tự)', 'error');
+        return;
+      }
+      closeModal();
+      done({ approved_by: approvedBy, reason });
+    });
+
+    document.querySelector('#modal-root .modal-close')?.addEventListener('click', () => done(null));
+    document.getElementById('modal-backdrop')?.addEventListener('click', (e) => {
+      if (e.target?.id === 'modal-backdrop') done(null);
+    });
+  });
 }
 
 async function loadReportHistory() {
@@ -635,6 +720,17 @@ async function exportReport() {
     return;
   }
   const format = document.querySelector('input[name="export-format"]:checked')?.value || 'pdf';
+  const validation = await runValidation();
+  if (!validation) return;
+  const criticalFailures = getCriticalValidationFailures(validation);
+  let riskApproval = null;
+  if (criticalFailures.length) {
+    riskApproval = await requestRiskApproval(criticalFailures);
+    if (!riskApproval) {
+      toast('Đã hủy xuất báo cáo do chưa phê duyệt rủi ro', 'warning');
+      return;
+    }
+  }
   toast('Đang xuất báo cáo...', 'info');
 
   try {
@@ -649,6 +745,7 @@ async function exportReport() {
         showDetails: reportConfig.showDetails,
         showNotes: reportConfig.showNotes,
         sign: reportConfig.sign,
+        risk_approval: riskApproval,
       },
     });
 
@@ -670,23 +767,42 @@ async function exportReport() {
     // Reset wizard
     currentStep = 1;
     reportConfig = createDefaultReportConfig();
+    resetValidationState();
     renderCurrentStep();
     updateWizardSteps();
     document.getElementById('preview-panel').style.display = 'none';
   } catch (e) {
+    if (String(e?.message || '').includes('RISK_APPROVAL_REQUIRED')) {
+      toast('Báo cáo bị chặn: cần phê duyệt rủi ro trước khi xuất', 'error');
+      return;
+    }
     toast('Lỗi xuất báo cáo: ' + e.message, 'error');
   }
 }
 
 async function quickExport(type) {
-  toast(`Đang xuất ${getReportTypeName(type)}...`, 'info');
   try {
     const period = reportConfig.period && /^\d{4}-\d{2}$/.test(reportConfig.period) ? reportConfig.period : currentPeriod();
+    reportConfig.type = type;
+    reportConfig.period = period;
+    const validation = await runValidation();
+    if (!validation) return;
+    const criticalFailures = getCriticalValidationFailures(validation);
+    let riskApproval = null;
+    if (criticalFailures.length) {
+      riskApproval = await requestRiskApproval(criticalFailures);
+      if (!riskApproval) {
+        toast('Đã hủy xuất nhanh do chưa phê duyệt rủi ro', 'warning');
+        return;
+      }
+    }
+    toast(`Đang xuất ${getReportTypeName(type)}...`, 'info');
     const resp = await apiPost('/reports/generate', {
       type,
       standard: 'VAS',
       period,
       format: 'pdf',
+      options: { risk_approval: riskApproval },
     });
     if (resp.format_warning) {
       toast(resp.format_warning, 'warning');
@@ -699,6 +815,10 @@ async function quickExport(type) {
     }
     toast('Xuất thành công!', 'success');
   } catch (e) {
+    if (String(e?.message || '').includes('RISK_APPROVAL_REQUIRED')) {
+      toast('Xuất nhanh bị chặn: cần phê duyệt rủi ro', 'error');
+      return;
+    }
     toast('Lỗi xuất báo cáo', 'error');
   }
 }

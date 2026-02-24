@@ -23,19 +23,19 @@ function render() {
     <div class="kpi-grid" id="kpi-grid">
       <div class="kpi-card" data-tab="ocr" data-tooltip="Click xem chi tiết">
         <div class="kpi-label">Chứng từ kỳ này</div>
-        <div class="kpi-value" id="kpi-vouchers">—</div>
+        <div class="kpi-value" id="kpi-vouchers">Đang tải...</div>
       </div>
       <div class="kpi-card" data-variant="danger" data-tab="risk" data-tooltip="Click xem chi tiết">
         <div class="kpi-label">Rủi ro cao</div>
-        <div class="kpi-value" id="kpi-risks">—</div>
+        <div class="kpi-value" id="kpi-risks">Đang tải...</div>
       </div>
       <div class="kpi-card" data-variant="warning" data-tab="journal" data-tooltip="Click xem chi tiết">
         <div class="kpi-label">Bút toán chờ duyệt</div>
-        <div class="kpi-value" id="kpi-pending">—</div>
+        <div class="kpi-value" id="kpi-pending">Đang tải...</div>
       </div>
       <div class="kpi-card" data-variant="success" data-tab="forecast" data-tooltip="Click xem chi tiết">
         <div class="kpi-label">Dự báo dòng tiền (30d)</div>
-        <div class="kpi-value" id="kpi-cashflow">—</div>
+        <div class="kpi-value" id="kpi-cashflow">Đang tải...</div>
       </div>
     </div>
 
@@ -151,29 +151,45 @@ async function refresh() {
 }
 
 async function loadKPIs() {
-  try {
-    // Vouchers count
-    const vouchers = await api('/acct/vouchers?limit=1');
-    document.getElementById('kpi-vouchers').textContent = vouchers.total ?? '—';
+  const period = currentPeriod();
+  const [vouchersRes, risksRes, journalsRes, cashflowRes] = await Promise.allSettled([
+    api(`/acct/vouchers?period=${encodeURIComponent(period)}&quality_scope=operational&limit=1`),
+    api('/acct/anomaly_flags?status=pending&limit=1'),
+    api('/acct/journal_proposals?status=pending&limit=1'),
+    api('/acct/cashflow_forecast?horizon_days=30'),
+  ]);
 
-    // Risks
-    const risks = await api('/acct/anomaly_flags?status=pending&limit=1');
-    document.getElementById('kpi-risks').textContent = risks.total ?? 0;
+  if (vouchersRes.status === 'fulfilled') {
+    const total = Number(vouchersRes.value?.total ?? 0);
+    document.getElementById('kpi-vouchers').textContent = Number.isFinite(total) ? String(total) : 'Chưa có dữ liệu';
+  } else {
+    document.getElementById('kpi-vouchers').textContent = 'N/A';
+  }
 
-    // Pending journals
-    const journals = await api('/acct/journal_proposals?status=pending&limit=1');
-    document.getElementById('kpi-pending').textContent = journals.total ?? 0;
+  if (risksRes.status === 'fulfilled') {
+    const total = Number(risksRes.value?.total ?? 0);
+    document.getElementById('kpi-risks').textContent = Number.isFinite(total) ? String(total) : '0';
+  } else {
+    document.getElementById('kpi-risks').textContent = 'N/A';
+  }
 
-    // Cashflow forecast
-    const cf = await api('/acct/cashflow_forecast?horizon_days=30');
+  if (journalsRes.status === 'fulfilled') {
+    const total = Number(journalsRes.value?.total ?? 0);
+    document.getElementById('kpi-pending').textContent = Number.isFinite(total) ? String(total) : '0';
+  } else {
+    document.getElementById('kpi-pending').textContent = 'N/A';
+  }
+
+  if (cashflowRes.status === 'fulfilled') {
+    const cf = cashflowRes.value || {};
+    if (cf.sufficiency && cf.sufficiency.enough === false) {
+      document.getElementById('kpi-cashflow').textContent = 'Chưa đủ DL';
+      return;
+    }
     const net = cf.summary?.net_forecast ?? cf.items?.reduce((s, i) => s + (i.net || 0), 0) ?? null;
-    document.getElementById('kpi-cashflow').textContent = net != null ? formatVND(net) : '—';
-  } catch (e) {
-    console.error('KPI load error', e);
-    document.getElementById('kpi-vouchers').textContent = '—';
-    document.getElementById('kpi-risks').textContent = '—';
-    document.getElementById('kpi-pending').textContent = '—';
-    document.getElementById('kpi-cashflow').textContent = '—';
+    document.getElementById('kpi-cashflow').textContent = net != null ? formatVND(net) : 'Chưa có dữ liệu';
+  } else {
+    document.getElementById('kpi-cashflow').textContent = 'N/A';
   }
 }
 

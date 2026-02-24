@@ -84,9 +84,10 @@ function bindReconEvents() {
 
 async function loadReconciliation() {
   try {
+    const period = currentPeriod();
     const [bankRes, voucherRes] = await Promise.all([
-      api('/acct/bank_transactions?limit=500'),
-      api('/acct/vouchers?limit=500'),
+      api(`/acct/bank_transactions?period=${encodeURIComponent(period)}&limit=500`),
+      api(`/acct/vouchers?period=${encodeURIComponent(period)}&quality_scope=operational&limit=500`),
     ]);
 
     const bankTxs = bankRes.items || bankRes.transactions || [];

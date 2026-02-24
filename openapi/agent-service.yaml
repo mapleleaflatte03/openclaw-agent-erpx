@@ -1221,6 +1221,14 @@ paths:
           - type: string
           - type: 'null'
           title: Match Status
+      - name: period
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Period
       - name: X-API-Key
         in: header
         required: false

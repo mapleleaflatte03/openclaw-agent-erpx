@@ -12,6 +12,7 @@ from openclaw_agent.common.models import (
     AcctJournalLine,
     AcctJournalProposal,
     AcctQnaAudit,
+    AcctReportSnapshot,
     AcctVoucher,
     AgentRun,
 )
@@ -653,6 +654,168 @@ def test_reports_warn_when_invalid_voucher_exists(client_and_engine):
     assert report_data["voucher_count"] == 1
     assert report_data["excluded_voucher_count"] >= 1
     assert any("bị loại khỏi báo cáo" in issue for issue in report_data["issues"])
+
+
+def test_reports_generate_requires_risk_approval_when_critical_fail(client_and_engine):
+    client, engine = client_and_engine
+    valid_voucher_id = new_uuid()
+    fixture_voucher_id = new_uuid()
+    proposal_id = new_uuid()
+    with db_session(engine) as s:
+        s.add(
+            AcctVoucher(
+                id=valid_voucher_id,
+                erp_voucher_id=f"erp-{valid_voucher_id[:8]}",
+                voucher_no="INV-RPT-GATE-OK",
+                voucher_type="sell_invoice",
+                date="2026-02-12",
+                amount=900_000,
+                currency="VND",
+                partner_name="Demo",
+                has_attachment=True,
+                source="ocr_upload",
+                raw_payload={"status": "valid", "original_filename": "invoice-vat-001.xml"},
+            )
+        )
+        s.add(
+            AcctVoucher(
+                id=fixture_voucher_id,
+                erp_voucher_id=f"erp-{fixture_voucher_id[:8]}",
+                voucher_no="INV-RPT-GATE-FIXTURE",
+                voucher_type="sell_invoice",
+                date="2026-02-12",
+                amount=500_000,
+                currency="VND",
+                partner_name="Fixture",
+                has_attachment=True,
+                source="ocr_upload",
+                raw_payload={"status": "valid", "original_filename": "dogs-vs-cats__sample.jpg"},
+            )
+        )
+        s.add(
+            AcctJournalProposal(
+                id=proposal_id,
+                voucher_id=valid_voucher_id,
+                confidence=0.9,
+                status="approved",
+            )
+        )
+        s.add(
+            AcctJournalLine(
+                id=new_uuid(),
+                proposal_id=proposal_id,
+                account_code="131",
+                account_name="Phải thu KH",
+                debit=900_000,
+                credit=0,
+            )
+        )
+        s.add(
+            AcctJournalLine(
+                id=new_uuid(),
+                proposal_id=proposal_id,
+                account_code="511",
+                account_name="Doanh thu",
+                debit=0,
+                credit=900_000,
+            )
+        )
+
+    validate = client.get(
+        "/agent/v1/reports/validate",
+        params={"type": "balance_sheet", "period": "2026-02"},
+        headers=_HEADERS,
+    )
+    assert validate.status_code == 200, validate.text
+    quality_check = next(c for c in validate.json()["checks"] if c["name"] == "Chất lượng chứng từ đầu vào")
+    assert quality_check["passed"] is False
+
+    blocked = client.post(
+        "/agent/v1/reports/generate",
+        json={"type": "balance_sheet", "standard": "VAS", "period": "2026-02", "format": "json", "options": {}},
+        headers=_HEADERS,
+    )
+    assert blocked.status_code == 409, blocked.text
+    detail = blocked.json().get("detail", {})
+    assert detail.get("error") == "RISK_APPROVAL_REQUIRED"
+
+    allowed = client.post(
+        "/agent/v1/reports/generate",
+        json={
+            "type": "balance_sheet",
+            "standard": "VAS",
+            "period": "2026-02",
+            "format": "json",
+            "options": {"risk_approval": {"approved_by": "chief-accountant", "reason": "chấp nhận rủi ro dữ liệu tạm thời"}},
+        },
+        headers=_HEADERS,
+    )
+    assert allowed.status_code == 200, allowed.text
+    report_id = allowed.json()["report_id"]
+    with db_session(engine) as s:
+        snapshot = s.get(AcctReportSnapshot, report_id)
+        assert snapshot is not None
+        summary = snapshot.summary_json or {}
+        assert isinstance(summary.get("risk_approval"), dict)
+        assert summary["risk_approval"].get("approved_by") == "chief-accountant"
+
+
+def test_vouchers_operational_scope_excludes_test_fixture(client_and_engine):
+    client, engine = client_and_engine
+    valid_id = new_uuid()
+    fixture_id = new_uuid()
+
+    with db_session(engine) as s:
+        s.add(
+            AcctVoucher(
+                id=valid_id,
+                erp_voucher_id=f"erp-{valid_id[:8]}",
+                voucher_no="INV-SCOPE-OK",
+                voucher_type="sell_invoice",
+                date="2026-02-20",
+                amount=450_000,
+                currency="VND",
+                partner_name="Demo",
+                has_attachment=True,
+                source="ocr_upload",
+                raw_payload={"status": "valid", "original_filename": "invoice-vat-002.xml"},
+            )
+        )
+        s.add(
+            AcctVoucher(
+                id=fixture_id,
+                erp_voucher_id=f"erp-{fixture_id[:8]}",
+                voucher_no="INV-SCOPE-FIXTURE",
+                voucher_type="sell_invoice",
+                date="2026-02-20",
+                amount=350_000,
+                currency="VND",
+                partner_name="Fixture",
+                has_attachment=True,
+                source="ocr_upload",
+                raw_payload={"status": "valid", "original_filename": "smoke-ocr.png"},
+            )
+        )
+
+    all_rows = client.get(
+        "/agent/v1/acct/vouchers",
+        params={"source": "ocr_upload", "period": "2026-02", "limit": 100},
+        headers=_HEADERS,
+    )
+    assert all_rows.status_code == 200, all_rows.text
+    all_ids = {item["id"] for item in all_rows.json()["items"]}
+    assert valid_id in all_ids and fixture_id in all_ids
+
+    operational = client.get(
+        "/agent/v1/acct/vouchers",
+        params={"source": "ocr_upload", "period": "2026-02", "quality_scope": "operational", "limit": 100},
+        headers=_HEADERS,
+    )
+    assert operational.status_code == 200, operational.text
+    op_items = operational.json()["items"]
+    op_ids = {item["id"] for item in op_items}
+    assert valid_id in op_ids
+    assert fixture_id not in op_ids
 
 
 def test_bank_manual_match_unmatch_and_ignore(client_and_engine):

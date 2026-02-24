@@ -10,6 +10,18 @@ let ocrScopedResults = [];
 let currentPage = 1;
 const PAGE_SIZE = 50;
 let ocrViewScope = 'operational';
+const OCR_TEST_FIXTURE_HINTS = [
+  'dogs-vs-cats',
+  'dogs_vs_cats',
+  '__sample',
+  'smoke-ocr',
+  'qa-',
+  'qa_',
+  'fixture',
+  'mock-upload',
+  'dummy-upload',
+  'contract.pdf',
+];
 
 async function init() {
   if (initialized) {
@@ -214,6 +226,21 @@ function normalizeQualityReasons(rawReasons) {
   return Array.from(new Set(normalized));
 }
 
+function looksLikeTestFixture(v) {
+  const joined = [
+    v.original_filename,
+    v.source_ref,
+    v.description,
+    v.voucher_no,
+    v.source_tag,
+  ]
+    .filter(Boolean)
+    .join(' ')
+    .toLowerCase();
+  if (!joined) return false;
+  return OCR_TEST_FIXTURE_HINTS.some((hint) => joined.includes(hint));
+}
+
 function normalizeOcrVoucher(v) {
   const amount = Number(v.total_amount ?? v.amount ?? 0);
   const reasons = normalizeQualityReasons(v.quality_reasons);
@@ -222,10 +249,13 @@ function normalizeOcrVoucher(v) {
   const hasZeroAmount = amount <= 0 || reasons.includes('zero_amount');
   const hasNoLineItems = reasons.includes('no_line_items');
   const hasLowConfidence = rawStatus === 'low_quality' || reasons.includes('low_confidence');
+  const hasTestFixture = looksLikeTestFixture(v);
 
   let status = rawStatus || 'pending';
   if (hasNonInvoice) {
     status = 'non_invoice';
+  } else if (hasTestFixture) {
+    status = 'quarantined';
   } else if (hasZeroAmount || hasNoLineItems) {
     status = 'quarantined';
   } else if (hasLowConfidence) {
@@ -235,6 +265,9 @@ function normalizeOcrVoucher(v) {
   }
 
   const normalizedReasons = [...reasons];
+  if (hasTestFixture && !normalizedReasons.includes('test_fixture')) {
+    normalizedReasons.push('test_fixture');
+  }
   if (amount <= 0 && !normalizedReasons.includes('zero_amount')) {
     normalizedReasons.push('zero_amount');
   }
