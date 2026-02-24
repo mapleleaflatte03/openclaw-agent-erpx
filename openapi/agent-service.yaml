@@ -2602,7 +2602,7 @@ components:
         file:
           anyOf:
           - type: string
-            format: binary
+            contentMediaType: application/octet-stream
           - type: 'null'
           title: File
         source_tag:
