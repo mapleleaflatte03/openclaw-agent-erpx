@@ -9,7 +9,22 @@ if [ -z "${NGINX_RESOLVER:-}" ]; then
   export NGINX_RESOLVER
 fi
 
-if [ -z "${UI_AGENT_BASE_URL:-}" ]; then
-  UI_AGENT_BASE_URL="http://agent-service:8000"
+if [ -z "${UI_AGENT_BASE_URL:-}" ] || [ "${UI_AGENT_BASE_URL}" = "http://agent-service:8000" ]; then
+  SEARCH_DOMAIN="$(awk '
+    /^search[[:space:]]+/ {
+      for (i = 2; i <= NF; i++) {
+        if ($i ~ /\.svc(\.|$)/) {
+          print $i
+          exit
+        }
+      }
+    }
+  ' /etc/resolv.conf 2>/dev/null || true)"
+
+  if [ -n "${SEARCH_DOMAIN}" ]; then
+    UI_AGENT_BASE_URL="http://agent-service.${SEARCH_DOMAIN}:8000"
+  else
+    UI_AGENT_BASE_URL="http://agent-service:8000"
+  fi
   export UI_AGENT_BASE_URL
 fi
