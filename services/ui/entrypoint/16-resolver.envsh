@@ -1,0 +1,15 @@
+#!/bin/sh
+# Export resolver from container DNS config so nginx can resolve upstream names
+# in both Docker Compose and Kubernetes.
+if [ -z "${NGINX_RESOLVER:-}" ]; then
+  NGINX_RESOLVER="$(awk '/^nameserver[[:space:]]+/ {print $2; exit}' /etc/resolv.conf 2>/dev/null || true)"
+  if [ -z "${NGINX_RESOLVER}" ]; then
+    NGINX_RESOLVER="127.0.0.11"
+  fi
+  export NGINX_RESOLVER
+fi
+
+if [ -z "${UI_AGENT_BASE_URL:-}" ]; then
+  UI_AGENT_BASE_URL="http://agent-service:8000"
+  export UI_AGENT_BASE_URL
+fi

@@ -3,7 +3,7 @@ from __future__ import annotations
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -73,6 +73,24 @@ class Settings(BaseSettings):
     llm_timeout: float = Field(default=25.0, alias="LLM_TIMEOUT")
     llm_max_tokens: int = Field(default=512, alias="LLM_MAX_TOKENS")
     llm_temperature: float = Field(default=0.1, alias="LLM_TEMPERATURE")
+
+    @field_validator("erpx_retry_max_attempts", mode="before")
+    @classmethod
+    def _clamp_erpx_retry_max_attempts(cls, value: object) -> int:
+        """Keep ERPX retries within hardening gate (1..3) even if env is higher."""
+        try:
+            attempts = int(value)
+        except Exception:
+            return 3
+        if attempts < 1:
+            return 1
+        return min(attempts, 3)
+
+    @field_validator("erpx_rate_limit_qps", mode="before")
+    @classmethod
+    def _enforce_erpx_rate_limit_qps(cls, _value: object) -> float:
+        """Lock ERPX request rate at hardening baseline (10 qps)."""
+        return 10.0
 
 
 @lru_cache

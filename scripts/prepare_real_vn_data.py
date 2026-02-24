@@ -59,7 +59,9 @@ import argparse
 import hashlib
 import json
 import random
+import re
 import sys
+import unicodedata
 from datetime import date
 from pathlib import Path
 from typing import Any
@@ -70,7 +72,7 @@ from typing import Any
 
 # Supported extensions for image/document files
 _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".tif"}
-_DOC_EXTS = {".pdf", ".xml", ".json"}
+_DOC_EXTS = {".pdf", ".xml", ".json", ".xls", ".xlsx", ".htm", ".html"}
 _ALL_EXTS = _IMAGE_EXTS | _DOC_EXTS
 
 # Category → doc_type mapping (for Appen dataset categories)
@@ -105,6 +107,39 @@ def _detect_category_from_path(path: Path) -> str:
     return "OTHER"
 
 
+def _normalize_for_match(text: str) -> str:
+    lowered = text.lower().replace("đ", "d")
+    no_accent = "".join(
+        ch for ch in unicodedata.normalize("NFD", lowered)
+        if unicodedata.category(ch) != "Mn"
+    )
+    cleaned = re.sub(r"[^a-z0-9]+", " ", no_accent).strip()
+    return f" {cleaned} " if cleaned else " "
+
+
+def _infer_doc_type_from_filename(path: Path) -> str:
+    """Infer doc_type from real-world filename/path conventions."""
+    text = _normalize_for_match(f"{path.parent.name} {path.name}")
+
+    if any(k in text for k in (" payment request ", " yctt ", " dntt ", " de nghi thanh toan ")):
+        return "cash_disbursement"
+    if any(k in text for k in (" phieu thu ", " bien lai thu ", " receipt ")):
+        return "cash_receipt"
+    if any(k in text for k in (" invoice ", " hoa don ", " vat ", " inv ", " bill ", " c25t ")):
+        return "invoice_vat"
+    if re.search(r"\bva\d{2}[-_ ]?\d{5,}\b", path.name.lower()):
+        return "invoice_vat"
+    return "other"
+
+
+def _infer_invoice_direction(path: Path) -> str:
+    """Infer whether invoice is likely purchase (AP) or sales (AR)."""
+    text = _normalize_for_match(f"{path.parent} {path.name}")
+    if any(k in text for k in (" ban hang ", " xuat hoa don ", " dau ra ", " doanh thu ")):
+        return "sales"
+    return "purchase"
+
+
 def _convert_image_to_doc_json(
     path: Path,
     source_type: str,
@@ -112,7 +147,10 @@ def _convert_image_to_doc_json(
 ) -> dict[str, Any]:
     """Convert one image/PDF/XML file into a pipeline-compatible JSON dict."""
     category = _detect_category_from_path(path)
+    inferred_doc_type = _infer_doc_type_from_filename(path)
     doc_type = _APPEN_CATEGORY_MAP.get(category, "other")
+    if doc_type == "other" and inferred_doc_type != "other":
+        doc_type = inferred_doc_type
     file_hash = _file_hash(path)
 
     doc: dict[str, Any] = {
@@ -125,9 +163,17 @@ def _convert_image_to_doc_json(
         "category": category.lower(),
         "issue_date": date.today().isoformat(),
         "currency": "VND",
-        "description": f"Real VN document ({category.lower()}) — {path.name}",
+        "description": (
+            f"Real VN document ({category.lower()}) — "
+            f"{path.parent.name} / {path.name}"
+        ),
         "index": index,
+        "source_path": str(path),
+        "inferred_doc_type": inferred_doc_type,
     }
+
+    if doc_type == "invoice_vat":
+        doc["invoice_direction"] = _infer_invoice_direction(path)
 
     # For images: mark as needing OCR
     if path.suffix.lower() in _IMAGE_EXTS:

@@ -28,6 +28,8 @@ from __future__ import annotations
 
 import logging
 import os
+import re
+import unicodedata
 from typing import Any
 
 from sqlalchemy.orm import Session
@@ -60,11 +62,71 @@ _VN_ACCOUNT_SUGGESTIONS: dict[str, dict[str, str]] = {
 
 # Extended keyword banks per tag (Vietnamese + English)
 _TAG_KEYWORDS: dict[str, list[str]] = {
-    "TAX_DECLARATION": ["kê khai thuế", "tờ khai", "thuế gtgt", "thuế tndn",
-                         "tax return", "thuế tncn", "quyết toán thuế"],
-    "BANK_TRANSACTION": ["chuyển khoản", "ngân hàng", "bank transfer",
-                          "internet banking", "ủy nhiệm chi"],
+    "TAX_DECLARATION": [
+        "ke khai thue",
+        "to khai",
+        "tokhai",
+        "tokhaihq7n",
+        "thue gtgt",
+        "thue tndn",
+        "tax return",
+        "thue tncn",
+        "quyet toan thue",
+        "hq7n",
+        "hai quan",
+        "customs",
+    ],
+    "BANK_TRANSACTION": [
+        "chuyen khoan",
+        "ngan hang",
+        "bank transfer",
+        "internet banking",
+        "uy nhiem chi",
+    ],
+    "CASH_DISBURSEMENT": [
+        "payment request",
+        "de nghi thanh toan",
+        "yeu cau thanh toan",
+        "yctt",
+        "dntt",
+    ],
+    "PURCHASE_INVOICE": [
+        "hoa don",
+        "invoice",
+        "vat",
+        "inv",
+        "po",
+        "packing list",
+        "bang ke hoa don",
+        "bill of lading",
+        "bill",
+    ],
 }
+
+_PURCHASE_CODE_PATTERNS = [
+    re.compile(r"\bva\d{2}\b", re.IGNORECASE),
+    re.compile(r"\b1c\d{2}t[a-z]{2}\b", re.IGNORECASE),
+    re.compile(r"\bva\d{2}[-_ ]?\d{5,}(?:[_-]\d+)?\b", re.IGNORECASE),
+    re.compile(r"\bvg\d{2}[-_ ]?\d{4,}\s+pl\b", re.IGNORECASE),
+    re.compile(r"\bdsg[-_a-z0-9]+\b", re.IGNORECASE),
+    re.compile(r"\bsi[-_ ]?\d{4,}(?:[_-][a-z0-9]+)?\b", re.IGNORECASE),
+]
+
+
+def _normalize_for_keyword_match(text: str) -> str:
+    """Normalize text to accent-insensitive lowercase for robust matching."""
+    lowered = text.lower().replace("đ", "d")
+    no_accent = "".join(
+        ch for ch in unicodedata.normalize("NFD", lowered)
+        if unicodedata.category(ch) != "Mn"
+    )
+    cleaned = re.sub(r"[^a-z0-9]+", " ", no_accent).strip()
+    return f" {cleaned} " if cleaned else " "
+
+
+def _contains_any_keyword(haystack: str, keywords: list[str]) -> bool:
+    """Check keyword presence with boundary-friendly matching."""
+    return any(f" {kw} " in haystack for kw in keywords)
 
 
 def _classify_with_confidence(
@@ -78,6 +140,7 @@ def _classify_with_confidence(
     vtype = vtype.lower()
     type_hint = type_hint.lower()
     desc = desc.lower()
+    norm_text = _normalize_for_keyword_match(f"{vtype} {type_hint} {desc}")
 
     # Priority 1: type_hint (set by ingest) — high confidence
     if type_hint == "cash_disbursement" or vtype == "payment":
@@ -91,28 +154,34 @@ def _classify_with_confidence(
     if vtype == "buy_invoice":
         return ("PURCHASE_INVOICE", 0.95, "voucher_type = buy_invoice")
 
-    # Priority 2.5: new tag keywords — medium-high confidence
+    # Priority 2.5: robust real-world keywords (accent-insensitive)
     for tag, keywords in _TAG_KEYWORDS.items():
-        if any(kw in desc for kw in keywords):
+        if _contains_any_keyword(norm_text, keywords):
             return (tag, 0.80, f"keyword match trong mô tả: {tag}")
 
+    # Priority 2.7: purchase code patterns from real invoice filenames
+    if any(p.search(desc) for p in _PURCHASE_CODE_PATTERNS):
+        return ("PURCHASE_INVOICE", 0.80, "match pattern mã chứng từ/hóa đơn thực tế")
+
     # Priority 3: keyword-based heuristics on description — medium confidence
-    if any(kw in desc for kw in ("bán hàng", "hóa đơn đầu ra", "doanh thu")):
+    if any(kw in norm_text for kw in (" ban hang ", " hoa don dau ra ", " doanh thu ")):
         return ("SALES_INVOICE", 0.80, "keyword: bán hàng/đầu ra/doanh thu")
-    if any(kw in desc for kw in ("mua hàng", "hóa đơn đầu vào", "nhập kho")):
+    if any(kw in norm_text for kw in (" mua hang ", " hoa don dau vao ", " nhap kho ")):
         return ("PURCHASE_INVOICE", 0.80, "keyword: mua hàng/đầu vào/nhập kho")
-    if any(kw in desc for kw in ("lương", "payroll", "tiền lương")):
+    if any(kw in norm_text for kw in (" luong ", " payroll ", " tien luong ")):
         return ("PAYROLL", 0.80, "keyword: lương/payroll")
-    if any(kw in desc for kw in ("tài sản cố định", "fixed asset", "tscđ")):
+    if any(kw in norm_text for kw in (" tai san co dinh ", " fixed asset ", " tscd ")):
         return ("FIXED_ASSET", 0.80, "keyword: TSCĐ/fixed asset")
-    if any(kw in desc for kw in ("phiếu chi", "chi tiền")):
+    if any(kw in norm_text for kw in (" phieu chi ", " chi tien ")):
         return ("CASH_DISBURSEMENT", 0.75, "keyword: phiếu chi/chi tiền")
-    if any(kw in desc for kw in ("phiếu thu", "thu tiền")):
+    if any(kw in norm_text for kw in (" phieu thu ", " thu tien ")):
         return ("CASH_RECEIPT", 0.75, "keyword: phiếu thu/thu tiền")
 
     # Priority 4: invoice_vat type_hint — medium confidence
     if type_hint == "invoice_vat":
-        return ("SALES_INVOICE", 0.60, "type_hint = invoice_vat (default)")
+        if any(kw in norm_text for kw in (" ban hang ", " doanh thu ", " dau ra ")):
+            return ("SALES_INVOICE", 0.70, "type_hint invoice_vat + sales context")
+        return ("PURCHASE_INVOICE", 0.65, "type_hint invoice_vat + thiếu ngữ cảnh bán hàng")
 
     return ("OTHER", 0.30, "không khớp rule nào — cần review thủ công")
 

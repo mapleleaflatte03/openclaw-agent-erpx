@@ -8,6 +8,7 @@ import os
 import re as _re
 import threading
 import time
+import unicodedata
 from collections import Counter
 from datetime import date, datetime
 from hashlib import sha256
@@ -552,7 +553,12 @@ def create_run(
 
     idem = request.headers.get("Idempotency-Key")
     if not idem:
-        idem = make_idempotency_key(run_type, trigger_type, payload)
+        # For manual runs, default to a unique key so repeated executions are not
+        # silently collapsed into an old run when data has changed.
+        if trigger_type == "manual":
+            idem = make_idempotency_key(run_type, trigger_type, payload, new_uuid())
+        else:
+            idem = make_idempotency_key(run_type, trigger_type, payload)
 
     existing = session.execute(select(AgentRun).where(AgentRun.idempotency_key == idem)).scalar_one_or_none()
     if existing:
@@ -841,14 +847,17 @@ _ATTACH_ALLOWED_EXT = {
 }
 _INVALID_OCR_STATUSES = {"quarantined", "non_invoice", "low_quality"}
 _NON_INVOICE_HINTS = {
-    "dog",
-    "dogs",
-    "cat",
-    "cats",
     "dogs-vs-cats",
+    "dogs vs cats",
     "pet",
     "kitten",
     "puppy",
+    "exportreport",
+    "bao cao",
+    "trial balance",
+    "balance sheet",
+    "cash flow statement",
+    "income statement",
 }
 _TEST_FIXTURE_HINTS = {
     "dogs-vs-cats",
@@ -862,25 +871,39 @@ _TEST_FIXTURE_HINTS = {
     "dummy-upload",
     "contract.pdf",
 }
-_INVOICE_HINTS = {
+_INVOICE_STRONG_HINTS = {
     "invoice",
     "hoa don",
-    "hóa đơn",
     "vat",
+    "so hoa don",
+    "invoice no",
+    "mau so",
+    "ky hieu",
+}
+_INVOICE_CONTEXT_HINTS = {
     "tax code",
     "mst",
-    "tổng tiền",
+    "tong tien",
     "thanh tien",
-    "thành tiền",
-    "receipt",
-    "so hoa don",
-    "số hóa đơn",
+    "buyer",
+    "seller",
+    "ben mua",
+    "ben ban",
+    "line item",
+    "don gia",
+    "so luong",
+    "quantity",
 }
 try:
     _OCR_MIN_CONFIDENCE = float(os.getenv("OCR_MIN_CONFIDENCE", "0.70"))
 except Exception:
     _OCR_MIN_CONFIDENCE = 0.70
 _OCR_MIN_CONFIDENCE = max(0.0, min(_OCR_MIN_CONFIDENCE, 1.0))
+try:
+    _OCR_MAX_REASONABLE_AMOUNT = float(os.getenv("OCR_MAX_REASONABLE_AMOUNT", "1000000000000"))
+except Exception:
+    _OCR_MAX_REASONABLE_AMOUNT = 1000000000000.0
+_OCR_MAX_REASONABLE_AMOUNT = max(0.0, _OCR_MAX_REASONABLE_AMOUNT)
 
 try:
     _BANK_MATCH_REL_TOLERANCE = float(os.getenv("BANK_MATCH_REL_TOLERANCE", "0.03"))
@@ -917,19 +940,78 @@ def _bank_match_amount_delta(bank_amount: float, voucher_amount: float) -> tuple
     return diff, allowed
 
 
+def _normalize_match_text(text: str) -> str:
+    lowered = (text or "").strip().lower().replace("đ", "d")
+    lowered = lowered.replace("_", " ").replace("-", " ")
+    no_accent = "".join(
+        ch for ch in unicodedata.normalize("NFD", lowered)
+        if unicodedata.category(ch) != "Mn"
+    )
+    cleaned = _re.sub(r"[^a-z0-9]+", " ", no_accent).strip()
+    return f" {cleaned} " if cleaned else " "
+
+
+def _contains_any_hint(normalized_text: str, hints: set[str]) -> bool:
+    return any(f" {hint} " in normalized_text for hint in hints)
+
+
 def _parse_amount_token(token: str) -> float:
-    # Keep this parser deterministic and permissive for VN-style separators.
-    cleaned = _re.sub(r"[^\d,.\-]", "", token or "")
+    # Deterministic parser for VN/EN number formats with outlier rejection.
+    cleaned = _re.sub(r"[^\d,.\-]", "", token or "").strip()
+    if not cleaned or not _re.search(r"\d", cleaned):
+        return 0.0
+
+    # Reject malformed negatives.
+    if cleaned.count("-") > 1:
+        return 0.0
+    cleaned = cleaned.lstrip("-")
     if not cleaned:
         return 0.0
-    # Heuristic: keep only digits when separators are ambiguous.
-    digits = _re.sub(r"[^\d\-]", "", cleaned)
-    if not digits or digits in {"-", "--"}:
+
+    digits_only = _re.sub(r"[^\d]", "", cleaned)
+    if not digits_only:
         return 0.0
+    # Reject long identifiers/tax codes disguised as amount tokens.
+    if len(digits_only) > 15:
+        return 0.0
+
+    norm = cleaned
+    has_dot = "." in cleaned
+    has_comma = "," in cleaned
+    if has_dot and has_comma:
+        # Last separator acts as decimal mark.
+        if cleaned.rfind(",") > cleaned.rfind("."):
+            norm = cleaned.replace(".", "").replace(",", ".")
+        else:
+            norm = cleaned.replace(",", "")
+    elif has_comma:
+        if cleaned.count(",") == 1:
+            left, right = cleaned.split(",")
+            if 1 <= len(right) <= 2 and 1 <= len(left) <= 3:
+                norm = f"{left}.{right}"
+            else:
+                norm = cleaned.replace(",", "")
+        else:
+            norm = cleaned.replace(",", "")
+    elif has_dot:
+        if cleaned.count(".") == 1:
+            left, right = cleaned.split(".")
+            if 1 <= len(right) <= 2 and 1 <= len(left) <= 3:
+                norm = f"{left}.{right}"
+            else:
+                norm = cleaned.replace(".", "")
+        else:
+            norm = cleaned.replace(".", "")
+
     try:
-        return abs(float(int(digits)))
+        amount = abs(float(norm))
     except Exception:
         return 0.0
+    if not math.isfinite(amount):
+        return 0.0
+    if amount > _OCR_MAX_REASONABLE_AMOUNT:
+        return 0.0
+    return amount
 
 
 def _extract_upload_text_preview(blob: bytes, pipeline: str) -> str:
@@ -951,7 +1033,25 @@ def _extract_upload_text_preview(blob: bytes, pipeline: str) -> str:
                     txt = (page.extract_text() or "").strip()
                     if txt:
                         pages.append(txt)
-            return "\n".join(pages)
+            preview = "\n".join(pages).strip()
+            # OCR fallback for scanned/non-Latin PDFs where embedded text is too sparse.
+            has_enough_signal = len(preview) >= 48 and bool(_re.search(r"\d", preview))
+            if has_enough_signal:
+                return preview
+            try:
+                import pytesseract
+                from pdf2image import convert_from_bytes
+
+                ocr_pages: list[str] = []
+                for image in convert_from_bytes(blob, first_page=1, last_page=2, dpi=220, fmt="png"):
+                    txt = (pytesseract.image_to_string(image, lang="eng+vie", timeout=20) or "").strip()
+                    if txt:
+                        ocr_pages.append(txt)
+                if ocr_pages:
+                    return "\n".join(ocr_pages)
+            except Exception:
+                pass
+            return preview
         except Exception:
             return ""
     if pipeline == "image_ocr":
@@ -1041,15 +1141,43 @@ def _extract_total_amount(filename: str, text: str) -> float:
     return max(candidates) if candidates else 0.0
 
 
+def _extract_tabular_amount(text: str) -> float:
+    """Fallback parser for OCR tables when explicit total keywords are missing."""
+    if not text:
+        return 0.0
+    candidates: list[float] = []
+    for line in text.splitlines():
+        tokens = _re.findall(r"\d[\d.,]{1,}", line)
+        if len(tokens) < 2:
+            continue
+        for token in tokens:
+            # Keep table-like amount tokens; reject plain long identifiers.
+            if "," not in token and "." not in token:
+                continue
+            amt = _parse_amount_token(token)
+            if amt > 0:
+                candidates.append(amt)
+    return max(candidates) if candidates else 0.0
+
+
 def _evaluate_ocr_quality(filename: str, blob: bytes, pipeline: str) -> dict[str, Any]:
     text_preview = _extract_upload_text_preview(blob, pipeline)
-    lowered = f"{filename} {text_preview}".lower()
-    non_invoice = any(hint in lowered for hint in _NON_INVOICE_HINTS)
-    invoice_hint_count = sum(1 for hint in _INVOICE_HINTS if hint in lowered)
-    invoice_like = (not non_invoice) and invoice_hint_count >= 2
+    raw_text = f"{filename} {text_preview}"
+    normalized_text = _normalize_match_text(raw_text)
+    non_invoice = _contains_any_hint(normalized_text, _NON_INVOICE_HINTS)
+    unicode_invoice_signal = any(token in raw_text for token in {"請求書", "インボイス", "发票", "發票"})
+    strong_invoice_signals = sum(1 for hint in _INVOICE_STRONG_HINTS if f" {hint} " in normalized_text)
+    context_invoice_signals = sum(1 for hint in _INVOICE_CONTEXT_HINTS if f" {hint} " in normalized_text)
+    invoice_like = (not non_invoice) and (
+        strong_invoice_signals >= 1 or context_invoice_signals >= 4 or unicode_invoice_signal
+    )
 
     total_amount = _extract_total_amount(filename, text_preview)
     line_items_count = _estimate_line_items(text_preview)
+    if total_amount <= 0 and line_items_count > 0:
+        tabular_amount = _extract_tabular_amount(text_preview)
+        if tabular_amount > 0:
+            total_amount = tabular_amount
 
     confidence = 0.35
     if invoice_like:
@@ -1065,8 +1193,10 @@ def _evaluate_ocr_quality(filename: str, blob: bytes, pipeline: str) -> dict[str
     confidence = round(max(0.0, min(confidence, 0.99)), 3)
 
     reasons: list[str] = []
-    if non_invoice or not invoice_like:
+    if non_invoice:
         reasons.append("non_invoice_pattern")
+    elif not invoice_like:
+        reasons.append("invoice_signal_missing")
     if total_amount <= 0:
         reasons.append("zero_amount")
     if line_items_count < 1:
@@ -1077,7 +1207,11 @@ def _evaluate_ocr_quality(filename: str, blob: bytes, pipeline: str) -> dict[str
     status = "valid"
     if "non_invoice_pattern" in reasons:
         status = "non_invoice"
-    elif "zero_amount" in reasons or "no_line_items" in reasons:
+    elif (
+        "invoice_signal_missing" in reasons
+        or "zero_amount" in reasons
+        or "no_line_items" in reasons
+    ):
         status = "quarantined"
     elif "low_confidence" in reasons:
         status = "low_quality"
@@ -1111,6 +1245,8 @@ def _canonical_ocr_status(amount: float, raw_status: str | None, reasons: list[s
 
     if "non_invoice_pattern" in reason_set or status == "non_invoice":
         return "non_invoice"
+    if "invoice_signal_missing" in reason_set:
+        return "quarantined"
     if "test_fixture" in reason_set:
         return "quarantined"
     if "zero_amount" in reason_set or "no_line_items" in reason_set:
@@ -1261,7 +1397,52 @@ async def post_attachment(
     now = utcnow()
     voucher_id = new_uuid()
     run_id = new_uuid()
+    task_id = new_uuid()
     tag = (source_tag or source or "ocr_upload").strip() or "ocr_upload"
+    run_cursor_in = {
+        "source": "attachment_upload",
+        "filename": safe_name,
+        "source_tag": tag,
+        "pipeline": pipeline,
+        "content_type": normalized_type,
+        "size_bytes": len(blob),
+    }
+    run = AgentRun(
+        run_id=run_id,
+        run_type="attachment",
+        trigger_type="event",
+        requested_by="ocr_upload",
+        status="running",
+        idempotency_key=f"attachment-upload:{file_hash}:{run_id}",
+        cursor_in=run_cursor_in,
+        cursor_out=None,
+        started_at=now,
+        finished_at=None,
+        stats=None,
+    )
+    task = AgentTask(
+        task_id=task_id,
+        run_id=run_id,
+        task_name="upload_attachment",
+        status="running",
+        input_ref=run_cursor_in,
+        output_ref=None,
+        error=None,
+        started_at=now,
+        finished_at=None,
+    )
+    session.add(run)
+    session.add(task)
+    session.add(
+        AgentLog(
+            log_id=new_uuid(),
+            run_id=run_id,
+            task_id=task_id,
+            level="info",
+            message="attachment_upload_started",
+            context={"filename": safe_name, "pipeline": pipeline, "source_tag": tag},
+        )
+    )
 
     attachment = AgentAttachment(
         id=new_uuid(),
@@ -1328,8 +1509,33 @@ async def post_attachment(
                 bank_tx_id=None,
                 resolution="open",
                 run_id=run_id,
+                )
             )
+    finished_at = utcnow()
+    run_out = {
+        "attachment_id": attachment.id,
+        "voucher_id": voucher.id,
+        "status": payload["status"],
+        "quality_reasons": payload["quality_reasons"],
+        "ocr_confidence": payload["ocr_confidence"],
+    }
+    task.status = "success"
+    task.output_ref = run_out
+    task.finished_at = finished_at
+    run.status = "success"
+    run.cursor_out = run_out
+    run.stats = run_out
+    run.finished_at = finished_at
+    session.add(
+        AgentLog(
+            log_id=new_uuid(),
+            run_id=run_id,
+            task_id=task_id,
+            level="info",
+            message="attachment_upload_success",
+            context=run_out,
         )
+    )
     session.commit()
 
     return {
@@ -3015,13 +3221,18 @@ def ray_status() -> dict[str, Any]:
 
         available = is_available()
         resources = {}
+        nodes = 0
         if available:
             swarm = get_swarm()
             if swarm.is_initialized:
                 resources = swarm.cluster_resources()
+                nodes = int(sum(float(v) for k, v in resources.items() if str(k).startswith("node:")))
+            if nodes <= 0:
+                nodes = 1
         return {
             "ray_available": available,
             "initialized": available and get_swarm().is_initialized,
+            "nodes": nodes,
             "resources": resources,
             "executor_mode": readiness["mode"],
             "local_executor_enabled": readiness["local_executor_enabled"],
@@ -3035,6 +3246,7 @@ def ray_status() -> dict[str, Any]:
         return {
             "ray_available": False,
             "initialized": False,
+            "nodes": 0,
             "resources": {},
             "executor_mode": readiness["mode"],
             "local_executor_enabled": readiness["local_executor_enabled"],

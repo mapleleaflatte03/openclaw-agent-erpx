@@ -5,6 +5,13 @@ WORKDIR /app
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      tesseract-ocr \
+      tesseract-ocr-vie \
+      poppler-utils \
+      curl \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY pyproject.toml /app/pyproject.toml
 COPY src /app/src
 COPY db /app/db
@@ -18,4 +25,3 @@ RUN python -m pip install -U pip && \
 EXPOSE 8000
 
 CMD ["/app/entrypoint.sh"]
-

@@ -29,6 +29,8 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
+from datetime import date as _dt_date
 from typing import Any
 
 from sqlalchemy.orm import Session
@@ -183,11 +185,19 @@ def _normalize_vn_fixture(doc: dict[str, Any]) -> dict[str, Any]:
 
     # Determine partner info
     if doc_type == "invoice_vat":
-        # Invoice: partner is buyer for sales, seller for purchases
-        partner_name = doc.get("buyer_name") or doc.get("seller_name") or ""
-        partner_tax_code = doc.get("buyer_tax_code") or doc.get("seller_tax_code") or ""
-        voucher_type = "sell_invoice"
-        type_hint = "invoice_vat"
+        invoice_direction = str(doc.get("invoice_direction", "")).lower().strip()
+        if invoice_direction in ("purchase", "buy", "ap", "input"):
+            # AP invoice: partner should be seller (nhà cung cấp)
+            partner_name = doc.get("seller_name") or doc.get("buyer_name") or ""
+            partner_tax_code = doc.get("seller_tax_code") or doc.get("buyer_tax_code") or ""
+            voucher_type = "buy_invoice"
+            type_hint = "invoice_vat"
+        else:
+            # Keep backward-compatible default for fixtures/tests.
+            partner_name = doc.get("buyer_name") or doc.get("seller_name") or ""
+            partner_tax_code = doc.get("buyer_tax_code") or doc.get("seller_tax_code") or ""
+            voucher_type = "sell_invoice"
+            type_hint = "invoice_vat"
     elif doc_type == "cash_disbursement":
         partner_name = doc.get("payee", "")
         partner_tax_code = ""
@@ -271,6 +281,50 @@ def _load_documents(
     return [_normalize_vn_fixture(d) for d in VN_FIXTURES]
 
 
+def _normalize_iso_date(value: Any) -> str | None:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    if re.fullmatch(r"\d{4}-(0[1-9]|1[0-2])-\d{2}", raw):
+        return raw
+    if re.fullmatch(r"\d{4}/(0[1-9]|1[0-2])/\d{2}", raw):
+        return raw.replace("/", "-")
+    if re.fullmatch(r"\d{4}-(0[1-9]|1[0-2])", raw):
+        return f"{raw}-01"
+    if re.fullmatch(r"\d{4}/(0[1-9]|1[0-2])", raw):
+        return f"{raw.replace('/', '-')}-01"
+    return None
+
+
+def _resolve_voucher_date(raw_date: Any, period: str | None, *, force_period: bool) -> str:
+    normalized = _normalize_iso_date(raw_date)
+    period_value = str(period or "").strip()
+    if re.fullmatch(r"\d{4}-(0[1-9]|1[0-2])", period_value):
+        period_date = f"{period_value}-01"
+        if force_period:
+            if normalized is None or not normalized.startswith(f"{period_value}-"):
+                return period_date
+        elif normalized is None:
+            return period_date
+    if normalized:
+        return normalized
+    return _dt_date.today().isoformat()
+
+
+def _doc_fingerprint(payload: dict[str, Any] | None) -> str:
+    """Create a stable short fingerprint from source metadata for dedup handling."""
+    pl = payload if isinstance(payload, dict) else {}
+    candidate = (
+        str(pl.get("source_hash") or "").strip()
+        or str(pl.get("source_file") or "").strip()
+        or str(pl.get("source_path") or "").strip()
+    )
+    if not candidate:
+        return ""
+    normalized = re.sub(r"[^A-Za-z0-9]+", "", candidate).lower()
+    return normalized[:24]
+
+
 def flow_voucher_ingest(
     session: Session,
     run_id: str,
@@ -283,6 +337,8 @@ def flow_voucher_ingest(
     """
     payload = payload or {}
     source = payload.get("source", "vn_fixtures")
+    period = str(payload.get("period") or "").strip()
+    force_period_date = bool(payload.get("force_period_date", True))
     docs = _load_documents(source, payload)
 
     # Ray batch: normalize OCR documents in parallel when enabled
@@ -300,22 +356,39 @@ def flow_voucher_ingest(
     nd123_invalid = 0
 
     for doc in docs:
-        voucher_no = doc["voucher_no"]
+        raw_payload = doc.get("raw_payload", {})
+        source_value = doc.get("source")
+        fingerprint = _doc_fingerprint(raw_payload if isinstance(raw_payload, dict) else None)
+        voucher_no = str(doc.get("voucher_no") or "").strip()
+        if not voucher_no:
+            voucher_no = f"DOC-{(fingerprint or new_uuid())[:12]}"
 
         # Idempotency: skip if voucher_no already exists with same source
         existing = (
             session.query(AcctVoucher)
-            .filter_by(voucher_no=voucher_no, source=doc.get("source"))
+            .filter_by(voucher_no=voucher_no, source=source_value)
             .first()
         )
         if existing:
-            skipped += 1
-            continue
+            # For payload imports, keep each real document while still deterministic.
+            if source == "payload" and fingerprint:
+                alt_voucher_no = f"{voucher_no[:52]}-{fingerprint[:8]}"
+                alt_existing = (
+                    session.query(AcctVoucher)
+                    .filter_by(voucher_no=alt_voucher_no, source=source_value)
+                    .first()
+                )
+                if alt_existing:
+                    skipped += 1
+                    continue
+                voucher_no = alt_voucher_no
+            else:
+                skipped += 1
+                continue
 
         erp_voucher_id = f"ingest-{voucher_no}-{new_uuid()[:8]}"
 
         # Merge OCR/fine-tune metadata into raw_payload if present
-        raw_payload = doc.get("raw_payload", {})
         if isinstance(raw_payload, dict):
             for k in ("_ocr_confidence", "_ocr_engine", "_ocr_needs_fine_tune",
                        "_nd123_valid", "_nd123_errors"):
@@ -328,12 +401,23 @@ def flow_voucher_ingest(
         if doc.get("_nd123_valid") is False:
             nd123_invalid += 1
 
+        voucher_date = _resolve_voucher_date(
+            doc.get("date"),
+            period,
+            force_period=force_period_date,
+        )
+        if isinstance(raw_payload, dict):
+            raw_payload.setdefault("original_date", doc.get("date"))
+            raw_payload["resolved_date"] = voucher_date
+            if period:
+                raw_payload["period"] = period
+
         voucher_row = AcctVoucher(
             id=new_uuid(),
             erp_voucher_id=erp_voucher_id,
             voucher_no=voucher_no,
             voucher_type=doc.get("voucher_type", "other"),
-            date=doc.get("date", ""),
+            date=voucher_date,
             amount=doc["amount"],
             currency=doc.get("currency", "VND"),
             partner_name=doc.get("partner_name"),

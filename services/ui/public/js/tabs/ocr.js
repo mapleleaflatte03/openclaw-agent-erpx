@@ -9,7 +9,7 @@ let ocrAllResults = [];
 let ocrScopedResults = [];
 let currentPage = 1;
 const PAGE_SIZE = 50;
-let ocrViewScope = 'operational';
+let ocrViewScope = 'all';
 const OCR_TEST_FIXTURE_HINTS = [
   'dogs-vs-cats',
   'dogs_vs_cats',
@@ -60,9 +60,9 @@ function render() {
       <span class="text-bold">Kết quả OCR</span>
       <div class="flex-row gap-sm">
         <select class="form-select" id="ocr-view-scope" style="width:auto">
-          <option value="operational" selected>Hợp lệ cho hạch toán</option>
+          <option value="operational">Hợp lệ cho hạch toán</option>
           <option value="review">Cần kiểm tra</option>
-          <option value="all">Tất cả</option>
+          <option value="all" selected>Tất cả</option>
         </select>
         <span id="ocr-view-count" class="text-secondary text-sm" style="align-self:center">—</span>
         <button class="btn btn-outline" id="btn-export-csv">📥 Xuất CSV</button>
