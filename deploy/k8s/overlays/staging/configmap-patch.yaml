@@ -4,4 +4,4 @@ metadata:
   name: agent-config
 data:
   AGENT_ENV: "staging"
-
+  USE_REAL_LLM: "true"

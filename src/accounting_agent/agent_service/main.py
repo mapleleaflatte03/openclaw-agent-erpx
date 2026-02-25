@@ -62,7 +62,13 @@ from accounting_agent.common.models import (
     AgentTask,
 )
 from accounting_agent.common.settings import Settings, get_settings
-from accounting_agent.common.storage import ensure_buckets
+from accounting_agent.common.storage import (
+    download_file,
+    ensure_buckets,
+    make_s3_client,
+    parse_s3_uri,
+    upload_file,
+)
 from accounting_agent.common.utils import make_idempotency_key, new_uuid, utcnow
 from accounting_agent.orchestration.config import load_workflows
 
@@ -971,6 +977,156 @@ try:
 except Exception:
     _OCR_MAX_REASONABLE_AMOUNT = 1000000000000.0
 _OCR_MAX_REASONABLE_AMOUNT = max(0.0, _OCR_MAX_REASONABLE_AMOUNT)
+
+
+def _attachment_display_filename(session: Session, attachment: AgentAttachment) -> str:
+    fallback = f"{attachment.id}.bin"
+    voucher = session.get(AcctVoucher, attachment.erp_object_id)
+    if voucher and isinstance(voucher.raw_payload, dict):
+        original_name = str(voucher.raw_payload.get("original_filename") or "").strip()
+        safe_name = _safe_filename(original_name)
+        if safe_name:
+            return safe_name
+    uri_name = _safe_filename(Path(str(attachment.file_uri or "")).name)
+    return uri_name or fallback
+
+
+def _attachment_candidate_suffixes(filename: str, uri: str | None = None) -> list[str]:
+    suffixes: list[str] = []
+    for raw in (filename, str(uri or "")):
+        suffix = Path(raw).suffix.lower()
+        if suffix:
+            suffixes.append(suffix)
+    suffixes.extend(sorted(_ATTACH_ALLOWED_EXT.keys()))
+    if ".bin" not in suffixes:
+        suffixes.append(".bin")
+    out: list[str] = []
+    seen: set[str] = set()
+    for suffix in suffixes:
+        token = suffix.strip().lower()
+        if not token or token in seen:
+            continue
+        seen.add(token)
+        out.append(token)
+    return out
+
+
+def _attachment_s3_cache_path(uri: str) -> Path:
+    ref = parse_s3_uri(uri)
+    suffix = Path(ref.key).suffix.lower() or ".bin"
+    name_hash = sha256(uri.encode("utf-8")).hexdigest()
+    return _ATTACH_UPLOAD_DIR / "_s3_cache" / ref.bucket / f"{name_hash}{suffix}"
+
+
+def _download_s3_attachment_to_cache(settings: Settings, uri: str) -> Path:
+    cache_path = _attachment_s3_cache_path(uri)
+    if cache_path.exists() and cache_path.is_file():
+        return cache_path.resolve()
+    ref = parse_s3_uri(uri)
+    download_file(settings, ref, str(cache_path))
+    return cache_path.resolve(strict=True)
+
+
+def _locate_attachment_s3_uri(
+    settings: Settings,
+    attachment: AgentAttachment,
+    suffixes: list[str],
+) -> str | None:
+    file_hash = str(attachment.file_hash or "").strip().lower()
+    if not file_hash:
+        return None
+    bucket = settings.minio_bucket_attachments
+    s3 = make_s3_client(settings)
+
+    candidate_keys: list[str] = []
+    obj_type = str(attachment.erp_object_type or "").strip()
+    obj_id = str(attachment.erp_object_id or "").strip()
+    prefixes: list[str] = []
+    if obj_type and obj_id:
+        prefixes.append(f"{obj_type}/{obj_id}")
+    if obj_id:
+        prefixes.extend([f"voucher_upload/{obj_id}", f"ocr_upload/{obj_id}"])
+    prefixes.append("")
+
+    for prefix in prefixes:
+        for suffix in suffixes:
+            tail = f"{file_hash}{suffix}" if suffix else file_hash
+            key = f"{prefix}/{tail}" if prefix else tail
+            candidate_keys.append(key)
+
+    seen: set[str] = set()
+    for key in candidate_keys:
+        token = key.strip("/")
+        if not token or token in seen:
+            continue
+        seen.add(token)
+        try:
+            s3.head_object(Bucket=bucket, Key=token)
+            return f"s3://{bucket}/{token}"
+        except Exception:
+            continue
+
+    for prefix in [p for p in prefixes if p]:
+        try:
+            page = s3.list_objects_v2(Bucket=bucket, Prefix=f"{prefix}/", MaxKeys=200)
+        except Exception:
+            continue
+        for obj in page.get("Contents", []):
+            key = str(obj.get("Key") or "")
+            if key and Path(key).name.startswith(file_hash):
+                return f"s3://{bucket}/{key}"
+    return None
+
+
+def _resolve_attachment_local_path(
+    *,
+    attachment: AgentAttachment,
+    filename: str,
+    session: Session,
+    settings: Settings,
+) -> Path:
+    uri = str(attachment.file_uri or "").strip()
+    if not uri:
+        raise FileNotFoundError("attachment has empty file_uri")
+
+    if uri.startswith("s3://"):
+        return _download_s3_attachment_to_cache(settings, uri)
+
+    path = Path(uri)
+    try:
+        resolved = path.resolve(strict=True)
+        if resolved.is_file():
+            return resolved
+    except FileNotFoundError:
+        pass
+
+    file_hash = str(attachment.file_hash or "").strip().lower()
+    suffixes = _attachment_candidate_suffixes(filename, uri=uri)
+    if file_hash:
+        for suffix in suffixes:
+            candidate = _ATTACH_UPLOAD_DIR / f"{file_hash}{suffix}"
+            if candidate.exists() and candidate.is_file():
+                attachment.file_uri = str(candidate.resolve())
+                session.add(attachment)
+                session.commit()
+                return candidate.resolve()
+
+    try:
+        discovered_uri = _locate_attachment_s3_uri(settings, attachment, suffixes)
+    except Exception as exc:
+        log.warning(
+            "attachment_s3_discovery_failed",
+            attachment_id=attachment.id,
+            error=str(exc),
+        )
+        discovered_uri = None
+    if discovered_uri:
+        attachment.file_uri = discovered_uri
+        session.add(attachment)
+        session.commit()
+        return _download_s3_attachment_to_cache(settings, discovered_uri)
+
+    raise FileNotFoundError(uri)
 
 try:
     _BANK_MATCH_REL_TOLERANCE = float(os.getenv("BANK_MATCH_REL_TOLERANCE", "0.03"))
@@ -2016,11 +2172,31 @@ async def post_attachment(
         )
     )
 
+    attachment_uri = str(stored_path)
+    attachment_key = f"voucher_upload/{voucher_id}/{file_hash}{suffix}"
+    try:
+        object_ref = upload_file(
+            settings,
+            settings.minio_bucket_attachments,
+            attachment_key,
+            str(stored_path),
+            content_type=normalized_type,
+        )
+        attachment_uri = object_ref.uri()
+    except Exception as exc:
+        log.warning(
+            "attachment_upload_persist_fallback_local",
+            voucher_id=voucher_id,
+            file_hash=file_hash,
+            key=attachment_key,
+            error=str(exc),
+        )
+
     attachment = AgentAttachment(
         id=new_uuid(),
         erp_object_type="voucher_upload",
         erp_object_id=voucher_id,
-        file_uri=str(stored_path),
+        file_uri=attachment_uri,
         file_hash=file_hash,
         matched_by="ocr" if pipeline in {"pdf_ocr", "image_ocr"} else "rule",
         run_id=run_id,
@@ -2159,36 +2335,30 @@ def get_attachment_content(
     attachment_id: str,
     inline: int = 0,
     session: Session = Depends(get_session),
+    settings: Settings = Depends(get_settings),
 ) -> FileResponse:
     attachment = session.get(AgentAttachment, attachment_id)
     if attachment is None:
         raise HTTPException(status_code=404, detail="Không tìm thấy tệp đính kèm")
-    uri = str(attachment.file_uri or "").strip()
-    if not uri:
-        raise HTTPException(status_code=404, detail="Không có đường dẫn tệp")
-    if uri.startswith("s3://"):
-        raise HTTPException(
-            status_code=501,
-            detail="Chưa hỗ trợ stream trực tiếp tệp S3 trong bản này",
-        )
 
-    path = Path(uri)
+    filename = _attachment_display_filename(session, attachment)
     try:
-        resolved = path.resolve(strict=True)
+        resolved = _resolve_attachment_local_path(
+            attachment=attachment,
+            filename=filename,
+            session=session,
+            settings=settings,
+        )
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail="Tệp gốc không tồn tại") from exc
+    except Exception as exc:
+        log.error("attachment_stream_failed", attachment_id=attachment_id, error=str(exc))
+        raise HTTPException(status_code=503, detail="Không thể truy xuất tệp gốc") from exc
 
     if not resolved.is_absolute():
         raise HTTPException(status_code=403, detail="Đường dẫn tệp không hợp lệ")
     if not resolved.is_file():
         raise HTTPException(status_code=404, detail="Tệp không hợp lệ")
-
-    filename = resolved.name
-    voucher = session.get(AcctVoucher, attachment.erp_object_id)
-    if voucher and isinstance(voucher.raw_payload, dict):
-        original_name = str(voucher.raw_payload.get("original_filename") or "").strip()
-        if original_name:
-            filename = original_name
 
     media_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
     disposition = "inline" if int(inline or 0) == 1 else "attachment"
@@ -3344,20 +3514,74 @@ def list_soft_check_results(
     if period:
         q = q.where(AcctSoftCheckResult.period == period)
     rows = session.execute(q).scalars().all()
-    items = [
-        {
-            "id": r.id,
-            "period": r.period,
-            "total_checks": r.total_checks,
-            "passed": r.passed,
-            "warnings": r.warnings,
-            "errors": r.errors,
-            "score": r.score,
-            "created_at": r.created_at,
-            "run_id": r.run_id,
-        }
-        for r in rows
-    ]
+    row_ids = [r.id for r in rows]
+    issues_by_result: dict[str, list[dict[str, Any]]] = {}
+    if row_ids:
+        issue_rows = session.execute(
+            select(AcctValidationIssue)
+            .where(AcctValidationIssue.check_result_id.in_(row_ids))
+            .order_by(AcctValidationIssue.created_at.desc())
+        ).scalars().all()
+        for issue in issue_rows:
+            issue_payload = {
+                "id": issue.id,
+                "check_result_id": issue.check_result_id,
+                "rule_code": issue.rule_code,
+                "severity": issue.severity,
+                "message": issue.message,
+                "erp_ref": issue.erp_ref,
+                "details": issue.details,
+                "resolution": issue.resolution,
+                "resolved_by": issue.resolved_by,
+                "resolved_at": issue.resolved_at,
+                "created_at": issue.created_at,
+            }
+            issues_by_result.setdefault(issue.check_result_id, []).append(issue_payload)
+
+    def _soft_check_status(score: float, warnings: int, errors: int, issues: list[dict[str, Any]]) -> str:
+        severities = {str(item.get("severity") or "").lower() for item in issues}
+        if errors > 0 or score < 0.5 or "critical" in severities or "error" in severities:
+            return "critical"
+        if warnings > 0 or score < 0.8 or "warning" in severities:
+            return "warning"
+        return "pass"
+
+    items: list[dict[str, Any]] = []
+    for row in rows:
+        issue_items = issues_by_result.get(row.id, [])
+        rule_codes = sorted({str(item.get("rule_code") or "").strip() for item in issue_items if item.get("rule_code")})
+        status = _soft_check_status(
+            _safe_float(row.score, 0.0),
+            int(row.warnings or 0),
+            int(row.errors or 0),
+            issue_items,
+        )
+        items.append(
+            {
+                "id": row.id,
+                "period": row.period,
+                "total_checks": row.total_checks,
+                "passed": row.passed,
+                "warnings": row.warnings,
+                "errors": row.errors,
+                "score": row.score,
+                "status": status,
+                "check_type": "period_soft_checks",
+                "rule": rule_codes[0] if rule_codes else "SOFT_CHECK_SUMMARY",
+                "rule_codes": rule_codes,
+                "issue_count": len(issue_items),
+                "issues": issue_items,
+                "message": (
+                    f"{len(issue_items)} vấn đề cần xử lý"
+                    if issue_items
+                    else "Không phát hiện vấn đề trọng yếu trong kỳ"
+                ),
+                "source": "soft_check_engine",
+                "created_at": row.created_at,
+                "run_id": row.run_id,
+            }
+        )
+
     period_for_quality = period or datetime.now().strftime("%Y-%m")
     quality = _collect_period_voucher_quality(session, period_for_quality)
     if quality["excluded_vouchers"] > 0:
@@ -3371,6 +3595,32 @@ def list_soft_check_results(
                 "warnings": quality["excluded_vouchers"],
                 "errors": 0,
                 "score": 0.0,
+                "status": "warning",
+                "check_type": "voucher_quality_gate",
+                "rule": "VOUCHER_QUALITY_GATE",
+                "rule_codes": ["VOUCHER_QUALITY_GATE"],
+                "issue_count": 1,
+                "issues": [
+                    {
+                        "id": f"quality-issue-{period_for_quality}",
+                        "check_result_id": f"quality-{period_for_quality}",
+                        "rule_code": "VOUCHER_QUALITY_GATE",
+                        "severity": "warning",
+                        "message": (
+                            f"Phát hiện {quality['excluded_vouchers']} chứng từ bất thường "
+                            "(amount=0/chất lượng OCR thấp/thiếu thông tin)."
+                        ),
+                        "erp_ref": None,
+                        "details": {
+                            "excluded_vouchers": quality["excluded_vouchers"],
+                            "period": period_for_quality,
+                        },
+                        "resolution": "open",
+                        "resolved_by": None,
+                        "resolved_at": None,
+                        "created_at": utcnow(),
+                    }
+                ],
                 "created_at": utcnow(),
                 "run_id": None,
                 "source": "voucher_quality_gate",
@@ -4029,19 +4279,39 @@ def reprocess_voucher(
         if not restored_path.exists():
             restored_path.write_bytes(blob)
 
+        restored_uri = str(restored_path)
+        restore_key = f"voucher_upload/{voucher_id}/{file_hash}{suffix}"
+        try:
+            obj = upload_file(
+                settings,
+                settings.minio_bucket_attachments,
+                restore_key,
+                str(restored_path),
+                content_type=restore_content_type,
+            )
+            restored_uri = obj.uri()
+        except Exception as exc:
+            log.warning(
+                "reprocess_restore_persist_fallback_local",
+                voucher_id=voucher_id,
+                attachment_id=attachment_id or None,
+                key=restore_key,
+                error=str(exc),
+            )
+
         if attachment is None:
             attachment = AgentAttachment(
                 id=new_uuid(),
                 erp_object_type="voucher_upload",
                 erp_object_id=voucher_id,
-                file_uri=str(restored_path),
+                file_uri=restored_uri,
                 file_hash=file_hash,
                 matched_by="manual_restore",
                 run_id=voucher.run_id or new_uuid(),
             )
             session.add(attachment)
         else:
-            attachment.file_uri = str(restored_path)
+            attachment.file_uri = restored_uri
             attachment.file_hash = file_hash
             attachment.matched_by = "manual_restore"
 

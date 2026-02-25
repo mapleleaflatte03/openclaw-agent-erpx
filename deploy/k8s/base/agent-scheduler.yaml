@@ -23,6 +23,9 @@ spec:
                 name: agent-config
             - secretRef:
                 name: agent-secrets
+            - secretRef:
+                name: agent-llm
+                optional: true
           resources:
             requests:
               cpu: "200m"
