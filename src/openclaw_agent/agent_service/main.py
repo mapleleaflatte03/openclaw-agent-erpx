@@ -3989,13 +3989,73 @@ def reprocess_voucher(
         raise HTTPException(status_code=404, detail="Không tìm thấy chứng từ")
 
     payload = dict(voucher.raw_payload or {})
-    attachment_id = str(payload.get("attachment_id") or (body or {}).get("attachment_id") or "").strip()
+    req = body or {}
+    attachment_id = str(payload.get("attachment_id") or req.get("attachment_id") or "").strip()
     attachment = session.get(AgentAttachment, attachment_id) if attachment_id else None
+    restore_b64 = str(req.get("file_content_b64") or "").strip()
+    restore_filename = _safe_filename(
+        str(req.get("filename") or payload.get("original_filename") or f"voucher-{voucher_id[:8]}.bin")
+    ) or f"voucher-{voucher_id[:8]}.bin"
+    restore_content_type = str(req.get("content_type") or payload.get("content_type") or "").strip().lower() or None
+
+    uri = str(attachment.file_uri or "").strip() if attachment else ""
+    uri_ready = bool(uri) and (uri.startswith("s3://") or Path(uri).exists())
+
+    if (attachment is None or not uri_ready) and restore_b64:
+        try:
+            blob = base64.b64decode(restore_b64, validate=True)
+        except Exception as exc:
+            raise HTTPException(status_code=422, detail="file_content_b64 không hợp lệ") from exc
+        if not blob:
+            raise HTTPException(status_code=422, detail="file_content_b64 rỗng")
+
+        suffix = Path(restore_filename).suffix.lower()
+        if not suffix and restore_content_type:
+            suffix = mimetypes.guess_extension(restore_content_type) or ""
+        if not suffix:
+            suffix = ".bin"
+
+        file_hash = sha256(blob).hexdigest()
+        _ATTACH_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+        restored_path = _ATTACH_UPLOAD_DIR / f"{file_hash}{suffix}"
+        if not restored_path.exists():
+            restored_path.write_bytes(blob)
+
+        if attachment is None:
+            attachment = AgentAttachment(
+                id=new_uuid(),
+                erp_object_type="voucher_upload",
+                erp_object_id=voucher_id,
+                file_uri=str(restored_path),
+                file_hash=file_hash,
+                matched_by="manual_restore",
+                run_id=voucher.run_id or new_uuid(),
+            )
+            session.add(attachment)
+        else:
+            attachment.file_uri = str(restored_path)
+            attachment.file_hash = file_hash
+            attachment.matched_by = "manual_restore"
+
+        attachment_id = attachment.id
+        payload["attachment_id"] = attachment_id
+        payload["file_hash"] = file_hash
+        payload["original_filename"] = restore_filename
+        if restore_content_type:
+            payload["content_type"] = restore_content_type
+        payload["restore_attachment_at"] = utcnow().isoformat()
+        payload["restore_attachment_by"] = str(req.get("requested_by") or "web-user").strip() or "web-user"
+        voucher.raw_payload = payload
+        voucher.synced_at = utcnow()
+        session.add(voucher)
+        uri_ready = True
+
     if attachment is None:
         raise HTTPException(status_code=422, detail="Không tìm thấy attachment để reprocess")
-    if not str(attachment.file_uri or "").strip():
+    uri = str(attachment.file_uri or "").strip()
+    if not uri:
         raise HTTPException(status_code=422, detail="Attachment không có file_uri")
-    if not Path(str(attachment.file_uri)).exists():
+    if not uri.startswith("s3://") and not Path(uri).exists():
         raise HTTPException(status_code=422, detail="File gốc của attachment đã mất")
 
     active_runs = (
@@ -4023,13 +4083,14 @@ def reprocess_voucher(
     run_payload = {
         "voucher_id": voucher_id,
         "attachment_id": attachment_id,
-        "reason": str((body or {}).get("reason") or "").strip() or None,
+        "reason": str(req.get("reason") or "").strip() or None,
+        "restore_attachment_supplied": bool(restore_b64),
     }
     run = AgentRun(
         run_id=new_uuid(),
         run_type="voucher_reprocess",
         trigger_type="manual",
-        requested_by=str((body or {}).get("requested_by") or "web-user").strip() or "web-user",
+        requested_by=str(req.get("requested_by") or "web-user").strip() or "web-user",
         status="queued",
         idempotency_key=make_idempotency_key("voucher_reprocess", voucher_id, new_uuid()),
         cursor_in=run_payload,

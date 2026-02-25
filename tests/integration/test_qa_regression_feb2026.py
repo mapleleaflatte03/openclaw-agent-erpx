@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 from pathlib import Path
 
 import pytest
@@ -16,6 +17,7 @@ from openclaw_agent.common.models import (
     AcctReportSnapshot,
     AcctVoucher,
     AcctVoucherCorrection,
+    AgentAttachment,
     AgentRun,
 )
 from openclaw_agent.common.settings import get_settings
@@ -423,6 +425,65 @@ def test_voucher_reprocess_allows_zero_amount_review(client_and_engine, monkeypa
     assert out.get("run_id")
     assert out.get("run_type") == "voucher_reprocess"
     assert out.get("voucher_id") == voucher_id
+
+
+def test_voucher_reprocess_can_restore_missing_attachment(client_and_engine, monkeypatch, tmp_path: Path):
+    client, engine = client_and_engine
+    monkeypatch.setenv("RUN_EXECUTOR_MODE", "local")
+    from openclaw_agent.agent_service import main as svc_main
+
+    source_xml = b"<invoice><meta>MST 0101234567</meta><summary>Tong tien: 350000</summary></invoice>"
+    uploaded = client.post(
+        "/agent/v1/attachments",
+        files={"file": ("invoice-restore.xml", source_xml, "application/xml")},
+        data={"source_tag": "ocr_upload"},
+        headers=_HEADERS,
+    )
+    assert uploaded.status_code == 200, uploaded.text
+    voucher_id = uploaded.json()["voucher_id"]
+    attachment_id = uploaded.json()["attachment_id"]
+
+    # Simulate lost original file in production pod.
+    with db_session(engine) as s:
+        att = s.get(AgentAttachment, attachment_id)
+        assert att is not None
+        att.file_uri = str(tmp_path / "missing-source.xml")
+
+    def _run_local_stub(run_id: str) -> None:
+        with db_session(engine) as s:
+            run = s.get(AgentRun, run_id)
+            assert run is not None
+            run.status = "success"
+            run.started_at = run.created_at
+            run.finished_at = run.created_at
+
+    monkeypatch.setattr(svc_main, "_dispatch_run_local", _run_local_stub)
+
+    blocked = client.post(
+        f"/agent/v1/acct/vouchers/{voucher_id}/reprocess",
+        json={"reason": "missing_attachment"},
+        headers=_HEADERS,
+    )
+    assert blocked.status_code == 422, blocked.text
+    assert "File gốc của attachment đã mất" in blocked.text
+
+    restored = client.post(
+        f"/agent/v1/acct/vouchers/{voucher_id}/reprocess",
+        json={
+            "reason": "restore_attachment",
+            "filename": "invoice-restore.xml",
+            "content_type": "application/xml",
+            "file_content_b64": base64.b64encode(source_xml).decode("ascii"),
+        },
+        headers=_HEADERS,
+    )
+    assert restored.status_code == 200, restored.text
+    assert restored.json().get("run_type") == "voucher_reprocess"
+
+    with db_session(engine) as s:
+        att = s.get(AgentAttachment, attachment_id)
+        assert att is not None
+        assert Path(str(att.file_uri)).exists()
 
 
 def test_qna_feedback_accepts_string_and_legacy_int(client_and_engine):

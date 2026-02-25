@@ -11,7 +11,9 @@ Typical usage:
 from __future__ import annotations
 
 import argparse
+import base64
 import json
+import mimetypes
 import os
 import time
 from datetime import datetime, timezone
@@ -77,15 +79,27 @@ def _trigger_reprocess(
     attachment_id: str,
     reason: str,
     requested_by: str,
+    restore_file: Path | None = None,
 ) -> tuple[int, dict[str, Any], str]:
+    body: dict[str, Any] = {
+        "reason": reason,
+        "requested_by": requested_by,
+        "attachment_id": attachment_id,
+    }
+    if restore_file is not None:
+        content_type = mimetypes.guess_type(str(restore_file))[0] or "application/octet-stream"
+        body.update(
+            {
+                "filename": restore_file.name,
+                "content_type": content_type,
+                "file_content_b64": base64.b64encode(restore_file.read_bytes()).decode("ascii"),
+            }
+        )
+
     status_code, payload = _api_post(
         session,
         f"{api_base}/acct/vouchers/{voucher_id}/reprocess",
-        json_body={
-            "reason": reason,
-            "requested_by": requested_by,
-            "attachment_id": attachment_id,
-        },
+        json_body=body,
     )
     if status_code != 404:
         return status_code, payload, "voucher_endpoint"
@@ -189,10 +203,55 @@ def _wait_for_run(
     return "timeout", None
 
 
+def _build_restore_index(restore_dir: Path) -> dict[str, list[Path]]:
+    index: dict[str, list[Path]] = {}
+    for p in restore_dir.rglob("*"):
+        if not p.is_file():
+            continue
+        key = p.name.strip().lower()
+        if not key:
+            continue
+        index.setdefault(key, []).append(p)
+    for _key, paths in index.items():
+        paths.sort(key=lambda x: (len(x.relative_to(restore_dir).parts), len(str(x))))
+    return index
+
+
+def _pick_restore_file(index: dict[str, list[Path]], filename: str | None) -> Path | None:
+    key = str(filename or "").strip().lower()
+    if not key:
+        return None
+    matches = index.get(key) or []
+    if not matches:
+        return None
+    if len(matches) == 1:
+        return matches[0]
+    # Use the shallowest path if unambiguous by depth; otherwise skip to avoid wrong restore.
+    depth0 = len(matches[0].parts)
+    depth1 = len(matches[1].parts) if len(matches) > 1 else depth0 + 1
+    if depth0 < depth1:
+        return matches[0]
+    return None
+
+
+def _is_missing_original_file_error(status_code: int, payload: dict[str, Any]) -> bool:
+    if status_code != 422:
+        return False
+    detail = str(payload.get("detail") or payload.get("error") or "").strip().lower()
+    return "file gốc" in detail and "đã mất" in detail
+
+
 def run_cleanup(args: argparse.Namespace) -> dict[str, Any]:
     api_base = _normalize_api_base(args.api_base)
     api_key = (args.api_key or os.getenv("AGENT_API_KEY", "")).strip() or None
     session = _make_session(api_key)
+    restore_index: dict[str, list[Path]] = {}
+    restore_dir: Path | None = None
+    if args.restore_dir:
+        restore_dir = Path(args.restore_dir).expanduser().resolve()
+        if not restore_dir.exists() or not restore_dir.is_dir():
+            raise RuntimeError(f"restore-dir không tồn tại hoặc không phải thư mục: {restore_dir}")
+        restore_index = _build_restore_index(restore_dir)
 
     # health check
     _api_get(session, f"{api_base}/healthz")
@@ -219,6 +278,9 @@ def run_cleanup(args: argparse.Namespace) -> dict[str, Any]:
         "failed": 0,
         "running_or_queued": 0,
         "timeouts": 0,
+        "restored_attempts": 0,
+        "restored_success": 0,
+        "restore_dir": str(restore_dir) if restore_dir else None,
         "details": [],
     }
 
@@ -228,6 +290,7 @@ def run_cleanup(args: argparse.Namespace) -> dict[str, Any]:
 
     for row in candidates:
         voucher_id = str(row["voucher_id"])
+        restore_file = _pick_restore_file(restore_index, row.get("filename"))
         status_code, response, request_mode = _trigger_reprocess(
             session,
             api_base,
@@ -235,6 +298,7 @@ def run_cleanup(args: argparse.Namespace) -> dict[str, Any]:
             attachment_id=str(row["attachment_id"]),
             reason=args.reason,
             requested_by=args.requested_by,
+            restore_file=None,
         )
 
         detail = {
@@ -242,9 +306,27 @@ def run_cleanup(args: argparse.Namespace) -> dict[str, Any]:
             "request_mode": request_mode,
             "http_status": status_code,
             "response": response,
+            "restore_file": str(restore_file) if restore_file else None,
+            "restore_attempted": False,
             "result": "unknown",
         }
         report["processed"] += 1
+
+        if _is_missing_original_file_error(status_code, response) and restore_file is not None:
+            report["restored_attempts"] += 1
+            detail["restore_attempted"] = True
+            status_code, response, request_mode = _trigger_reprocess(
+                session,
+                api_base,
+                voucher_id=voucher_id,
+                attachment_id=str(row["attachment_id"]),
+                reason=args.reason,
+                requested_by=args.requested_by,
+                restore_file=restore_file,
+            )
+            detail["request_mode"] = request_mode
+            detail["http_status"] = status_code
+            detail["response"] = response
 
         if status_code >= 400:
             detail["result"] = "failed"
@@ -271,6 +353,8 @@ def run_cleanup(args: argparse.Namespace) -> dict[str, Any]:
         if final_status == "success":
             detail["result"] = "success"
             report["success"] += 1
+            if detail["restore_attempted"]:
+                report["restored_success"] += 1
         elif final_status == "timeout":
             detail["result"] = "timeout"
             report["timeouts"] += 1
@@ -293,6 +377,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--requested-by", default="ops-batch-cleanup")
     parser.add_argument("--wait", action="store_true", help="Wait for each run to finish.")
     parser.add_argument("--wait-timeout", type=int, default=120)
+    parser.add_argument("--restore-dir", type=Path, default=None, help="Optional local folder for restoring missing files.")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument(
         "--out",
