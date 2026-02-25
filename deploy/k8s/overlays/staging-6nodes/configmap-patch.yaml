@@ -4,3 +4,7 @@ metadata:
   name: agent-config
 data:
   AGENT_ENV: "staging"
+  USE_REAL_LLM: "true"
+  OCR_CLOUD_FALLBACK_ENABLED: "true"
+  OCR_CLOUD_ROLLOUT_PERCENT: "100"
+  OCR_LOCAL_LANG: "eng+vie+jpn"

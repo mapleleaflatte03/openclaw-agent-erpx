@@ -253,6 +253,47 @@ jobs:
             --from-literal=SMTP_TLS="true" \
             --dry-run=client -o yaml | kubectl apply -f -
 
+      - name: Create/Update k8s secrets (agent-llm)
+        env:
+          NS: ${{ github.event.inputs.namespace }}
+          DO_AGENT_BASE_URL: ${{ secrets.STAGING_DO_AGENT_BASE_URL }}
+          DO_AGENT_API_KEY: ${{ secrets.STAGING_DO_AGENT_API_KEY }}
+          DO_AGENT_MODEL: ${{ secrets.STAGING_DO_AGENT_MODEL }}
+          OCR_CLOUD_BASE_URL: ${{ secrets.STAGING_OCR_CLOUD_BASE_URL }}
+          OCR_CLOUD_API_KEY: ${{ secrets.STAGING_OCR_CLOUD_API_KEY }}
+          OCR_CLOUD_MODEL: ${{ secrets.STAGING_OCR_CLOUD_MODEL }}
+          OCR_CLOUD_TIMEOUT_SECONDS: ${{ secrets.STAGING_OCR_CLOUD_TIMEOUT_SECONDS }}
+        run: |
+          set -euo pipefail
+          NS="${NS:-accounting-agent-staging}"
+
+          DO_AGENT_BASE_URL="${DO_AGENT_BASE_URL:-}"
+          DO_AGENT_API_KEY="${DO_AGENT_API_KEY:-}"
+          DO_AGENT_MODEL="${DO_AGENT_MODEL:-gpt-4.1-mini}"
+          OCR_CLOUD_BASE_URL="${OCR_CLOUD_BASE_URL:-https://api.openai.com}"
+          OCR_CLOUD_API_KEY="${OCR_CLOUD_API_KEY:-$DO_AGENT_API_KEY}"
+          OCR_CLOUD_MODEL="${OCR_CLOUD_MODEL:-gpt-4.1-mini}"
+          OCR_CLOUD_TIMEOUT_SECONDS="${OCR_CLOUD_TIMEOUT_SECONDS:-20}"
+
+          if [ -z "${DO_AGENT_BASE_URL}" ] || [ -z "${DO_AGENT_API_KEY}" ]; then
+            echo "Missing STAGING_DO_AGENT_BASE_URL or STAGING_DO_AGENT_API_KEY" >&2
+            exit 1
+          fi
+          if [ -z "${OCR_CLOUD_API_KEY}" ]; then
+            echo "Missing STAGING_OCR_CLOUD_API_KEY (or fallback STAGING_DO_AGENT_API_KEY)" >&2
+            exit 1
+          fi
+
+          kubectl -n "$NS" create secret generic agent-llm \
+            --from-literal=DO_AGENT_BASE_URL="${DO_AGENT_BASE_URL}" \
+            --from-literal=DO_AGENT_API_KEY="${DO_AGENT_API_KEY}" \
+            --from-literal=DO_AGENT_MODEL="${DO_AGENT_MODEL}" \
+            --from-literal=OCR_CLOUD_BASE_URL="${OCR_CLOUD_BASE_URL}" \
+            --from-literal=OCR_CLOUD_API_KEY="${OCR_CLOUD_API_KEY}" \
+            --from-literal=OCR_CLOUD_MODEL="${OCR_CLOUD_MODEL}" \
+            --from-literal=OCR_CLOUD_TIMEOUT_SECONDS="${OCR_CLOUD_TIMEOUT_SECONDS}" \
+            --dry-run=client -o yaml | kubectl apply -f -
+
       - name: Restart statefulsets (pick up new secrets)
         env:
           NS: ${{ github.event.inputs.namespace }}

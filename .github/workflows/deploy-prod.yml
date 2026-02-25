@@ -49,11 +49,11 @@ jobs:
 
       - name: Configure kubeconfig
         env:
-          KUBECONFIG_B64: ${{ secrets.STAGING_KUBECONFIG_B64 }}
+          KUBECONFIG_B64: ${{ secrets.PROD_KUBECONFIG_B64 != '' && secrets.PROD_KUBECONFIG_B64 || secrets.STAGING_KUBECONFIG_B64 }}
         run: |
           set -euo pipefail
           if [ -z "${KUBECONFIG_B64:-}" ]; then
-            echo "Missing secret: STAGING_KUBECONFIG_B64" >&2
+            echo "Missing secret: PROD_KUBECONFIG_B64 (or fallback STAGING_KUBECONFIG_B64)" >&2
             exit 1
           fi
           echo "${KUBECONFIG_B64}" | base64 -d > kubeconfig
@@ -80,6 +80,47 @@ jobs:
             --docker-server=ghcr.io \
             --docker-username="$GHCR_USERNAME" \
             --docker-password="$GHCR_PASSWORD" \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+      - name: Create/Update k8s secrets (agent-llm)
+        env:
+          NS: ${{ inputs.namespace }}
+          DO_AGENT_BASE_URL: ${{ secrets.PROD_DO_AGENT_BASE_URL != '' && secrets.PROD_DO_AGENT_BASE_URL || secrets.STAGING_DO_AGENT_BASE_URL }}
+          DO_AGENT_API_KEY: ${{ secrets.PROD_DO_AGENT_API_KEY != '' && secrets.PROD_DO_AGENT_API_KEY || secrets.STAGING_DO_AGENT_API_KEY }}
+          DO_AGENT_MODEL: ${{ secrets.PROD_DO_AGENT_MODEL != '' && secrets.PROD_DO_AGENT_MODEL || secrets.STAGING_DO_AGENT_MODEL }}
+          OCR_CLOUD_BASE_URL: ${{ secrets.PROD_OCR_CLOUD_BASE_URL != '' && secrets.PROD_OCR_CLOUD_BASE_URL || secrets.STAGING_OCR_CLOUD_BASE_URL }}
+          OCR_CLOUD_API_KEY: ${{ secrets.PROD_OCR_CLOUD_API_KEY != '' && secrets.PROD_OCR_CLOUD_API_KEY || secrets.STAGING_OCR_CLOUD_API_KEY }}
+          OCR_CLOUD_MODEL: ${{ secrets.PROD_OCR_CLOUD_MODEL != '' && secrets.PROD_OCR_CLOUD_MODEL || secrets.STAGING_OCR_CLOUD_MODEL }}
+          OCR_CLOUD_TIMEOUT_SECONDS: ${{ secrets.PROD_OCR_CLOUD_TIMEOUT_SECONDS != '' && secrets.PROD_OCR_CLOUD_TIMEOUT_SECONDS || secrets.STAGING_OCR_CLOUD_TIMEOUT_SECONDS }}
+        run: |
+          set -euo pipefail
+          NS="${NS:-accounting-agent}"
+
+          DO_AGENT_BASE_URL="${DO_AGENT_BASE_URL:-}"
+          DO_AGENT_API_KEY="${DO_AGENT_API_KEY:-}"
+          DO_AGENT_MODEL="${DO_AGENT_MODEL:-gpt-4.1-mini}"
+          OCR_CLOUD_BASE_URL="${OCR_CLOUD_BASE_URL:-https://api.openai.com}"
+          OCR_CLOUD_API_KEY="${OCR_CLOUD_API_KEY:-$DO_AGENT_API_KEY}"
+          OCR_CLOUD_MODEL="${OCR_CLOUD_MODEL:-gpt-4.1-mini}"
+          OCR_CLOUD_TIMEOUT_SECONDS="${OCR_CLOUD_TIMEOUT_SECONDS:-20}"
+
+          if [ -z "${DO_AGENT_BASE_URL}" ] || [ -z "${DO_AGENT_API_KEY}" ]; then
+            echo "Missing PROD_DO_AGENT_BASE_URL or PROD_DO_AGENT_API_KEY" >&2
+            exit 1
+          fi
+          if [ -z "${OCR_CLOUD_API_KEY}" ]; then
+            echo "Missing PROD_OCR_CLOUD_API_KEY (or fallback PROD_DO_AGENT_API_KEY)" >&2
+            exit 1
+          fi
+
+          kubectl -n "$NS" create secret generic agent-llm \
+            --from-literal=DO_AGENT_BASE_URL="${DO_AGENT_BASE_URL}" \
+            --from-literal=DO_AGENT_API_KEY="${DO_AGENT_API_KEY}" \
+            --from-literal=DO_AGENT_MODEL="${DO_AGENT_MODEL}" \
+            --from-literal=OCR_CLOUD_BASE_URL="${OCR_CLOUD_BASE_URL}" \
+            --from-literal=OCR_CLOUD_API_KEY="${OCR_CLOUD_API_KEY}" \
+            --from-literal=OCR_CLOUD_MODEL="${OCR_CLOUD_MODEL}" \
+            --from-literal=OCR_CLOUD_TIMEOUT_SECONDS="${OCR_CLOUD_TIMEOUT_SECONDS}" \
             --dry-run=client -o yaml | kubectl apply -f -
 
       - name: Delete old k8s jobs
@@ -109,17 +150,40 @@ jobs:
           for dep in erpx-mock-api agent-service agent-scheduler ui; do
             kubectl -n "$NS" patch deployment "$dep" --type merge -p '{"spec":{"strategy":{"type":"RollingUpdate","rollingUpdate":{"maxSurge":0,"maxUnavailable":1}}}}' || true
           done
-          if ! kubectl -n "$NS" rollout status deployment/erpx-mock-api --timeout=300s; then
-            echo "::warning::erpx-mock-api rollout did not complete in time; continuing with core services"
-            kubectl -n "$NS" get pods -l app=erpx-mock-api -o wide || true
-            kubectl -n "$NS" describe deployment/erpx-mock-api || true
+          # Hard gate: jobs must complete successfully.
+          kubectl -n "$NS" wait --for=condition=complete job/minio-init --timeout=600s
+          if ! kubectl -n "$NS" wait --for=condition=complete job/agent-migrate --timeout=600s; then
+            kubectl -n "$NS" logs -l job-name=agent-migrate --tail=200 || true
+            echo "agent-migrate did not complete" >&2
+            exit 1
           fi
-          kubectl -n "$NS" rollout status deployment/agent-service --timeout=300s
-          kubectl -n "$NS" rollout status deployment/agent-worker-io --timeout=300s || true
-          kubectl -n "$NS" rollout status deployment/agent-worker-ocr --timeout=300s || true
-          kubectl -n "$NS" rollout status deployment/agent-worker-export --timeout=300s || true
-          kubectl -n "$NS" rollout status deployment/agent-scheduler --timeout=300s
-          kubectl -n "$NS" rollout status deployment/ui --timeout=300s
+
+          # Hard gate: all core deployments must fully roll out.
+          for dep in erpx-mock-api agent-service agent-worker-io agent-worker-ocr agent-worker-export agent-scheduler ui; do
+            kubectl -n "$NS" rollout status "deployment/${dep}" --timeout=600s
+          done
+
+          # Hard gate: no pending pods left and replicas ready/updated/available.
+          PENDING="$(kubectl -n "$NS" get pods --field-selector=status.phase=Pending --no-headers 2>/dev/null | wc -l | tr -d ' ')"
+          if [ "${PENDING:-0}" -gt 0 ]; then
+            kubectl -n "$NS" get pods -o wide || true
+            echo "Deploy blocked: pending pods still exist" >&2
+            exit 1
+          fi
+          for dep in erpx-mock-api agent-service agent-worker-io agent-worker-ocr agent-worker-export agent-scheduler ui; do
+            desired="$(kubectl -n "$NS" get deployment "$dep" -o jsonpath='{.spec.replicas}')"
+            ready="$(kubectl -n "$NS" get deployment "$dep" -o jsonpath='{.status.readyReplicas}')"
+            updated="$(kubectl -n "$NS" get deployment "$dep" -o jsonpath='{.status.updatedReplicas}')"
+            available="$(kubectl -n "$NS" get deployment "$dep" -o jsonpath='{.status.availableReplicas}')"
+            ready="${ready:-0}"
+            updated="${updated:-0}"
+            available="${available:-0}"
+            if [ "$ready" -lt "$desired" ] || [ "$updated" -lt "$desired" ] || [ "$available" -lt "$desired" ]; then
+              kubectl -n "$NS" get deployment "$dep" -o wide || true
+              echo "Deploy blocked: $dep not fully ready (desired=$desired ready=$ready updated=$updated available=$available)" >&2
+              exit 1
+            fi
+          done
 
       - name: Smoke health check
         env:

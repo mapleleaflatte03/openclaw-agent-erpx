@@ -101,6 +101,36 @@ def test_attachment_content_preview_and_urls(client_and_engine):
     assert preview.headers.get("content-type")
 
 
+def test_attachment_content_preview_returns_placeholder_when_source_missing(client_and_engine, tmp_path: Path):
+    client, engine = client_and_engine
+    uploaded = client.post(
+        "/agent/v1/attachments",
+        files={"file": ("invoice-preview-missing.xml", b"<invoice><total>500000</total></invoice>", "application/xml")},
+        data={"source_tag": "ocr_upload"},
+        headers=_HEADERS,
+    )
+    assert uploaded.status_code == 200, uploaded.text
+    voucher_id = uploaded.json()["voucher_id"]
+    attachment_id = uploaded.json()["attachment_id"]
+
+    with db_session(engine) as s:
+        att = s.get(AgentAttachment, attachment_id)
+        assert att is not None
+        att.file_uri = str(tmp_path / "missing-preview-source.xml")
+        att.file_hash = "f" * 64
+
+    vouchers = client.get("/agent/v1/acct/vouchers?source=ocr_upload&limit=20", headers=_HEADERS)
+    assert vouchers.status_code == 200, vouchers.text
+    row = next((item for item in vouchers.json().get("items", []) if item.get("id") == voucher_id), None)
+    assert row is not None
+    assert row.get("preview_url")
+
+    preview = client.get(row["preview_url"], headers=_HEADERS)
+    assert preview.status_code == 200, preview.text
+    assert preview.headers.get("x-attachment-placeholder") == "1"
+    assert "image/svg+xml" in str(preview.headers.get("content-type") or "").lower()
+
+
 def test_patch_ocr_fields_writes_correction_log(client_and_engine):
     client, engine = client_and_engine
     uploaded = client.post(

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import gzip
+import html
 import io
 import json
 import math
@@ -905,6 +906,7 @@ _ATTACH_ALLOWED_EXT = {
     ".jpeg": "image/jpeg",
     ".png": "image/png",
 }
+_ATTACH_MISSING_PREVIEW_DIR = _ATTACH_UPLOAD_DIR / "_missing_preview"
 # Canonical OCR statuses: valid | review | non_invoice.
 # Keep legacy values in this set for backward-compatible quality filtering.
 _INVALID_OCR_STATUSES = {"review", "non_invoice", "quarantined", "low_quality"}
@@ -1018,6 +1020,63 @@ def _attachment_s3_cache_path(uri: str) -> Path:
     return _ATTACH_UPLOAD_DIR / "_s3_cache" / ref.bucket / f"{name_hash}{suffix}"
 
 
+def _build_missing_attachment_svg(
+    *,
+    attachment_id: str,
+    filename: str,
+    message: str,
+) -> str:
+    safe_file = html.escape(filename or "unknown")
+    safe_attachment = html.escape(attachment_id or "unknown")
+    safe_message = html.escape(message)
+    lines = [
+        "Attachment preview unavailable",
+        safe_message,
+        f"attachment_id: {safe_attachment}",
+        f"filename: {safe_file}",
+        "Use reprocess/restore flow to recover the original file.",
+    ]
+    y = 140
+    line_nodes: list[str] = []
+    for idx, line in enumerate(lines):
+        size = 40 if idx == 0 else 24
+        weight = "700" if idx == 0 else "400"
+        line_nodes.append(
+            f"<text x='60' y='{y}' font-size='{size}' font-family='Arial, sans-serif' "
+            f"font-weight='{weight}' fill='#0f172a'>{line}</text>"
+        )
+        y += 64 if idx == 0 else 40
+    return (
+        "<svg xmlns='http://www.w3.org/2000/svg' width='1280' height='720' viewBox='0 0 1280 720'>"
+        "<rect width='1280' height='720' fill='#f8fafc'/>"
+        "<rect x='30' y='30' width='1220' height='660' rx='14' fill='#ffffff' stroke='#cbd5e1' stroke-width='2'/>"
+        + "".join(line_nodes)
+        + "</svg>"
+    )
+
+
+def _materialize_missing_attachment_preview(
+    *,
+    attachment_id: str,
+    filename: str,
+    reason: str,
+) -> Path:
+    _ATTACH_MISSING_PREVIEW_DIR.mkdir(parents=True, exist_ok=True)
+    digest = sha256(f"{attachment_id}:{filename}:{reason}".encode()).hexdigest()[:16]
+    safe_stem = _safe_filename(Path(filename or "attachment").stem) or "attachment"
+    out_path = _ATTACH_MISSING_PREVIEW_DIR / f"{safe_stem}-{digest}.svg"
+    if not out_path.exists():
+        out_path.write_text(
+            _build_missing_attachment_svg(
+                attachment_id=attachment_id,
+                filename=filename,
+                message=reason,
+            ),
+            encoding="utf-8",
+        )
+    return out_path.resolve()
+
+
 def _download_s3_attachment_to_cache(settings: Settings, uri: str) -> Path:
     cache_path = _attachment_s3_cache_path(uri)
     if cache_path.exists() and cache_path.is_file():
@@ -1084,6 +1143,7 @@ def _resolve_attachment_local_path(
     filename: str,
     session: Session,
     settings: Settings,
+    allow_s3_discovery: bool = True,
 ) -> Path:
     uri = str(attachment.file_uri or "").strip()
     if not uri:
@@ -1111,20 +1171,21 @@ def _resolve_attachment_local_path(
                 session.commit()
                 return candidate.resolve()
 
-    try:
-        discovered_uri = _locate_attachment_s3_uri(settings, attachment, suffixes)
-    except Exception as exc:
-        log.warning(
-            "attachment_s3_discovery_failed",
-            attachment_id=attachment.id,
-            error=str(exc),
-        )
-        discovered_uri = None
-    if discovered_uri:
-        attachment.file_uri = discovered_uri
-        session.add(attachment)
-        session.commit()
-        return _download_s3_attachment_to_cache(settings, discovered_uri)
+    if allow_s3_discovery:
+        try:
+            discovered_uri = _locate_attachment_s3_uri(settings, attachment, suffixes)
+        except Exception as exc:
+            log.warning(
+                "attachment_s3_discovery_failed",
+                attachment_id=attachment.id,
+                error=str(exc),
+            )
+            discovered_uri = None
+        if discovered_uri:
+            attachment.file_uri = discovered_uri
+            session.add(attachment)
+            session.commit()
+            return _download_s3_attachment_to_cache(settings, discovered_uri)
 
     raise FileNotFoundError(uri)
 
@@ -2348,8 +2409,26 @@ def get_attachment_content(
             filename=filename,
             session=session,
             settings=settings,
+            allow_s3_discovery=int(inline or 0) != 1,
         )
     except FileNotFoundError as exc:
+        if int(inline or 0) == 1:
+            placeholder = _materialize_missing_attachment_preview(
+                attachment_id=attachment_id,
+                filename=filename,
+                reason="Tệp gốc không tồn tại trong storage runtime",
+            )
+            headers = {
+                "Content-Disposition": (
+                    f"inline; filename*=UTF-8''{quote((Path(filename).stem or attachment_id) + '-missing.svg')}"
+                ),
+                "X-Attachment-Placeholder": "1",
+            }
+            return FileResponse(
+                path=str(placeholder),
+                media_type="image/svg+xml",
+                headers=headers,
+            )
         raise HTTPException(status_code=404, detail="Tệp gốc không tồn tại") from exc
     except Exception as exc:
         log.error("attachment_stream_failed", attachment_id=attachment_id, error=str(exc))
