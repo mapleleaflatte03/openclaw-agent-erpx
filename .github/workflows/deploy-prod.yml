@@ -97,7 +97,11 @@ jobs:
           sed -i "s|newTag: latest|newTag: ${TAG}|g" "$OVERLAY_DIR/kustomization.yaml"
           sed -i "s|newTag: staging-latest|newTag: ${TAG}|g" "$OVERLAY_DIR/kustomization.yaml"
           kustomize build "$OVERLAY_DIR" | kubectl apply -f -
-          kubectl -n "$NS" rollout status deployment/erpx-mock-api --timeout=300s
+          if ! kubectl -n "$NS" rollout status deployment/erpx-mock-api --timeout=300s; then
+            echo "::warning::erpx-mock-api rollout did not complete in time; continuing with core services"
+            kubectl -n "$NS" get pods -l app=erpx-mock-api -o wide || true
+            kubectl -n "$NS" describe deployment/erpx-mock-api || true
+          fi
           kubectl -n "$NS" rollout status deployment/agent-service --timeout=300s
           kubectl -n "$NS" rollout status deployment/agent-worker-io --timeout=300s || true
           kubectl -n "$NS" rollout status deployment/agent-worker-ocr --timeout=300s || true
@@ -117,11 +121,24 @@ jobs:
             kill "$PF_AGENT" >/dev/null 2>&1 || true
           }
           trap cleanup EXIT
-          sleep 3
-          if [ -n "${AGENT_API_KEY:-}" ]; then
-            curl -fsS -H "X-API-Key: ${AGENT_API_KEY}" "http://127.0.0.1:8000/healthz" >/tmp/prod-healthz.json
-          else
-            curl -fsS "http://127.0.0.1:8000/healthz" >/tmp/prod-healthz.json
+          ok=0
+          for i in $(seq 1 20); do
+            if [ -n "${AGENT_API_KEY:-}" ]; then
+              if curl -fsS -H "X-API-Key: ${AGENT_API_KEY}" "http://127.0.0.1:8000/healthz" >/tmp/prod-healthz.json; then
+                ok=1
+                break
+              fi
+            else
+              if curl -fsS "http://127.0.0.1:8000/healthz" >/tmp/prod-healthz.json; then
+                ok=1
+                break
+              fi
+            fi
+            sleep 3
+          done
+          if [ "$ok" -ne 1 ]; then
+            echo "healthz probe failed after retries" >&2
+            exit 1
           fi
           cat /tmp/prod-healthz.json
 
