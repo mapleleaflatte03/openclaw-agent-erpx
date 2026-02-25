@@ -196,12 +196,16 @@ def _run_case(base_url: str, case_dir: Path, case_id: str) -> dict:
     # Collect obligations from the API
     detected_obligations: list[dict] = []
     try:
-        contract_resp = _http_get(base_url, f"/agent/v1/contract/cases?case_key=benchmark-{case_id}")
-        cases_data = contract_resp if isinstance(contract_resp, list) else contract_resp.get("cases", [])
-        if cases_data:
-            agent_case_id = cases_data[0].get("case_id", "")
-            obls_resp = _http_get(base_url, f"/agent/v1/contract/obligations?case_id={agent_case_id}")
-            detected_obligations = obls_resp if isinstance(obls_resp, list) else obls_resp.get("obligations", [])
+        contract_resp = _http_get(base_url, "/agent/v1/contract/cases?limit=200")
+        items = contract_resp.get("items", []) if isinstance(contract_resp, dict) else []
+        benchmark_key = f"benchmark-{case_id}"
+        case_match = next((x for x in items if str(x.get("case_key") or "") == benchmark_key), None)
+        if case_match:
+            agent_case_id = str(case_match.get("case_id") or "").strip()
+            if agent_case_id:
+                obls_resp = _http_get(base_url, f"/agent/v1/contract/cases/{agent_case_id}/obligations")
+                if isinstance(obls_resp, dict):
+                    detected_obligations = list(obls_resp.get("items", []) or [])
     except Exception:
         pass
 
