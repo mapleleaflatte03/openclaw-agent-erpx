@@ -82,6 +82,14 @@ jobs:
             --docker-password="$GHCR_PASSWORD" \
             --dry-run=client -o yaml | kubectl apply -f -
 
+      - name: Delete old k8s jobs
+        env:
+          NS: ${{ inputs.namespace }}
+        run: |
+          set -euo pipefail
+          kubectl -n "$NS" delete job --ignore-not-found=true agent-migrate
+          kubectl -n "$NS" delete job --ignore-not-found=true minio-init
+
       - name: Patch image tag and apply manifests
         env:
           NS: ${{ inputs.namespace }}
