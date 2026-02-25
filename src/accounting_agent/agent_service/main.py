@@ -4235,6 +4235,7 @@ def reprocess_voucher(
     body: dict[str, Any] | None = None,
     session: Session = Depends(get_session),
 ) -> dict[str, Any]:
+    settings = get_settings()
     voucher = session.get(AcctVoucher, voucher_id)
     if voucher is None:
         raise HTTPException(status_code=404, detail="Không tìm thấy chứng từ")
