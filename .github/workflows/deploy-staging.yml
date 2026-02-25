@@ -14,6 +14,10 @@ on:
           - staging
           - staging-single
           - staging-6nodes
+      namespace:
+        description: "Target namespace (optional override)"
+        required: false
+        default: ""
 
 permissions:
   contents: read
@@ -142,7 +146,7 @@ jobs:
 
       - name: Create/Update image pull secret (ghcr-pull)
         env:
-          NS: ${{ secrets.STAGING_NAMESPACE }}
+          NS: ${{ github.event.inputs.namespace }}
           GHCR_USERNAME: ${{ github.actor }}
           GHCR_PASSWORD: ${{ github.token }}
           OVERLAY: ${{ github.event.inputs.overlay || 'staging' }}
@@ -163,7 +167,7 @@ jobs:
 
       - name: Guard NO-ROTATE (refuse credential rotation)
         env:
-          NS: ${{ secrets.STAGING_NAMESPACE }}
+          NS: ${{ github.event.inputs.namespace }}
           POSTGRES_PASSWORD: ${{ secrets.STAGING_POSTGRES_PASSWORD }}
           AGENT_API_KEY: ${{ secrets.STAGING_AGENT_API_KEY }}
           MINIO_ACCESS_KEY: ${{ secrets.STAGING_MINIO_ACCESS_KEY }}
@@ -209,7 +213,7 @@ jobs:
 
       - name: Create/Update k8s secrets (agent-secrets)
         env:
-          NS: ${{ secrets.STAGING_NAMESPACE }}
+          NS: ${{ github.event.inputs.namespace }}
           OVERLAY: ${{ github.event.inputs.overlay || 'staging' }}
           POSTGRES_PASSWORD: ${{ secrets.STAGING_POSTGRES_PASSWORD }}
           ERPX_TOKEN: ${{ secrets.STAGING_ERPX_TOKEN }}
@@ -251,7 +255,7 @@ jobs:
 
       - name: Restart statefulsets (pick up new secrets)
         env:
-          NS: ${{ secrets.STAGING_NAMESPACE }}
+          NS: ${{ github.event.inputs.namespace }}
         run: |
           set -euxo pipefail
           NS="${NS:-accounting-agent-staging}"
@@ -272,7 +276,7 @@ jobs:
 
       - name: Delete old k8s jobs
         env:
-          NS: ${{ secrets.STAGING_NAMESPACE }}
+          NS: ${{ github.event.inputs.namespace }}
         run: |
           set -euxo pipefail
           NS="${NS:-accounting-agent-staging}"
@@ -281,7 +285,7 @@ jobs:
 
       - name: Apply kustomize manifests
         env:
-          NS: ${{ secrets.STAGING_NAMESPACE }}
+          NS: ${{ github.event.inputs.namespace }}
           OVERLAY: ${{ github.event.inputs.overlay || 'staging' }}
         run: |
           set -euxo pipefail
@@ -290,7 +294,7 @@ jobs:
 
       - name: Wait for jobs
         env:
-          NS: ${{ secrets.STAGING_NAMESPACE }}
+          NS: ${{ github.event.inputs.namespace }}
         run: |
           set -euxo pipefail
           NS="${NS:-accounting-agent-staging}"
@@ -303,7 +307,7 @@ jobs:
 
       - name: Wait for deployments
         env:
-          NS: ${{ secrets.STAGING_NAMESPACE }}
+          NS: ${{ github.event.inputs.namespace }}
         run: |
           set -euxo pipefail
           NS="${NS:-accounting-agent-staging}"
@@ -317,7 +321,7 @@ jobs:
 
       - name: Smoke (contract_obligation 5C, no UI click)
         env:
-          NS: ${{ secrets.STAGING_NAMESPACE }}
+          NS: ${{ github.event.inputs.namespace }}
           AGENT_API_KEY: ${{ secrets.STAGING_AGENT_API_KEY }}
           MINIO_ACCESS_KEY: ${{ secrets.STAGING_MINIO_ACCESS_KEY }}
           MINIO_SECRET_KEY: ${{ secrets.STAGING_MINIO_SECRET_KEY }}
