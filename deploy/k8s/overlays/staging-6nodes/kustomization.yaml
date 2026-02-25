@@ -23,7 +23,6 @@ patches:
   - path: configmap-patch.yaml
   - path: nodeselector-patch.yaml
   - path: resources-patch.yaml
-  - path: services-nodeport-patch.yaml
 
 images:
   - name: accounting-agent-layer/agent-service

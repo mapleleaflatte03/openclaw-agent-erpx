@@ -16,7 +16,6 @@ patches:
   - path: nodeselector-remove-patch.yaml
   - path: replicas-patch.yaml
   - path: resources-patch.yaml
-  - path: services-nodeport-patch.yaml
 
 images:
   - name: accounting-agent-layer/agent-service
