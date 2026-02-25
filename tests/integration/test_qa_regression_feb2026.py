@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import select
 
 from openclaw_agent.common.db import Base, db_session, make_engine
 from openclaw_agent.common.models import (
@@ -14,6 +15,7 @@ from openclaw_agent.common.models import (
     AcctQnaAudit,
     AcctReportSnapshot,
     AcctVoucher,
+    AcctVoucherCorrection,
     AgentRun,
 )
 from openclaw_agent.common.settings import get_settings
@@ -62,7 +64,7 @@ def test_attachment_upload_creates_ocr_voucher(client_and_engine):
     )
     assert resp.status_code == 200, resp.text
     body = resp.json()
-    assert body["status"] in {"valid", "quarantined", "non_invoice", "low_quality"}
+    assert body["status"] in {"valid", "review", "quarantined", "non_invoice", "low_quality"}
     assert body["source_tag"] == "ocr_upload"
     assert body.get("voucher_id")
 
@@ -70,6 +72,81 @@ def test_attachment_upload_creates_ocr_voucher(client_and_engine):
     assert vouchers.status_code == 200, vouchers.text
     items = vouchers.json().get("items", [])
     assert any(v.get("id") == body["voucher_id"] for v in items)
+
+
+def test_attachment_content_preview_and_urls(client_and_engine):
+    client, _engine = client_and_engine
+    uploaded = client.post(
+        "/agent/v1/attachments",
+        files={"file": ("invoice-preview.xml", b"<invoice><total>500000</total></invoice>", "application/xml")},
+        data={"source_tag": "ocr_upload"},
+        headers=_HEADERS,
+    )
+    assert uploaded.status_code == 200, uploaded.text
+    payload = uploaded.json()
+    assert payload.get("attachment_id")
+
+    vouchers = client.get("/agent/v1/acct/vouchers?source=ocr_upload&limit=20", headers=_HEADERS)
+    assert vouchers.status_code == 200, vouchers.text
+    row = next((item for item in vouchers.json().get("items", []) if item.get("id") == payload.get("voucher_id")), None)
+    assert row is not None
+    assert row.get("preview_url")
+    assert row.get("file_url")
+
+    preview = client.get(row["preview_url"], headers=_HEADERS)
+    assert preview.status_code == 200, preview.text
+    assert preview.headers.get("content-type")
+
+
+def test_patch_ocr_fields_writes_correction_log(client_and_engine):
+    client, engine = client_and_engine
+    uploaded = client.post(
+        "/agent/v1/attachments",
+        files={"file": ("invoice-edit.xml", b"<invoice><total>0</total></invoice>", "application/xml")},
+        data={"source_tag": "ocr_upload"},
+        headers=_HEADERS,
+    )
+    assert uploaded.status_code == 200, uploaded.text
+    voucher_id = uploaded.json()["voucher_id"]
+
+    patch_resp = client.patch(
+        f"/agent/v1/acct/vouchers/{voucher_id}/fields",
+        json={
+            "fields": {
+                "partner_name": "Cong ty Test",
+                "partner_tax_code": "0109999999",
+                "invoice_no": "INV-EDIT-001",
+                "invoice_date": "2026-02-20",
+                "total_amount": 750000,
+                "vat_amount": 75000,
+                "line_items_count": 2,
+                "doc_type": "invoice",
+            },
+            "reason": "manual_fix_for_uat",
+            "corrected_by": "tester",
+        },
+        headers=_HEADERS,
+    )
+    assert patch_resp.status_code == 200, patch_resp.text
+    assert patch_resp.json().get("updated") is True
+
+    mark_valid = client.post(
+        f"/agent/v1/acct/vouchers/{voucher_id}/mark_valid",
+        json={"marked_by": "tester"},
+        headers=_HEADERS,
+    )
+    assert mark_valid.status_code == 200, mark_valid.text
+    assert mark_valid.json()["status"] == "valid"
+
+    with db_session(engine) as s:
+        voucher = s.get(AcctVoucher, voucher_id)
+        assert voucher is not None
+        assert voucher.partner_name == "Cong ty Test"
+        assert float(voucher.amount or 0) == 750000
+        corrections = s.execute(
+            select(AcctVoucherCorrection).where(AcctVoucherCorrection.voucher_id == voucher_id)
+        ).scalars().all()
+        assert len(corrections) >= 2
 
 
 def test_logs_accept_filter_entity_id(client_and_engine):
@@ -267,6 +344,87 @@ def test_voucher_reprocess_run_type_accepted(client_and_engine, monkeypatch):
     assert resp.json().get("run_id")
 
 
+def test_voucher_reprocess_wrapper_endpoint(client_and_engine, monkeypatch):
+    client, engine = client_and_engine
+    monkeypatch.setenv("RUN_EXECUTOR_MODE", "local")
+    from openclaw_agent.agent_service import main as svc_main
+
+    uploaded = client.post(
+        "/agent/v1/attachments",
+        files={"file": ("invoice-reprocess.xml", b"<invoice><total>500000</total></invoice>", "application/xml")},
+        data={"source_tag": "ocr_upload"},
+        headers=_HEADERS,
+    )
+    assert uploaded.status_code == 200, uploaded.text
+    voucher_id = uploaded.json()["voucher_id"]
+
+    def _run_local_stub(run_id: str) -> None:
+        with db_session(engine) as s:
+            run = s.get(AgentRun, run_id)
+            assert run is not None
+            run.status = "success"
+            run.started_at = run.created_at
+            run.finished_at = run.created_at
+
+    monkeypatch.setattr(svc_main, "_dispatch_run_local", _run_local_stub)
+
+    resp = client.post(
+        f"/agent/v1/acct/vouchers/{voucher_id}/reprocess",
+        json={"reason": "test_wrapper"},
+        headers=_HEADERS,
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body.get("run_id")
+    assert body.get("run_type") == "voucher_reprocess"
+
+
+def test_voucher_reprocess_allows_zero_amount_review(client_and_engine, monkeypatch):
+    client, engine = client_and_engine
+    monkeypatch.setenv("RUN_EXECUTOR_MODE", "local")
+    from openclaw_agent.agent_service import main as svc_main
+
+    zero_xml = b"""
+    <invoice>
+      <meta>Hoa don VAT MST 0101234567</meta>
+      <invoice_no>INV-ZERO-REPROCESS-001</invoice_no>
+      <summary>Tong tien: 0</summary>
+    </invoice>
+    """.strip()
+    uploaded = client.post(
+        "/agent/v1/attachments",
+        files={"file": ("invoice-zero-reprocess.xml", zero_xml, "application/xml")},
+        data={"source_tag": "ocr_upload"},
+        headers=_HEADERS,
+    )
+    assert uploaded.status_code == 200, uploaded.text
+    body = uploaded.json()
+    assert body["status"] in {"review", "quarantined", "non_invoice", "low_quality"}
+    assert "zero_amount" in (body.get("quality_reasons") or [])
+    voucher_id = body["voucher_id"]
+
+    def _run_local_stub(run_id: str) -> None:
+        with db_session(engine) as s:
+            run = s.get(AgentRun, run_id)
+            assert run is not None
+            run.status = "success"
+            run.started_at = run.created_at
+            run.finished_at = run.created_at
+
+    monkeypatch.setattr(svc_main, "_dispatch_run_local", _run_local_stub)
+
+    reprocess = client.post(
+        f"/agent/v1/acct/vouchers/{voucher_id}/reprocess",
+        json={"reason": "retry_zero_amount"},
+        headers=_HEADERS,
+    )
+    assert reprocess.status_code == 200, reprocess.text
+    out = reprocess.json()
+    assert out.get("run_id")
+    assert out.get("run_type") == "voucher_reprocess"
+    assert out.get("voucher_id") == voucher_id
+
+
 def test_qna_feedback_accepts_string_and_legacy_int(client_and_engine):
     client, engine = client_and_engine
     audit_id = new_uuid()
@@ -399,7 +557,7 @@ def test_ocr_quality_gate_valid_vs_non_invoice(client_and_engine):
     )
     assert noisy_upload.status_code == 200, noisy_upload.text
     noisy_body = noisy_upload.json()
-    assert noisy_body["status"] in {"non_invoice", "quarantined", "low_quality"}
+    assert noisy_body["status"] in {"non_invoice", "review", "quarantined", "low_quality"}
     assert noisy_body.get("quality_reasons")
 
     vouchers = client.get("/agent/v1/acct/vouchers?source=ocr_upload&limit=10", headers=_HEADERS)
@@ -407,7 +565,7 @@ def test_ocr_quality_gate_valid_vs_non_invoice(client_and_engine):
     items = vouchers.json().get("items", [])
     by_id = {item["id"]: item for item in items}
     assert by_id[valid_upload.json()["voucher_id"]]["status"] == "valid"
-    assert by_id[noisy_body["voucher_id"]]["status"] in {"non_invoice", "quarantined", "low_quality"}
+    assert by_id[noisy_body["voucher_id"]]["status"] in {"non_invoice", "review", "quarantined", "low_quality"}
 
 
 def test_ocr_zero_total_not_overridden_by_tax_code(client_and_engine):
@@ -427,7 +585,7 @@ def test_ocr_zero_total_not_overridden_by_tax_code(client_and_engine):
     )
     assert uploaded.status_code == 200, uploaded.text
     body = uploaded.json()
-    assert body["status"] in {"quarantined", "non_invoice", "low_quality"}
+    assert body["status"] in {"review", "quarantined", "non_invoice", "low_quality"}
     assert "zero_amount" in (body.get("quality_reasons") or [])
 
     vouchers = client.get("/agent/v1/acct/vouchers?source=ocr_upload&limit=20", headers=_HEADERS)

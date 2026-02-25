@@ -5,4 +5,7 @@ metadata:
   annotations:
     # Staging is often served over plain HTTP (or TLS is terminated upstream).
     nginx.ingress.kubernetes.io/ssl-redirect: "false"
-
+    nginx.ingress.kubernetes.io/proxy-body-size: "25m"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "180"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "180"
+    nginx.ingress.kubernetes.io/proxy-request-buffering: "off"

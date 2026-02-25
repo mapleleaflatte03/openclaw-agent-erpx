@@ -383,6 +383,44 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /agent/v1/attachments/{attachment_id}/content:
+    get:
+      summary: Get Attachment Content
+      operationId: get_attachment_content_agent_v1_attachments__attachment_id__content_get
+      parameters:
+      - name: attachment_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Attachment Id
+      - name: inline
+        in: query
+        required: false
+        schema:
+          type: integer
+          default: 0
+          title: Inline
+      - name: X-API-Key
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Api-Key
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /agent/v1/exports:
     post:
       summary: Post Export
@@ -1763,6 +1801,137 @@ paths:
                 type: object
                 additionalProperties: true
                 title: Response List Vouchers Agent V1 Acct Vouchers Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /agent/v1/acct/vouchers/{voucher_id}/fields:
+    patch:
+      summary: Patch Ocr Voucher Fields
+      operationId: patch_ocr_voucher_fields_agent_v1_acct_vouchers__voucher_id__fields_patch
+      parameters:
+      - name: voucher_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Voucher Id
+      - name: X-API-Key
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Api-Key
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+              title: Body
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Patch Ocr Voucher Fields Agent V1 Acct Vouchers  Voucher
+                  Id  Fields Patch
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /agent/v1/acct/vouchers/{voucher_id}/mark_valid:
+    post:
+      summary: Mark Ocr Voucher Valid
+      operationId: mark_ocr_voucher_valid_agent_v1_acct_vouchers__voucher_id__mark_valid_post
+      parameters:
+      - name: voucher_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Voucher Id
+      - name: X-API-Key
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Api-Key
+      requestBody:
+        content:
+          application/json:
+            schema:
+              anyOf:
+              - type: object
+                additionalProperties: true
+              - type: 'null'
+              title: Body
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Mark Ocr Voucher Valid Agent V1 Acct Vouchers  Voucher
+                  Id  Mark Valid Post
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /agent/v1/acct/vouchers/{voucher_id}/reprocess:
+    post:
+      summary: Reprocess Voucher
+      operationId: reprocess_voucher_agent_v1_acct_vouchers__voucher_id__reprocess_post
+      parameters:
+      - name: voucher_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Voucher Id
+      - name: X-API-Key
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Api-Key
+      requestBody:
+        content:
+          application/json:
+            schema:
+              anyOf:
+              - type: object
+                additionalProperties: true
+              - type: 'null'
+              title: Body
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Reprocess Voucher Agent V1 Acct Vouchers  Voucher
+                  Id  Reprocess Post
         '422':
           description: Validation Error
           content:

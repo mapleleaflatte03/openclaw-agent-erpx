@@ -47,6 +47,13 @@ class Settings(BaseSettings):
     match_confidence_threshold: float = Field(default=0.85, alias="MATCH_CONFIDENCE_THRESHOLD")
     ocr_timeout_seconds: int = Field(default=40, alias="OCR_TIMEOUT_SECONDS")
     ocr_pdf_max_pages: int = Field(default=3, alias="OCR_PDF_MAX_PAGES")
+    ocr_local_lang: str = Field(default="eng+vie+jpn", alias="OCR_LOCAL_LANG")
+    ocr_cloud_fallback_enabled: bool = Field(default=False, alias="OCR_CLOUD_FALLBACK_ENABLED")
+    ocr_cloud_rollout_percent: int = Field(default=100, alias="OCR_CLOUD_ROLLOUT_PERCENT")
+    ocr_cloud_base_url: str = Field(default="https://api.openai.com", alias="OCR_CLOUD_BASE_URL")
+    ocr_cloud_api_key: str = Field(default="", alias="OCR_CLOUD_API_KEY")
+    ocr_cloud_model: str = Field(default="gpt-4.1-mini", alias="OCR_CLOUD_MODEL")
+    ocr_cloud_timeout_seconds: float = Field(default=20.0, alias="OCR_CLOUD_TIMEOUT_SECONDS")
 
     obligation_confidence_threshold: float = Field(default=0.8, alias="OBLIGATION_CONFIDENCE_THRESHOLD")
     obligation_required_fields: Literal["strict", "relaxed"] = Field(
@@ -91,6 +98,17 @@ class Settings(BaseSettings):
     def _enforce_erpx_rate_limit_qps(cls, _value: object) -> float:
         """Lock ERPX request rate at hardening baseline (10 qps)."""
         return 10.0
+
+    @field_validator("ocr_cloud_rollout_percent", mode="before")
+    @classmethod
+    def _clamp_ocr_rollout_percent(cls, value: object) -> int:
+        try:
+            pct = int(value)
+        except Exception:
+            return 100
+        if pct < 0:
+            return 0
+        return min(pct, 100)
 
 
 @lru_cache

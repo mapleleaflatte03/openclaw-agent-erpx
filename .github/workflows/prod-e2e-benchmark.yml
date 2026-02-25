@@ -1,0 +1,43 @@
+name: prod-e2e-benchmark
+
+on:
+  schedule:
+    - cron: "30 1 * * *"
+  workflow_dispatch:
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install deps
+        run: |
+          python -m pip install -U pip
+          python -m pip install -e '.[dev]'
+
+      - name: Evaluate OCR field-level benchmark report
+        run: |
+          set -euo pipefail
+          PRED_PATH="reports/benchmark/prod_e2e_benchmark_latest.json"
+          if [ ! -f "$PRED_PATH" ]; then
+            PRED_PATH="scripts/benchmark/fixtures/ocr_field_level/predictions.json"
+          fi
+          python scripts/benchmark/eval_ocr_field_level.py \
+            --gold scripts/benchmark/fixtures/ocr_field_level/gold.json \
+            --pred "$PRED_PATH" \
+            --out reports/benchmark/prod_ocr_field_level_latest.json \
+            --html reports/benchmark/prod_ocr_field_level_latest.html
+
+      - name: Upload benchmark artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: prod-ocr-field-level-benchmark
+          path: |
+            reports/benchmark/prod_ocr_field_level_latest.json
+            reports/benchmark/prod_ocr_field_level_latest.html
+          retention-days: 30

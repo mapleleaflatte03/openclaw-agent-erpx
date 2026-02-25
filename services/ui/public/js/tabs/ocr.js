@@ -1,7 +1,7 @@
 /**
  * OCR Tab — Upload, batch processing, results table, preview
  */
-const { api, apiPost, formatVND, formatDateTime, toast, openModal, closeModal, showLoading, hideLoading, registerTab } = window.ERPX;
+const { api, apiPost, apiPatch, formatVND, formatDateTime, toast, openModal, closeModal, showLoading, hideLoading, registerTab } = window.ERPX;
 
 let initialized = false;
 let ocrResults = [];
@@ -142,6 +142,34 @@ function bindOcrEvents() {
   });
 }
 
+async function uploadFileWithRetry(file, maxRetries = 3) {
+  const endpoint = `${window.ERPX_API_BASE || '/agent/v1'}/attachments`;
+  let lastError = null;
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+      formData.append('source_tag', 'ocr_upload');
+      const uploadRes = await fetch(endpoint, { method: 'POST', body: formData });
+      if (!uploadRes.ok) {
+        const text = await uploadRes.text();
+        const status = uploadRes.status;
+        if ((status >= 500 || status === 408 || status === 429) && attempt < maxRetries) {
+          await new Promise((resolve) => setTimeout(resolve, 400 * (2 ** (attempt - 1))));
+          continue;
+        }
+        throw new Error(`HTTP ${status}: ${text.slice(0, 180) || 'Upload thất bại'}`);
+      }
+      return uploadRes.json();
+    } catch (err) {
+      lastError = err;
+      if (attempt >= maxRetries) break;
+      await new Promise((resolve) => setTimeout(resolve, 400 * (2 ** (attempt - 1))));
+    }
+  }
+  throw lastError || new Error('Upload thất bại');
+}
+
 async function handleFiles(files) {
   if (!files.length) return;
   const fileArr = Array.from(files).slice(0, 100);
@@ -159,35 +187,7 @@ async function handleFiles(files) {
   const failedReasons = [];
   for (const file of fileArr) {
     try {
-      // Upload binary directly; backend persists attachment + OCR voucher mirror row.
-      const formData = new FormData();
-      formData.append('file', file);
-      formData.append('source_tag', 'ocr_upload');
-
-      const uploadRes = await fetch(`${window.ERPX_API_BASE || '/agent/v1'}/attachments`, {
-        method: 'POST',
-        body: formData,
-      });
-      if (!uploadRes.ok) {
-        const rawBody = await uploadRes.text();
-        let detail = '';
-        try {
-          const errJson = rawBody ? JSON.parse(rawBody) : {};
-          if (typeof errJson?.detail === 'string') {
-            detail = errJson.detail;
-          } else if (errJson?.detail?.detail) {
-            detail = String(errJson.detail.detail);
-          } else if (errJson?.error) {
-            detail = String(errJson.error);
-          } else {
-            detail = JSON.stringify(errJson).slice(0, 160);
-          }
-        } catch {
-          detail = rawBody.slice(0, 160);
-        }
-        throw new Error(`HTTP ${uploadRes.status}: ${detail || 'Upload thất bại'}`);
-      }
-      await uploadRes.json();
+      await uploadFileWithRetry(file, 3);
 
       done++;
       countEl.textContent = `${done}/${fileArr.length}`;
@@ -238,7 +238,7 @@ function renderConfidenceGauge(conf) {
 function statusBadgeClass(status) {
   if (!status) return 'badge-neutral';
   if (status === 'valid' || status === 'processed' || status === 'success') return 'badge-success';
-  if (status === 'quarantined' || status === 'low_quality') return 'badge-warning';
+  if (status === 'review' || status === 'quarantined' || status === 'low_quality') return 'badge-warning';
   if (status === 'non_invoice') return 'badge-danger';
   if (status === 'pending') return 'badge-warning';
   if (status === 'error' || status === 'failed') return 'badge-danger';
@@ -275,18 +275,16 @@ function normalizeOcrVoucher(v) {
   const hasNonInvoice = rawStatus === 'non_invoice' || reasons.includes('non_invoice_pattern');
   const hasZeroAmount = amount <= 0 || reasons.includes('zero_amount');
   const hasNoLineItems = reasons.includes('no_line_items');
-  const hasLowConfidence = rawStatus === 'low_quality' || reasons.includes('low_confidence');
+  const hasLowConfidence = rawStatus === 'low_quality' || rawStatus === 'review' || reasons.includes('low_confidence');
   const hasTestFixture = looksLikeTestFixture(v);
 
   let status = rawStatus || 'pending';
   if (hasNonInvoice) {
     status = 'non_invoice';
   } else if (hasTestFixture) {
-    status = 'quarantined';
-  } else if (hasZeroAmount || hasNoLineItems) {
-    status = 'quarantined';
-  } else if (hasLowConfidence) {
-    status = 'low_quality';
+    status = 'review';
+  } else if (hasZeroAmount || hasNoLineItems || hasLowConfidence || reasons.includes('invoice_signal_missing')) {
+    status = 'review';
   } else if (amount > 0) {
     status = 'valid';
   }
@@ -340,7 +338,6 @@ function renderResultsTable() {
     .map((v) => {
       const reasons = Array.isArray(v.quality_reasons) ? v.quality_reasons : [];
       const reasonTitle = reasons.length ? reasons.join(', ') : v.status || 'processed';
-      const blockedReprocess = v.status === 'non_invoice' || reasons.includes('zero_amount');
       return `
       <tr data-id="${v.id}">
         <td class="truncate" style="max-width:100px">${v.id}</td>
@@ -354,7 +351,7 @@ function renderResultsTable() {
         <td>
           <button class="btn btn-icon btn-outline" data-action="preview" data-id="${v.id}" title="Xem chi tiết">👁️</button>
           <button class="btn btn-icon btn-outline" data-action="download" data-id="${v.id}" title="Tải JSON">📥</button>
-          <button class="btn btn-icon btn-outline" data-action="reprocess" data-id="${v.id}" title="${blockedReprocess ? 'Voucher bị chặn reprocess do chất lượng dữ liệu' : 'Xử lý lại'}" ${blockedReprocess ? 'disabled' : ''}>🔄</button>
+          <button class="btn btn-icon btn-outline" data-action="reprocess" data-id="${v.id}" title="Xử lý lại">🔄</button>
         </td>
       </tr>`;
     })
@@ -402,19 +399,10 @@ async function handleRowAction(action, id) {
     }
   } else if (action === 'reprocess') {
     const row = ocrResults.find((r) => r.id === id);
-    const reasons = Array.isArray(row?.quality_reasons) ? row.quality_reasons : [];
-    if (row?.status === 'non_invoice' || reasons.includes('zero_amount')) {
-      toast('Voucher này bị chặn reprocess do non_invoice/zero_amount', 'warning');
-      return;
-    }
     try {
-      const run = await apiPost('/runs', {
-        run_type: 'voucher_reprocess',
-        trigger_type: 'manual',
-        payload: {
-          voucher_id: id,
-          attachment_id: row?.source_ref || null,
-        },
+      const run = await apiPost(`/acct/vouchers/${encodeURIComponent(id)}/reprocess`, {
+        reason: 'manual_reprocess_from_ui',
+        attachment_id: row?.attachment_id || row?.source_ref || null,
         requested_by: 'web-user',
       });
       if (run?.run_id) {
@@ -429,25 +417,131 @@ async function handleRowAction(action, id) {
   }
 }
 
+function escapeHtml(value) {
+  return String(value ?? '')
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#39;');
+}
+
+function getFieldValue(v, fieldName, fallback = null) {
+  if (v?.ocr_fields?.[fieldName] && typeof v.ocr_fields[fieldName] === 'object') {
+    return v.ocr_fields[fieldName].value ?? fallback;
+  }
+  return v?.[fieldName] ?? fallback;
+}
+
+function renderPreviewMedia(v) {
+  const previewUrl = v.preview_url || null;
+  const fileUrl = v.file_url || null;
+  if (!previewUrl) {
+    return '<p class="text-secondary">Không có file preview</p>';
+  }
+  const filename = String(v.original_filename || '').toLowerCase();
+  if (filename.endsWith('.pdf')) {
+    return `<iframe src="${previewUrl}" title="PDF preview" style="width:100%;height:420px;border:0;border-radius:8px;"></iframe>`;
+  }
+  return `<img src="${previewUrl}" alt="Original" style="max-width:100%;max-height:420px;border-radius:8px;">`;
+}
+
 function showPreview(id) {
   const v = ocrResults.find((r) => r.id === id);
   if (!v) return;
 
+  const partnerName = getFieldValue(v, 'partner_name', v.partner_name || '');
+  const taxCode = getFieldValue(v, 'partner_tax_code', v.partner_tax_code || '');
+  const invoiceNo = getFieldValue(v, 'invoice_no', v.voucher_no || '');
+  const invoiceDate = getFieldValue(v, 'invoice_date', v.date || '');
+  const totalAmount = getFieldValue(v, 'total_amount', v.total_amount ?? v.amount ?? 0);
+  const vatAmount = getFieldValue(v, 'vat_amount', v.vat_amount ?? 0);
+  const lineItemsCount = getFieldValue(v, 'line_items_count', v.line_items_count ?? 0);
+  const docType = String(getFieldValue(v, 'doc_type', v.doc_type || 'other') || 'other');
+
   const bodyHtml = `
     <div class="grid-2" style="gap:var(--sp-lg)">
       <div>
-        <h4>Ảnh gốc</h4>
-        <div style="background:var(--c-surface-alt);padding:var(--sp-lg);border-radius:var(--r-md);text-align:center;">
-          ${v.image_url ? `<img src="${v.image_url}" alt="Original" style="max-width:100%;max-height:400px;">` : '<p class="text-secondary">Không có ảnh</p>'}
+        <h4>File gốc</h4>
+        <div style="background:var(--c-surface-alt);padding:var(--sp-md);border-radius:var(--r-md);text-align:center;min-height:440px;">
+          ${renderPreviewMedia(v)}
         </div>
+        ${v.file_url ? `<div class="mt-md"><a class="btn btn-outline" href="${v.file_url}" target="_blank" rel="noopener">Tải file gốc</a></div>` : ''}
       </div>
       <div>
-        <h4>Dữ liệu trích xuất</h4>
-        <pre style="background:var(--c-surface-alt);padding:var(--sp-md);border-radius:var(--r-sm);overflow:auto;max-height:400px;font-size:12px;">${JSON.stringify(v, null, 2)}</pre>
+        <h4>Dữ liệu OCR (chỉnh sửa)</h4>
+        <div class="flex-col gap-sm">
+          <label>Tên đối tác <input id="ocr-edit-partner-name" class="form-input" value="${escapeHtml(partnerName)}"></label>
+          <label>Mã số thuế <input id="ocr-edit-partner-tax-code" class="form-input" value="${escapeHtml(taxCode)}"></label>
+          <label>Số hóa đơn <input id="ocr-edit-invoice-no" class="form-input" value="${escapeHtml(invoiceNo)}"></label>
+          <label>Ngày hóa đơn <input id="ocr-edit-invoice-date" class="form-input" value="${escapeHtml(invoiceDate)}" placeholder="YYYY-MM-DD"></label>
+          <label>Tổng tiền <input id="ocr-edit-total-amount" class="form-input" type="number" min="0" step="1" value="${escapeHtml(totalAmount)}"></label>
+          <label>VAT <input id="ocr-edit-vat-amount" class="form-input" type="number" min="0" step="1" value="${escapeHtml(vatAmount)}"></label>
+          <label>Số dòng hàng <input id="ocr-edit-line-items-count" class="form-input" type="number" min="0" step="1" value="${escapeHtml(lineItemsCount)}"></label>
+          <label>Doc type
+            <select id="ocr-edit-doc-type" class="form-select">
+              <option value="invoice" ${docType === 'invoice' ? 'selected' : ''}>invoice</option>
+              <option value="other" ${docType === 'other' ? 'selected' : ''}>other</option>
+              <option value="non_invoice" ${docType === 'non_invoice' ? 'selected' : ''}>non_invoice</option>
+            </select>
+          </label>
+          <label>Lý do chỉnh sửa <textarea id="ocr-edit-reason" class="form-textarea" rows="2" placeholder="Ví dụ: OCR sai ký tự tiếng Nhật/Việt"></textarea></label>
+          <div class="flex-row gap-sm mt-sm">
+            <button class="btn btn-primary" id="btn-ocr-save-correction">Lưu chỉnh sửa</button>
+            <button class="btn btn-outline" id="btn-ocr-mark-valid">Đánh dấu đủ điều kiện hạch toán</button>
+          </div>
+        </div>
+        <details class="mt-md">
+          <summary>JSON chi tiết</summary>
+          <pre style="background:var(--c-surface-alt);padding:var(--sp-md);border-radius:var(--r-sm);overflow:auto;max-height:220px;font-size:12px;">${escapeHtml(JSON.stringify(v, null, 2))}</pre>
+        </details>
       </div>
     </div>
   `;
   openModal(`Chứng từ ${v.id}`, bodyHtml);
+
+  document.getElementById('btn-ocr-save-correction')?.addEventListener('click', async () => {
+    const fields = {
+      partner_name: document.getElementById('ocr-edit-partner-name')?.value?.trim() || null,
+      partner_tax_code: document.getElementById('ocr-edit-partner-tax-code')?.value?.trim() || null,
+      invoice_no: document.getElementById('ocr-edit-invoice-no')?.value?.trim() || null,
+      invoice_date: document.getElementById('ocr-edit-invoice-date')?.value?.trim() || null,
+      total_amount: Number(document.getElementById('ocr-edit-total-amount')?.value || 0),
+      vat_amount: Number(document.getElementById('ocr-edit-vat-amount')?.value || 0),
+      line_items_count: Number(document.getElementById('ocr-edit-line-items-count')?.value || 0),
+      doc_type: document.getElementById('ocr-edit-doc-type')?.value || 'other',
+    };
+    const reason = document.getElementById('ocr-edit-reason')?.value?.trim() || 'manual_correction';
+    try {
+      await apiPatch(`/acct/vouchers/${encodeURIComponent(v.id)}/fields`, {
+        fields,
+        reason,
+        corrected_by: 'web-user',
+      });
+      toast('Đã lưu chỉnh sửa OCR', 'success');
+      closeModal();
+      await loadResults();
+      await loadAuditLog(v.id, v.run_id);
+    } catch (e) {
+      toast('Không lưu được chỉnh sửa: ' + e.message, 'error');
+    }
+  });
+
+  document.getElementById('btn-ocr-mark-valid')?.addEventListener('click', async () => {
+    try {
+      await apiPost(`/acct/vouchers/${encodeURIComponent(v.id)}/mark_valid`, {
+        marked_by: 'web-user',
+        reason: 'manual_review_passed',
+      });
+      toast('Đã chuyển trạng thái valid', 'success');
+      closeModal();
+      await loadResults();
+      await loadAuditLog(v.id, v.run_id);
+    } catch (e) {
+      toast('Không thể đánh dấu valid: ' + e.message, 'error');
+    }
+  });
+
   loadAuditLog(id, v.run_id);
 }
 

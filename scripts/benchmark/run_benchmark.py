@@ -15,6 +15,7 @@ import json
 import os
 import sys
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 # Ensure src/ is importable
@@ -39,6 +40,14 @@ WORKFLOWS = [
 ]
 
 DEFAULT_BASE_URL = "http://localhost:8000"
+PERIOD_REQUIRED_RUN_TYPES = {
+    "voucher_ingest",
+    "soft_checks",
+    "journal_suggestion",
+    "cashflow_forecast",
+    "tax_export",
+    "bank_reconcile",
+}
 
 
 def _get_base_url(target: str) -> str:
@@ -128,6 +137,8 @@ def _run_case(base_url: str, case_dir: Path, case_id: str) -> dict:
     # Create a run for contract_obligation
     run_payload = {
         "run_type": "contract_obligation",
+        "trigger_type": "manual",
+        "requested_by": "benchmark-runner",
         "payload": {
             "contract_files": [],
             "email_files": [],
@@ -201,7 +212,25 @@ def _run_case(base_url: str, case_dir: Path, case_id: str) -> dict:
 def _run_workflow_basic(base_url: str, workflow: str) -> dict:
     """Run a basic (non-contract) workflow and check it doesn't error."""
     start_ts = time.time()
-    run_payload = {"run_type": workflow, "payload": {}}
+    if workflow == "attachment":
+        # Attachment workflow requires payload.file_uri that is accessible from
+        # the worker runtime, so skip it in generic benchmark mode.
+        return {
+            "workflow": workflow,
+            "status": "skip",
+            "reason": "requires_payload_file_uri",
+            "duration_s": round(time.time() - start_ts, 2),
+        }
+
+    payload: dict[str, object] = {}
+    if workflow in PERIOD_REQUIRED_RUN_TYPES:
+        payload["period"] = datetime.now(tz=timezone.utc).strftime("%Y-%m")
+    run_payload = {
+        "run_type": workflow,
+        "trigger_type": "manual",
+        "requested_by": "benchmark-runner",
+        "payload": payload,
+    }
 
     try:
         resp = _http_post(base_url, "/agent/v1/runs", run_payload)

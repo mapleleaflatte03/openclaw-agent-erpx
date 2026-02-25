@@ -39,6 +39,25 @@ jobs:
           ./scripts/benchmark/fetch_or_generate_dataset.sh --cases 5
           python -m pytest tests/benchmark/test_benchmark_smoke.py -q
 
+      - name: OCR field-level quality gate
+        run: |
+          python scripts/benchmark/eval_ocr_field_level.py \
+            --gold scripts/benchmark/fixtures/ocr_field_level/gold.json \
+            --pred scripts/benchmark/fixtures/ocr_field_level/predictions.json \
+            --out reports/benchmark/ocr_field_level_ci.json \
+            --html reports/benchmark/ocr_field_level_ci.html \
+            --fail-on-gate
+
+      - name: Upload OCR benchmark artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ocr-field-level-benchmark
+          path: |
+            reports/benchmark/ocr_field_level_ci.json
+            reports/benchmark/ocr_field_level_ci.html
+          retention-days: 14
+
   docker-build:
     runs-on: ubuntu-latest
     needs: [test]

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import io
 import json
 import math
@@ -10,10 +11,12 @@ import threading
 import time
 import unicodedata
 from collections import Counter
+from contextlib import suppress
 from datetime import date, datetime
 from hashlib import sha256
 from pathlib import Path
 from typing import Any, Literal
+from urllib.parse import quote
 
 import httpx
 import redis
@@ -39,6 +42,7 @@ from openclaw_agent.common.models import (
     AcctSoftCheckResult,
     AcctValidationIssue,
     AcctVoucher,
+    AcctVoucherCorrection,
     AgentApproval,
     AgentAttachment,
     AgentAuditLog,
@@ -316,6 +320,21 @@ def metrics(settings: Settings = Depends(get_settings), engine: Engine = Depends
     g_mismatch = Gauge(
         "agent_attachment_mismatch_last_5m", "Attachment low-confidence mismatches in last 5 minutes", registry=registry
     )
+    g_upload_5xx_rate = Gauge(
+        "upload_5xx_rate",
+        "Upload failed-rate proxy based on failed attachment runs (%)",
+        registry=registry,
+    )
+    g_upload_success_rate = Gauge(
+        "upload_success_rate",
+        "Attachment upload success rate (%)",
+        registry=registry,
+    )
+    g_upload_p95_latency = Gauge(
+        "upload_p95_latency",
+        "P95 upload end-to-result latency in seconds",
+        registry=registry,
+    )
 
     # Redis backlog (best-effort; depends on Celery transport)
     r = redis.Redis.from_url(settings.redis_url)
@@ -356,6 +375,40 @@ def metrics(settings: Settings = Depends(get_settings), engine: Engine = Depends
             )
         )
         g_mismatch.set(int(rows.scalar() or 0))
+
+        rows = c.execute(
+            sa_text(
+                "SELECT status, started_at, finished_at "
+                "FROM agent_runs "
+                "WHERE run_type='attachment' "
+                "ORDER BY created_at DESC "
+                "LIMIT 5000"
+            )
+        ).fetchall()
+        total_upload = len(rows)
+        success_upload = 0
+        failed_upload = 0
+        latencies: list[float] = []
+        for status, started_at, finished_at in rows:
+            st = str(status or "").strip().lower()
+            if st == "success":
+                success_upload += 1
+            elif st == "failed":
+                failed_upload += 1
+            if started_at and finished_at:
+                with suppress(Exception):
+                    latencies.append(max((finished_at - started_at).total_seconds(), 0.0))
+
+        success_rate = (success_upload / total_upload * 100.0) if total_upload else 0.0
+        failed_rate = (failed_upload / total_upload * 100.0) if total_upload else 0.0
+        p95_latency = 0.0
+        if latencies:
+            latencies.sort()
+            idx = max(0, min(len(latencies) - 1, int(math.ceil(len(latencies) * 0.95)) - 1))
+            p95_latency = latencies[idx]
+        g_upload_success_rate.set(round(success_rate, 4))
+        g_upload_5xx_rate.set(round(failed_rate, 4))
+        g_upload_p95_latency.set(round(p95_latency, 4))
 
     data = generate_latest(registry)
     return PlainTextResponse(content=data.decode("utf-8"), media_type=CONTENT_TYPE_LATEST)
@@ -845,7 +898,9 @@ _ATTACH_ALLOWED_EXT = {
     ".jpeg": "image/jpeg",
     ".png": "image/png",
 }
-_INVALID_OCR_STATUSES = {"quarantined", "non_invoice", "low_quality"}
+# Canonical OCR statuses: valid | review | non_invoice.
+# Keep legacy values in this set for backward-compatible quality filtering.
+_INVALID_OCR_STATUSES = {"review", "non_invoice", "quarantined", "low_quality"}
 _NON_INVOICE_HINTS = {
     "dogs-vs-cats",
     "dogs vs cats",
@@ -893,6 +948,17 @@ _INVOICE_CONTEXT_HINTS = {
     "don gia",
     "so luong",
     "quantity",
+}
+_OCR_REVIEW_REASONS = {"invoice_signal_missing", "zero_amount", "no_line_items", "low_confidence"}
+_OCR_SUPPORTED_EDIT_FIELDS = {
+    "partner_name",
+    "partner_tax_code",
+    "invoice_no",
+    "invoice_date",
+    "total_amount",
+    "vat_amount",
+    "line_items_count",
+    "doc_type",
 }
 try:
     _OCR_MIN_CONFIDENCE = float(os.getenv("OCR_MIN_CONFIDENCE", "0.70"))
@@ -1014,9 +1080,388 @@ def _parse_amount_token(token: str) -> float:
     return amount
 
 
+def _normalize_doc_type(raw_doc_type: str, *, invoice_like: bool, non_invoice: bool) -> str:
+    doc_type = (raw_doc_type or "").strip().lower()
+    if non_invoice:
+        return "non_invoice"
+    if doc_type in {"invoice", "invoice_vat", "vat_invoice", "hoa_don"}:
+        return "invoice"
+    if doc_type in {"non_invoice", "other"}:
+        return doc_type
+    return "invoice" if invoice_like else "other"
+
+
+def _extract_partner_tax_code(text: str) -> str | None:
+    if not text:
+        return None
+    patterns = [
+        r"(?:mst|mã\s*số\s*thuế|ma\s*so\s*thue|tax\s*code|tax\s*id)\s*[:#]?\s*([0-9][0-9A-Za-z\-]{8,15})",
+        r"\b([0-9]{10}(?:-[0-9]{3})?)\b",
+    ]
+    for pattern in patterns:
+        m = _re.search(pattern, text, flags=_re.I)
+        if m:
+            return m.group(1).strip()
+    return None
+
+
+def _extract_invoice_no(text: str) -> str | None:
+    if not text:
+        return None
+    patterns = [
+        r"(?:số\s*hóa\s*đơn|so\s*hoa\s*don|invoice\s*(?:no|number|#))\s*[:#]?\s*([A-Za-z0-9\-/]+)",
+        r"(?:mẫu\s*số|mau\s*so)\s*[:#]?\s*([A-Za-z0-9\-/]+)",
+    ]
+    for pattern in patterns:
+        m = _re.search(pattern, text, flags=_re.I)
+        if m:
+            return m.group(1).strip()[:64]
+    return None
+
+
+def _extract_invoice_date_iso(text: str) -> str | None:
+    if not text:
+        return None
+    patterns = [
+        r"(?:ngày|date)\s*[:#]?\s*([0-3]?\d[/-][0-1]?\d[/-](?:19|20)\d{2})",
+        r"\b((?:19|20)\d{2}[/-][0-1]?\d[/-][0-3]?\d)\b",
+    ]
+    for pattern in patterns:
+        m = _re.search(pattern, text, flags=_re.I)
+        if not m:
+            continue
+        token = m.group(1).strip().replace("/", "-")
+        try:
+            if len(token.split("-")[0]) == 4:
+                return datetime.strptime(token, "%Y-%m-%d").date().isoformat()
+            return datetime.strptime(token, "%d-%m-%Y").date().isoformat()
+        except Exception:
+            continue
+    return None
+
+
+def _extract_partner_name(text: str) -> str | None:
+    if not text:
+        return None
+    patterns = [
+        r"(?:bên\s*bán|ben\s*ban|seller|đơn\s*vị\s*bán|don\s*vi\s*ban)\s*[:\-]\s*(.{4,120})",
+        r"(?:bên\s*mua|ben\s*mua|buyer|đơn\s*vị\s*mua|don\s*vi\s*mua)\s*[:\-]\s*(.{4,120})",
+        r"(?:company|vendor)\s*[:\-]\s*(.{4,120})",
+    ]
+    for pattern in patterns:
+        m = _re.search(pattern, text, flags=_re.I)
+        if not m:
+            continue
+        candidate = " ".join(m.group(1).split())
+        candidate = _re.split(r"[|;]|m[ãa]\s*s[ốo]\s*thu[ếe]|tax\s*code", candidate, flags=_re.I)[0].strip()
+        if len(candidate) >= 4:
+            return candidate[:256]
+    return None
+
+
+def _extract_vat_amount(text: str) -> float:
+    if not text:
+        return 0.0
+    patterns = [
+        r"(?:thuế\s*gtgt|vat|tax\s*amount)\s*[:=]?\s*([0-9][0-9.,\s]{0,})",
+        r"(?:tiền\s*thuế|tax)\s*[:=]?\s*([0-9][0-9.,\s]{0,})",
+    ]
+    candidates: list[float] = []
+    for pattern in patterns:
+        for m in _re.finditer(pattern, text, flags=_re.I):
+            amount = _parse_amount_token(m.group(1))
+            if amount > 0:
+                candidates.append(amount)
+    return max(candidates) if candidates else 0.0
+
+
+def _build_ocr_field(
+    value: Any,
+    *,
+    confidence: float,
+    source: str,
+    text_span: str | None = None,
+    page: int | None = None,
+) -> dict[str, Any]:
+    return {
+        "value": value,
+        "confidence": round(max(0.0, min(_safe_float(confidence), 1.0)), 3),
+        "source": source,
+        "evidence": {
+            "text_span": text_span,
+            "bbox": None,
+            "page": page,
+        },
+    }
+
+
+def _build_local_ocr_fields(
+    filename: str,
+    text_preview: str,
+    *,
+    invoice_like: bool,
+    non_invoice: bool,
+    total_amount: float,
+    vat_amount: float,
+    line_items_count: int,
+) -> dict[str, dict[str, Any]]:
+    invoice_no = _extract_invoice_no(text_preview)
+    partner_tax_code = _extract_partner_tax_code(text_preview)
+    invoice_date = _extract_invoice_date_iso(text_preview)
+    partner_name = _extract_partner_name(text_preview)
+    raw_doc_type = "non_invoice" if non_invoice else "invoice" if invoice_like else "other"
+    doc_type = _normalize_doc_type(raw_doc_type, invoice_like=invoice_like, non_invoice=non_invoice)
+
+    fields: dict[str, dict[str, Any]] = {
+        "partner_name": _build_ocr_field(
+            partner_name,
+            confidence=0.86 if partner_name else 0.0,
+            source="local",
+            text_span="partner_name" if partner_name else None,
+            page=1,
+        ),
+        "partner_tax_code": _build_ocr_field(
+            partner_tax_code,
+            confidence=0.9 if partner_tax_code else 0.0,
+            source="local",
+            text_span="tax_code" if partner_tax_code else None,
+            page=1,
+        ),
+        "invoice_no": _build_ocr_field(
+            invoice_no,
+            confidence=0.88 if invoice_no else 0.0,
+            source="local",
+            text_span="invoice_no" if invoice_no else None,
+            page=1,
+        ),
+        "invoice_date": _build_ocr_field(
+            invoice_date,
+            confidence=0.84 if invoice_date else 0.0,
+            source="local",
+            text_span="invoice_date" if invoice_date else None,
+            page=1,
+        ),
+        "total_amount": _build_ocr_field(
+            total_amount if total_amount > 0 else None,
+            confidence=0.88 if total_amount > 0 else 0.0,
+            source="local",
+            text_span="total_amount" if total_amount > 0 else None,
+            page=1,
+        ),
+        "vat_amount": _build_ocr_field(
+            vat_amount if vat_amount >= 0 else None,
+            confidence=0.8 if vat_amount > 0 else 0.55 if vat_amount == 0 else 0.0,
+            source="local",
+            text_span="vat_amount" if vat_amount > 0 else None,
+            page=1,
+        ),
+        "line_items_count": _build_ocr_field(
+            line_items_count if line_items_count > 0 else None,
+            confidence=0.75 if line_items_count > 0 else 0.0,
+            source="local",
+            text_span="line_items" if line_items_count > 0 else None,
+            page=1,
+        ),
+        "doc_type": _build_ocr_field(
+            doc_type,
+            confidence=0.86 if doc_type in {"invoice", "non_invoice"} else 0.7,
+            source="local",
+            text_span=Path(filename).stem,
+            page=1,
+        ),
+    }
+    return fields
+
+
+def _average_field_confidence(ocr_fields: dict[str, dict[str, Any]]) -> float:
+    confidences = [
+        _safe_float(value.get("confidence"))
+        for value in ocr_fields.values()
+        if isinstance(value, dict) and value.get("value") not in {None, "", "undefined"}
+    ]
+    if not confidences:
+        return 0.0
+    return round(sum(confidences) / len(confidences), 3)
+
+
+def _cloud_rollout_enabled(file_hash: str, rollout_percent: int) -> bool:
+    pct = max(0, min(int(rollout_percent), 100))
+    if pct <= 0:
+        return False
+    if pct >= 100:
+        return True
+    if not file_hash:
+        return False
+    bucket = int(file_hash[:8], 16) % 100
+    return bucket < pct
+
+
+def _should_use_cloud_fallback(
+    *,
+    local_confidence: float,
+    total_amount: float,
+    line_items_count: int,
+) -> bool:
+    if local_confidence < 0.75:
+        return True
+    if total_amount <= 0:
+        return True
+    return line_items_count <= 0
+
+
+def _build_cloud_image_payload(blob: bytes, pipeline: str) -> tuple[str, str] | None:
+    if not blob:
+        return None
+    if pipeline == "image_ocr":
+        mime = "image/png"
+        return mime, base64.b64encode(blob).decode("utf-8")
+    if pipeline == "pdf_ocr":
+        try:
+            from pdf2image import convert_from_bytes
+        except Exception:
+            return None
+        try:
+            images = convert_from_bytes(blob, first_page=1, last_page=1, dpi=200, fmt="png")
+            if not images:
+                return None
+            with io.BytesIO() as out:
+                images[0].save(out, format="PNG")
+                return "image/png", base64.b64encode(out.getvalue()).decode("utf-8")
+        except Exception:
+            return None
+    return None
+
+
+def _parse_cloud_json_content(content: Any) -> dict[str, Any] | None:
+    if isinstance(content, list):
+        texts = []
+        for item in content:
+            if isinstance(item, dict) and item.get("type") == "text":
+                texts.append(str(item.get("text") or ""))
+        content = "\n".join(texts).strip()
+    if not isinstance(content, str):
+        return None
+    text = content.strip()
+    if text.startswith("```"):
+        text = _re.sub(r"^```(?:json)?", "", text).strip()
+        text = _re.sub(r"```$", "", text).strip()
+    try:
+        parsed = json.loads(text)
+        return parsed if isinstance(parsed, dict) else None
+    except Exception:
+        return None
+
+
+def _call_cloud_ocr_fields(
+    *,
+    settings: Settings,
+    filename: str,
+    pipeline: str,
+    blob: bytes,
+    text_preview: str,
+) -> dict[str, Any] | None:
+    if not settings.ocr_cloud_api_key:
+        return None
+
+    prompt = (
+        "Extract invoice fields from this document. "
+        "Return strict JSON only with keys: "
+        "partner_name, partner_tax_code, invoice_no, invoice_date, total_amount, vat_amount, line_items_count, doc_type, confidence."
+    )
+    contents: list[dict[str, Any]] = [{"type": "text", "text": f"{prompt}\nFilename: {filename}\nOCR text:\n{text_preview[:6000]}"}]
+    image_payload = _build_cloud_image_payload(blob, pipeline)
+    if image_payload:
+        mime, b64 = image_payload
+        contents.append({"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}})
+
+    payload = {
+        "model": settings.ocr_cloud_model,
+        "temperature": 0,
+        "response_format": {"type": "json_object"},
+        "messages": [{"role": "user", "content": contents}],
+    }
+    headers = {
+        "Authorization": f"Bearer {settings.ocr_cloud_api_key}",
+        "Content-Type": "application/json",
+    }
+    base_url = (settings.ocr_cloud_base_url or "https://api.openai.com").rstrip("/")
+
+    try:
+        with httpx.Client(timeout=settings.ocr_cloud_timeout_seconds) as client:
+            response = client.post(f"{base_url}/v1/chat/completions", headers=headers, json=payload)
+            response.raise_for_status()
+        body = response.json()
+        choices = body.get("choices") or []
+        message = choices[0].get("message") if choices else None
+        parsed = _parse_cloud_json_content(message.get("content") if isinstance(message, dict) else None)
+        return parsed if isinstance(parsed, dict) else None
+    except Exception as exc:
+        log.warning("ocr_cloud_fallback_failed", error=str(exc))
+        return None
+
+
+def _coerce_cloud_amount(value: Any) -> float:
+    if value is None:
+        return 0.0
+    if isinstance(value, (int, float)):
+        return _safe_float(value)
+    return _parse_amount_token(str(value))
+
+
+def _merge_cloud_ocr_fields(
+    local_fields: dict[str, dict[str, Any]],
+    cloud_data: dict[str, Any],
+) -> tuple[dict[str, dict[str, Any]], list[str]]:
+    merged = {k: dict(v) for k, v in local_fields.items()}
+    changed: list[str] = []
+    cloud_conf = _safe_float(cloud_data.get("confidence"), 0.8)
+    for field_name in _OCR_SUPPORTED_EDIT_FIELDS:
+        if field_name not in merged:
+            continue
+        cloud_value = cloud_data.get(field_name)
+        if field_name in {"total_amount", "vat_amount"}:
+            amount = _coerce_cloud_amount(cloud_value)
+            cloud_value = amount if amount > 0 or field_name == "vat_amount" else None
+        elif field_name == "line_items_count":
+            try:
+                cloud_value = int(cloud_value) if cloud_value is not None else None
+            except Exception:
+                cloud_value = None
+
+        local_field = merged[field_name]
+        local_conf = _safe_float(local_field.get("confidence"), 0.0)
+        if cloud_value in {None, "", "undefined"}:
+            continue
+        # Prefer cloud if local is empty/low confidence.
+        if local_field.get("value") in {None, "", "undefined"} or local_conf < 0.8:
+            merged[field_name] = _build_ocr_field(
+                cloud_value,
+                confidence=max(cloud_conf, 0.82),
+                source="cloud",
+                text_span=field_name,
+                page=1,
+            )
+            changed.append(field_name)
+    return merged, changed
+
+
 def _extract_upload_text_preview(blob: bytes, pipeline: str) -> str:
+    def _preprocess_for_ocr(image: Any) -> Any:
+        from PIL import ImageFilter, ImageOps
+
+        gray = image.convert("L")
+        gray = ImageOps.autocontrast(gray)
+        gray = gray.filter(ImageFilter.MedianFilter(size=3))
+        w, h = gray.size
+        if max(w, h) < 1400:
+            ratio = 1400.0 / max(float(w), 1.0)
+            gray = gray.resize((max(1, int(w * ratio)), max(1, int(h * ratio))))
+        return gray
+
     if not blob:
         return ""
+    settings = get_settings()
+    ocr_lang = (settings.ocr_local_lang or "eng+vie").strip() or "eng+vie"
     # XML path: strict UTF-8 decode handled above, reuse it here.
     if pipeline == "xml_parse":
         try:
@@ -1044,7 +1489,8 @@ def _extract_upload_text_preview(blob: bytes, pipeline: str) -> str:
 
                 ocr_pages: list[str] = []
                 for image in convert_from_bytes(blob, first_page=1, last_page=2, dpi=220, fmt="png"):
-                    txt = (pytesseract.image_to_string(image, lang="eng+vie", timeout=20) or "").strip()
+                    pre = _preprocess_for_ocr(image)
+                    txt = (pytesseract.image_to_string(pre, lang=ocr_lang, timeout=20) or "").strip()
                     if txt:
                         ocr_pages.append(txt)
                 if ocr_pages:
@@ -1060,7 +1506,8 @@ def _extract_upload_text_preview(blob: bytes, pipeline: str) -> str:
             from PIL import Image
 
             with Image.open(io.BytesIO(blob)) as image:
-                return pytesseract.image_to_string(image, lang="eng+vie", timeout=8)
+                pre = _preprocess_for_ocr(image)
+                return pytesseract.image_to_string(pre, lang=ocr_lang, timeout=8)
         except Exception:
             return ""
     return ""
@@ -1160,7 +1607,15 @@ def _extract_tabular_amount(text: str) -> float:
     return max(candidates) if candidates else 0.0
 
 
-def _evaluate_ocr_quality(filename: str, blob: bytes, pipeline: str) -> dict[str, Any]:
+def _evaluate_ocr_quality(
+    filename: str,
+    blob: bytes,
+    pipeline: str,
+    *,
+    settings: Settings,
+    file_hash: str,
+) -> dict[str, Any]:
+    t0 = time.perf_counter()
     text_preview = _extract_upload_text_preview(blob, pipeline)
     raw_text = f"{filename} {text_preview}"
     normalized_text = _normalize_match_text(raw_text)
@@ -1178,22 +1633,80 @@ def _evaluate_ocr_quality(filename: str, blob: bytes, pipeline: str) -> dict[str
         tabular_amount = _extract_tabular_amount(text_preview)
         if tabular_amount > 0:
             total_amount = tabular_amount
+    vat_amount = _extract_vat_amount(text_preview)
 
-    confidence = 0.35
-    if invoice_like:
-        confidence += 0.35
-    if total_amount > 0:
-        confidence += 0.15
-    if line_items_count >= 1:
-        confidence += 0.10
-    if len(text_preview.strip()) >= 60:
-        confidence += 0.05
+    ocr_fields = _build_local_ocr_fields(
+        filename,
+        text_preview,
+        invoice_like=invoice_like,
+        non_invoice=non_invoice,
+        total_amount=total_amount,
+        vat_amount=vat_amount,
+        line_items_count=line_items_count,
+    )
+    local_confidence = _average_field_confidence(ocr_fields)
+    confidence = local_confidence
     if pipeline == "xml_parse":
         confidence = max(confidence, 0.9)
-    confidence = round(max(0.0, min(confidence, 0.99)), 3)
+    ocr_engine = "local"
+    ocr_engine_trace: dict[str, Any] = {
+        "fallback_used": False,
+        "fallback_reason": None,
+        "cloud_fields_changed": [],
+        "latency_ms": {"local": int((time.perf_counter() - t0) * 1000), "cloud": 0},
+    }
+
+    should_fallback = _should_use_cloud_fallback(
+        local_confidence=local_confidence,
+        total_amount=total_amount,
+        line_items_count=line_items_count,
+    )
+    cloud_start = time.perf_counter()
+    if (
+        should_fallback
+        and settings.ocr_cloud_fallback_enabled
+        and _cloud_rollout_enabled(file_hash=file_hash, rollout_percent=settings.ocr_cloud_rollout_percent)
+    ):
+        cloud_data = _call_cloud_ocr_fields(
+            settings=settings,
+            filename=filename,
+            pipeline=pipeline,
+            blob=blob,
+            text_preview=text_preview,
+        )
+        ocr_engine_trace["fallback_used"] = True
+        ocr_engine_trace["latency_ms"]["cloud"] = int((time.perf_counter() - cloud_start) * 1000)
+        if isinstance(cloud_data, dict) and cloud_data:
+            merged_fields, changed = _merge_cloud_ocr_fields(ocr_fields, cloud_data)
+            ocr_fields = merged_fields
+            ocr_engine_trace["cloud_fields_changed"] = changed
+            if changed:
+                ocr_engine = "hybrid"
+        else:
+            ocr_engine_trace["fallback_reason"] = "cloud_unavailable_or_invalid"
+
+    total_amount = _safe_float(ocr_fields.get("total_amount", {}).get("value"), total_amount)
+    vat_amount = _safe_float(ocr_fields.get("vat_amount", {}).get("value"), vat_amount)
+    try:
+        line_items_count = int(ocr_fields.get("line_items_count", {}).get("value") or line_items_count or 0)
+    except Exception:
+        line_items_count = max(line_items_count, 0)
+    doc_type = _normalize_doc_type(
+        str(ocr_fields.get("doc_type", {}).get("value") or ""),
+        invoice_like=invoice_like,
+        non_invoice=non_invoice,
+    )
+    ocr_fields["doc_type"] = _build_ocr_field(
+        doc_type,
+        confidence=max(_safe_float(ocr_fields.get("doc_type", {}).get("confidence"), 0.0), 0.7),
+        source=str(ocr_fields.get("doc_type", {}).get("source") or "local"),
+        text_span="doc_type",
+        page=1,
+    )
+    confidence = round(max(confidence, _average_field_confidence(ocr_fields)), 3)
 
     reasons: list[str] = []
-    if non_invoice:
+    if doc_type == "non_invoice" or non_invoice:
         reasons.append("non_invoice_pattern")
     elif not invoice_like:
         reasons.append("invoice_signal_missing")
@@ -1207,22 +1720,31 @@ def _evaluate_ocr_quality(filename: str, blob: bytes, pipeline: str) -> dict[str
     status = "valid"
     if "non_invoice_pattern" in reasons:
         status = "non_invoice"
-    elif (
-        "invoice_signal_missing" in reasons
-        or "zero_amount" in reasons
-        or "no_line_items" in reasons
-    ):
-        status = "quarantined"
-    elif "low_confidence" in reasons:
-        status = "low_quality"
+    elif any(reason in _OCR_REVIEW_REASONS for reason in reasons):
+        status = "review"
+
+    field_confidence = {
+        key: round(_safe_float(value.get("confidence"), 0.0), 3)
+        for key, value in ocr_fields.items()
+        if isinstance(value, dict)
+    }
+    ocr_engine_trace["local_confidence"] = local_confidence
+    ocr_engine_trace["final_confidence"] = confidence
+    ocr_engine_trace["fallback_triggered"] = should_fallback
 
     return {
         "status": status,
         "total_amount": total_amount,
+        "vat_amount": vat_amount,
         "line_items_count": line_items_count,
         "confidence": confidence,
         "reasons": reasons,
         "invoice_like": invoice_like,
+        "ocr_fields": ocr_fields,
+        "field_confidence": field_confidence,
+        "ocr_engine": ocr_engine,
+        "ocr_engine_trace": ocr_engine_trace,
+        "doc_type": doc_type,
     }
 
 
@@ -1245,19 +1767,20 @@ def _canonical_ocr_status(amount: float, raw_status: str | None, reasons: list[s
 
     if "non_invoice_pattern" in reason_set or status == "non_invoice":
         return "non_invoice"
-    if "invoice_signal_missing" in reason_set:
-        return "quarantined"
-    if "test_fixture" in reason_set:
-        return "quarantined"
-    if "zero_amount" in reason_set or "no_line_items" in reason_set:
-        return "quarantined"
-    if "low_confidence" in reason_set or status == "low_quality":
-        return "low_quality"
+    if (
+        "invoice_signal_missing" in reason_set
+        or "test_fixture" in reason_set
+        or "zero_amount" in reason_set
+        or "no_line_items" in reason_set
+        or "low_confidence" in reason_set
+        or status in {"review", "quarantined", "low_quality"}
+    ):
+        return "review"
     if amount > 0:
         return "valid"
     if status in {"uploaded", "pending", "queued"}:
         return "pending"
-    return status or "quarantined"
+    return status or "review"
 
 
 def _looks_like_test_fixture(text: str) -> bool:
@@ -1327,6 +1850,7 @@ async def post_attachment(
     source_tag: str | None = Form(default=None),
     source: str | None = Form(default=None),
     session: Session = Depends(get_session),
+    settings: Settings = Depends(get_settings),
 ) -> dict[str, Any]:
     """Create attachment from multipart upload, with legacy JSON fallback.
 
@@ -1372,6 +1896,7 @@ async def post_attachment(
             "has_file": bool(out.file_uri),
         }
 
+    tag = (source_tag or source or "ocr_upload").strip() or "ocr_upload"
     safe_name = _safe_filename(file.filename or "")
     if not safe_name:
         raise HTTPException(status_code=400, detail="Tên tệp không hợp lệ")
@@ -1388,6 +1913,52 @@ async def post_attachment(
             raise HTTPException(status_code=400, detail="Tệp XML phải mã hóa UTF-8") from exc
 
     file_hash = sha256(blob).hexdigest()
+    # Idempotent upload by file hash + source tag.
+    existing_rows = (
+        session.execute(
+            select(AcctVoucher)
+            .where(AcctVoucher.source == tag)
+            .order_by(AcctVoucher.synced_at.desc())
+            .limit(3000)
+        )
+        .scalars()
+        .all()
+    )
+    for row in existing_rows:
+        payload = row.raw_payload if isinstance(row.raw_payload, dict) else {}
+        if str(payload.get("file_hash") or "") != file_hash:
+            continue
+        attachment_id = str(payload.get("attachment_id") or "")
+        return {
+            "id": attachment_id or None,
+            "attachment_id": attachment_id or None,
+            "voucher_id": row.id,
+            "filename": payload.get("original_filename") or safe_name,
+            "source_tag": tag,
+            "status": payload.get("status") or "review",
+            "quality_reasons": payload.get("quality_reasons") or [],
+            "ocr_confidence": payload.get("ocr_confidence"),
+            "line_items_count": payload.get("line_items_count"),
+            "created_at": row.synced_at,
+            "pipeline": payload.get("pipeline") or pipeline,
+            "content_type": payload.get("content_type") or normalized_type,
+            "preview_url": (
+                f"/agent/v1/attachments/{attachment_id}/content?inline=1"
+                if attachment_id
+                else None
+            ),
+            "file_url": (
+                f"/agent/v1/attachments/{attachment_id}/content"
+                if attachment_id
+                else None
+            ),
+            "ocr_fields": payload.get("ocr_fields") or {},
+            "field_confidence": payload.get("field_confidence") or {},
+            "ocr_engine": payload.get("ocr_engine") or "local",
+            "ocr_engine_trace": payload.get("ocr_engine_trace") or {},
+            "reused": True,
+        }
+
     _ATTACH_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
     suffix = Path(safe_name).suffix.lower() or ".bin"
     stored_path = _ATTACH_UPLOAD_DIR / f"{file_hash}{suffix}"
@@ -1398,10 +1969,10 @@ async def post_attachment(
     voucher_id = new_uuid()
     run_id = new_uuid()
     task_id = new_uuid()
-    tag = (source_tag or source or "ocr_upload").strip() or "ocr_upload"
     run_cursor_in = {
         "source": "attachment_upload",
         "filename": safe_name,
+        "file_hash": file_hash,
         "source_tag": tag,
         "pipeline": pipeline,
         "content_type": normalized_type,
@@ -1413,7 +1984,7 @@ async def post_attachment(
         trigger_type="event",
         requested_by="ocr_upload",
         status="running",
-        idempotency_key=f"attachment-upload:{file_hash}:{run_id}",
+        idempotency_key=f"attachment-upload:{file_hash}:{tag}",
         cursor_in=run_cursor_in,
         cursor_out=None,
         started_at=now,
@@ -1455,17 +2026,37 @@ async def post_attachment(
     )
     session.add(attachment)
 
-    quality = _evaluate_ocr_quality(safe_name, blob, pipeline)
+    quality = _evaluate_ocr_quality(
+        safe_name,
+        blob,
+        pipeline,
+        settings=settings,
+        file_hash=file_hash,
+    )
+    ocr_fields = quality.get("ocr_fields") if isinstance(quality.get("ocr_fields"), dict) else {}
+    partner_name = ocr_fields.get("partner_name", {}).get("value")
+    partner_tax_code = ocr_fields.get("partner_tax_code", {}).get("value")
+    invoice_no = ocr_fields.get("invoice_no", {}).get("value")
+    invoice_date = ocr_fields.get("invoice_date", {}).get("value")
+    doc_type = str(quality.get("doc_type") or ocr_fields.get("doc_type", {}).get("value") or "other")
+
     payload = {
         "attachment_id": attachment.id,
         "original_filename": safe_name,
+        "file_hash": file_hash,
         "source_tag": tag,
         "status": quality["status"],
         "quality_status": quality["status"],
         "quality_reasons": quality["reasons"],
         "ocr_confidence": quality["confidence"],
+        "field_confidence": quality.get("field_confidence") or {},
+        "ocr_fields": ocr_fields,
+        "ocr_engine": quality.get("ocr_engine") or "local",
+        "ocr_engine_trace": quality.get("ocr_engine_trace") or {},
         "line_items_count": quality["line_items_count"],
         "total_amount": quality["total_amount"],
+        "vat_amount": quality.get("vat_amount", 0),
+        "doc_type": doc_type,
         "content_type": normalized_type,
         "size_bytes": len(blob),
         "pipeline": pipeline,
@@ -1476,18 +2067,18 @@ async def post_attachment(
     voucher = AcctVoucher(
         id=voucher_id,
         erp_voucher_id=f"upload-{voucher_id[:8]}",
-        voucher_no=Path(safe_name).stem[:64] or f"UPLOAD-{voucher_id[:8]}",
-        voucher_type="other",
-        date=now.date().isoformat(),
+        voucher_no=str(invoice_no or Path(safe_name).stem[:64] or f"UPLOAD-{voucher_id[:8]}"),
+        voucher_type="buy_invoice" if doc_type == "invoice" else "other",
+        date=str(invoice_date or now.date().isoformat()),
         amount=float(quality["total_amount"]) if _safe_float(quality["total_amount"]) > 0 else 0.0,
         currency="VND",
-        partner_name=None,
-        partner_tax_code=None,
+        partner_name=str(partner_name or "")[:256] or None,
+        partner_tax_code=str(partner_tax_code or "")[:32] or None,
         description=f"Tệp tải lên: {safe_name}",
         has_attachment=True,
         raw_payload=payload,
         source=tag,
-        type_hint="invoice_vat" if quality["status"] == "valid" else "other",
+        type_hint="invoice_vat" if doc_type == "invoice" else "other",
         run_id=run_id,
     )
     session.add(voucher)
@@ -1518,6 +2109,7 @@ async def post_attachment(
         "status": payload["status"],
         "quality_reasons": payload["quality_reasons"],
         "ocr_confidence": payload["ocr_confidence"],
+        "ocr_engine": payload.get("ocr_engine"),
     }
     task.status = "success"
     task.output_ref = run_out
@@ -1551,7 +2143,56 @@ async def post_attachment(
         "created_at": now,
         "pipeline": pipeline,
         "content_type": normalized_type,
+        "preview_url": f"/agent/v1/attachments/{attachment.id}/content?inline=1",
+        "file_url": f"/agent/v1/attachments/{attachment.id}/content",
+        "ocr_fields": payload.get("ocr_fields") or {},
+        "field_confidence": payload.get("field_confidence") or {},
+        "ocr_engine": payload.get("ocr_engine") or "local",
+        "ocr_engine_trace": payload.get("ocr_engine_trace") or {},
+        "reused": False,
     }
+
+
+@app.get("/agent/v1/attachments/{attachment_id}/content", dependencies=[Depends(require_api_key)])
+def get_attachment_content(
+    attachment_id: str,
+    inline: int = 0,
+    session: Session = Depends(get_session),
+) -> FileResponse:
+    attachment = session.get(AgentAttachment, attachment_id)
+    if attachment is None:
+        raise HTTPException(status_code=404, detail="Không tìm thấy tệp đính kèm")
+    uri = str(attachment.file_uri or "").strip()
+    if not uri:
+        raise HTTPException(status_code=404, detail="Không có đường dẫn tệp")
+    if uri.startswith("s3://"):
+        raise HTTPException(
+            status_code=501,
+            detail="Chưa hỗ trợ stream trực tiếp tệp S3 trong bản này",
+        )
+
+    path = Path(uri)
+    try:
+        resolved = path.resolve(strict=True)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Tệp gốc không tồn tại") from exc
+
+    if not resolved.is_absolute():
+        raise HTTPException(status_code=403, detail="Đường dẫn tệp không hợp lệ")
+    if not resolved.is_file():
+        raise HTTPException(status_code=404, detail="Tệp không hợp lệ")
+
+    filename = resolved.name
+    voucher = session.get(AcctVoucher, attachment.erp_object_id)
+    if voucher and isinstance(voucher.raw_payload, dict):
+        original_name = str(voucher.raw_payload.get("original_filename") or "").strip()
+        if original_name:
+            filename = original_name
+
+    media_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
+    disposition = "inline" if int(inline or 0) == 1 else "attachment"
+    headers = {"Content-Disposition": f"{disposition}; filename*=UTF-8''{quote(filename)}"}
+    return FileResponse(path=str(resolved), media_type=media_type, headers=headers)
 
 
 @app.post("/agent/v1/exports", dependencies=[Depends(require_api_key)])
@@ -3002,11 +3643,12 @@ def list_vouchers(
         source_tag = payload.get("source_tag") or getattr(r, "source", None)
         raw_status = str(payload.get("status", payload.get("quality_status", "processed")) or "").strip().lower()
         amount = _safe_float(r.amount)
+        attachment_id = str(payload.get("attachment_id") or "").strip()
         quality_reasons = _normalize_quality_reasons(payload.get("quality_reasons"))
         if _voucher_has_test_fixture(r, payload=payload, source_tag=str(source_tag or "")):
             quality_reasons = sorted(set([*quality_reasons, "test_fixture"]))
         canonical_status = raw_status or "processed"
-        if str(source_tag or "").strip().lower() == "ocr_upload":
+        if str(source_tag or "").strip().lower().startswith("ocr_upload"):
             canonical_status = _canonical_ocr_status(amount, raw_status, quality_reasons)
             if amount <= 0 and "zero_amount" not in quality_reasons:
                 quality_reasons.append("zero_amount")
@@ -3019,6 +3661,15 @@ def list_vouchers(
 
         vat_amount = payload.get("vat_amount", 0)
         line_items = payload.get("line_items", [])
+        ocr_fields = payload.get("ocr_fields") if isinstance(payload.get("ocr_fields"), dict) else {}
+        field_confidence = payload.get("field_confidence") if isinstance(payload.get("field_confidence"), dict) else {}
+        line_items_count = (
+            len(line_items) if isinstance(line_items, list)
+            else payload.get("line_items_count")
+        )
+        if (line_items_count in {None, 0, "0"}) and isinstance(ocr_fields.get("line_items_count"), dict):
+            line_items_count = ocr_fields.get("line_items_count", {}).get("value")
+
         return {
             "id": r.id,
             "voucher_id": r.id,  # backward-compatible alias used in legacy UI/tests
@@ -3034,16 +3685,27 @@ def list_vouchers(
             "description": r.description,
             "source": getattr(r, "source", None),
             "source_tag": source_tag,
-            "source_ref": payload.get("attachment_id"),
+            "source_ref": attachment_id or None,
             "original_filename": payload.get("original_filename"),
             "confidence": payload.get("ocr_confidence"),
             "status": canonical_status,
             "quality_reasons": quality_reasons,
             "is_operational": is_operational,
-            "line_items_count": len(line_items) if isinstance(line_items, list) else payload.get("line_items_count"),
+            "line_items_count": line_items_count,
             "type_hint": getattr(r, "type_hint", None),
             "classification_tag": getattr(r, "classification_tag", None),
             "has_attachment": r.has_attachment,
+            "attachment_id": attachment_id or None,
+            "file_url": f"/agent/v1/attachments/{attachment_id}/content" if attachment_id else None,
+            "preview_url": (
+                f"/agent/v1/attachments/{attachment_id}/content?inline=1"
+                if attachment_id
+                else None
+            ),
+            "ocr_fields": ocr_fields,
+            "field_confidence": field_confidence,
+            "ocr_engine": payload.get("ocr_engine"),
+            "ocr_engine_trace": payload.get("ocr_engine_trace"),
             "synced_at": r.synced_at,
             "run_id": r.run_id,
         }
@@ -3085,6 +3747,332 @@ def list_vouchers(
         "total": int(total),
         "limit": page_limit,
         "offset": page_offset,
+    }
+
+
+def _coerce_ocr_edit_field(field_name: str, value: Any) -> Any:
+    if field_name in {"total_amount", "vat_amount"}:
+        amount = _safe_float(value, default=-1.0)
+        if amount < 0:
+            raise HTTPException(status_code=422, detail=f"{field_name} phải là số >= 0")
+        return round(amount, 2)
+    if field_name == "line_items_count":
+        try:
+            count = int(value)
+        except Exception as exc:
+            raise HTTPException(status_code=422, detail="line_items_count phải là số nguyên >= 0") from exc
+        if count < 0:
+            raise HTTPException(status_code=422, detail="line_items_count phải >= 0")
+        return count
+    if field_name == "invoice_date":
+        text = str(value or "").strip()
+        if not text:
+            return None
+        if not _re.fullmatch(r"\d{4}-(0[1-9]|1[0-2])-[0-3]\d", text):
+            raise HTTPException(status_code=422, detail="invoice_date phải theo định dạng YYYY-MM-DD")
+        return text
+    if field_name == "doc_type":
+        return _normalize_doc_type(str(value or "").strip().lower(), invoice_like=False, non_invoice=False)
+    text = str(value or "").strip()
+    return text or None
+
+
+@app.patch("/agent/v1/acct/vouchers/{voucher_id}/fields", dependencies=[Depends(require_api_key)])
+def patch_ocr_voucher_fields(
+    voucher_id: str,
+    body: dict[str, Any],
+    session: Session = Depends(get_session),
+) -> dict[str, Any]:
+    voucher = session.get(AcctVoucher, voucher_id)
+    if voucher is None:
+        raise HTTPException(status_code=404, detail="Không tìm thấy chứng từ")
+
+    updates = body.get("fields")
+    if not isinstance(updates, dict) or not updates:
+        raise HTTPException(status_code=400, detail="Body phải có fields dạng object")
+
+    reason = str(body.get("reason") or "").strip() or None
+    corrected_by = str(body.get("corrected_by") or "web-user").strip() or "web-user"
+    run_id = str(body.get("run_id") or voucher.run_id or "").strip() or None
+
+    payload = dict(voucher.raw_payload or {})
+    ocr_fields = payload.get("ocr_fields") if isinstance(payload.get("ocr_fields"), dict) else {}
+    field_confidence = payload.get("field_confidence") if isinstance(payload.get("field_confidence"), dict) else {}
+    quality_reasons = _normalize_quality_reasons(payload.get("quality_reasons"))
+    changed_fields: list[str] = []
+
+    for field_name, raw_new_value in updates.items():
+        if field_name not in _OCR_SUPPORTED_EDIT_FIELDS:
+            raise HTTPException(status_code=422, detail=f"Field không hỗ trợ chỉnh sửa: {field_name}")
+        new_value = _coerce_ocr_edit_field(field_name, raw_new_value)
+
+        if field_name == "partner_name":
+            old_value = voucher.partner_name
+            if old_value == new_value:
+                continue
+            voucher.partner_name = str(new_value)[:256] if new_value else None
+        elif field_name == "partner_tax_code":
+            old_value = voucher.partner_tax_code
+            if old_value == new_value:
+                continue
+            voucher.partner_tax_code = str(new_value)[:32] if new_value else None
+        elif field_name == "invoice_no":
+            old_value = voucher.voucher_no
+            if old_value == new_value:
+                continue
+            voucher.voucher_no = str(new_value)[:64] if new_value else voucher.voucher_no
+        elif field_name == "invoice_date":
+            old_value = voucher.date
+            if old_value == new_value:
+                continue
+            voucher.date = str(new_value or voucher.date)
+        elif field_name == "total_amount":
+            old_value = _safe_float(voucher.amount)
+            if abs(old_value - _safe_float(new_value)) < 0.0001:
+                continue
+            voucher.amount = _safe_float(new_value)
+            payload["total_amount"] = voucher.amount
+        elif field_name == "vat_amount":
+            old_value = _safe_float(payload.get("vat_amount"))
+            if abs(old_value - _safe_float(new_value)) < 0.0001:
+                continue
+            payload["vat_amount"] = _safe_float(new_value)
+        elif field_name == "line_items_count":
+            old_value = int(payload.get("line_items_count") or 0)
+            if old_value == int(new_value):
+                continue
+            payload["line_items_count"] = int(new_value)
+            payload["line_items"] = [{"index": idx + 1} for idx in range(int(new_value))]
+        elif field_name == "doc_type":
+            old_value = str(payload.get("doc_type") or payload.get("ocr_fields", {}).get("doc_type", {}).get("value") or "")
+            if old_value == str(new_value):
+                continue
+            payload["doc_type"] = str(new_value)
+            voucher.voucher_type = "buy_invoice" if str(new_value) == "invoice" else "other"
+            voucher.type_hint = "invoice_vat" if str(new_value) == "invoice" else "other"
+        else:
+            old_value = payload.get(field_name)
+            if old_value == new_value:
+                continue
+            payload[field_name] = new_value
+
+        changed_fields.append(field_name)
+        ocr_fields[field_name] = _build_ocr_field(
+            new_value,
+            confidence=1.0,
+            source="manual",
+            text_span=f"manual:{field_name}",
+            page=1,
+        )
+        field_confidence[field_name] = 1.0
+        session.add(
+            AcctVoucherCorrection(
+                id=new_uuid(),
+                voucher_id=voucher.id,
+                field_name=field_name,
+                old_value=old_value,
+                new_value=new_value,
+                reason=reason,
+                corrected_by=corrected_by,
+                run_id=run_id,
+            )
+        )
+
+    if not changed_fields:
+        return {"voucher_id": voucher.id, "updated": False, "changed_fields": []}
+
+    payload["ocr_fields"] = ocr_fields
+    payload["field_confidence"] = field_confidence
+    payload["ocr_confidence"] = max(
+        _safe_float(payload.get("ocr_confidence"), 0.0),
+        _average_field_confidence(ocr_fields),
+    )
+    payload["corrected_by"] = corrected_by
+    payload["corrected_at"] = utcnow().isoformat()
+
+    total_amount = _safe_float(voucher.amount)
+    line_items_count = int(payload.get("line_items_count") or 0)
+    doc_type = str(payload.get("doc_type") or ocr_fields.get("doc_type", {}).get("value") or "other")
+
+    quality_reasons = [reason for reason in quality_reasons if reason not in {"zero_amount", "no_line_items"}]
+    if total_amount <= 0:
+        quality_reasons.append("zero_amount")
+    if line_items_count <= 0:
+        quality_reasons.append("no_line_items")
+    if doc_type == "non_invoice":
+        if "non_invoice_pattern" not in quality_reasons:
+            quality_reasons.append("non_invoice_pattern")
+    else:
+        quality_reasons = [reason for reason in quality_reasons if reason != "non_invoice_pattern"]
+    quality_reasons = sorted(set(quality_reasons))
+
+    status = _canonical_ocr_status(total_amount, str(payload.get("status") or "review"), quality_reasons)
+    if doc_type == "non_invoice":
+        status = "non_invoice"
+    payload["status"] = status
+    payload["quality_status"] = status
+    payload["quality_reasons"] = quality_reasons
+
+    voucher.raw_payload = payload
+    voucher.source = voucher.source or "ocr_upload"
+    voucher.synced_at = utcnow()
+    if run_id:
+        voucher.run_id = run_id
+    session.commit()
+
+    return {
+        "voucher_id": voucher.id,
+        "updated": True,
+        "changed_fields": changed_fields,
+        "status": status,
+        "quality_reasons": quality_reasons,
+    }
+
+
+@app.post("/agent/v1/acct/vouchers/{voucher_id}/mark_valid", dependencies=[Depends(require_api_key)])
+def mark_ocr_voucher_valid(
+    voucher_id: str,
+    body: dict[str, Any] | None = None,
+    session: Session = Depends(get_session),
+) -> dict[str, Any]:
+    voucher = session.get(AcctVoucher, voucher_id)
+    if voucher is None:
+        raise HTTPException(status_code=404, detail="Không tìm thấy chứng từ")
+
+    payload = dict(voucher.raw_payload or {})
+    ocr_fields = payload.get("ocr_fields") if isinstance(payload.get("ocr_fields"), dict) else {}
+    total_amount = _safe_float(voucher.amount)
+    line_items_count = int(payload.get("line_items_count") or ocr_fields.get("line_items_count", {}).get("value") or 0)
+    doc_type = str(payload.get("doc_type") or ocr_fields.get("doc_type", {}).get("value") or "other")
+
+    if doc_type == "non_invoice":
+        raise HTTPException(status_code=409, detail="Chứng từ non_invoice không thể đánh dấu valid")
+    if total_amount <= 0:
+        raise HTTPException(status_code=409, detail="Tổng tiền phải > 0 để đánh dấu valid")
+    if line_items_count <= 0:
+        raise HTTPException(status_code=409, detail="line_items_count phải > 0 để đánh dấu valid")
+
+    old_status = str(payload.get("status") or "review")
+    quality_reasons = _normalize_quality_reasons(payload.get("quality_reasons"))
+    quality_reasons = [reason for reason in quality_reasons if reason in {"test_fixture"}]
+    payload["status"] = "valid"
+    payload["quality_status"] = "valid"
+    payload["quality_reasons"] = quality_reasons
+    payload["marked_valid_at"] = utcnow().isoformat()
+    payload["marked_valid_by"] = str((body or {}).get("marked_by") or "web-user").strip() or "web-user"
+    voucher.raw_payload = payload
+    voucher.synced_at = utcnow()
+    session.add(
+        AcctVoucherCorrection(
+            id=new_uuid(),
+            voucher_id=voucher.id,
+            field_name="status",
+            old_value=old_status,
+            new_value="valid",
+            reason=str((body or {}).get("reason") or "manual_mark_valid").strip(),
+            corrected_by=payload["marked_valid_by"],
+            run_id=voucher.run_id,
+        )
+    )
+    session.commit()
+    return {"voucher_id": voucher.id, "status": "valid", "quality_reasons": quality_reasons}
+
+
+@app.post("/agent/v1/acct/vouchers/{voucher_id}/reprocess", dependencies=[Depends(require_api_key)])
+def reprocess_voucher(
+    voucher_id: str,
+    body: dict[str, Any] | None = None,
+    session: Session = Depends(get_session),
+) -> dict[str, Any]:
+    voucher = session.get(AcctVoucher, voucher_id)
+    if voucher is None:
+        raise HTTPException(status_code=404, detail="Không tìm thấy chứng từ")
+
+    payload = dict(voucher.raw_payload or {})
+    attachment_id = str(payload.get("attachment_id") or (body or {}).get("attachment_id") or "").strip()
+    attachment = session.get(AgentAttachment, attachment_id) if attachment_id else None
+    if attachment is None:
+        raise HTTPException(status_code=422, detail="Không tìm thấy attachment để reprocess")
+    if not str(attachment.file_uri or "").strip():
+        raise HTTPException(status_code=422, detail="Attachment không có file_uri")
+    if not Path(str(attachment.file_uri)).exists():
+        raise HTTPException(status_code=422, detail="File gốc của attachment đã mất")
+
+    active_runs = (
+        session.execute(
+            select(AgentRun)
+            .where(
+                (AgentRun.run_type == "voucher_reprocess")
+                & (AgentRun.status.in_(["queued", "running"]))
+            )
+            .order_by(AgentRun.created_at.desc())
+            .limit(500)
+        )
+        .scalars()
+        .all()
+    )
+    for row in active_runs:
+        cursor = row.cursor_in if isinstance(row.cursor_in, dict) else {}
+        if str(cursor.get("voucher_id") or "").strip() == voucher_id:
+            raise HTTPException(status_code=409, detail="Đang có job reprocess chạy cho chứng từ này")
+
+    readiness = _executor_readiness()
+    if not readiness["dispatch_ready"]:
+        raise HTTPException(status_code=503, detail="Không có executor khả dụng để chạy reprocess")
+
+    run_payload = {
+        "voucher_id": voucher_id,
+        "attachment_id": attachment_id,
+        "reason": str((body or {}).get("reason") or "").strip() or None,
+    }
+    run = AgentRun(
+        run_id=new_uuid(),
+        run_type="voucher_reprocess",
+        trigger_type="manual",
+        requested_by=str((body or {}).get("requested_by") or "web-user").strip() or "web-user",
+        status="queued",
+        idempotency_key=make_idempotency_key("voucher_reprocess", voucher_id, new_uuid()),
+        cursor_in=run_payload,
+        cursor_out=None,
+        started_at=None,
+        finished_at=None,
+        stats=None,
+    )
+    session.add(run)
+    session.add(
+        AgentTask(
+            task_id=new_uuid(),
+            run_id=run.run_id,
+            task_name="reprocess_voucher",
+            status="queued",
+            input_ref=run_payload,
+            output_ref=None,
+            error=None,
+            started_at=None,
+            finished_at=None,
+        )
+    )
+    session.commit()
+    session.refresh(run)
+
+    try:
+        dispatch_info = _dispatch_run(
+            run.run_id,
+            run.run_type,
+            preferred_executor=str(readiness["preferred_executor"]),
+            allow_local_fallback=readiness["mode"] == "auto",
+        )
+    except Exception as exc:
+        _mark_run_dispatch_failed(session, run.run_id, str(exc))
+        raise HTTPException(status_code=503, detail=f"Không thể dispatch reprocess run: {exc}") from exc
+
+    return {
+        "run_id": run.run_id,
+        "run_type": run.run_type,
+        "status": run.status,
+        "voucher_id": voucher_id,
+        "attachment_id": attachment_id,
+        "executor": dispatch_info,
     }
 
 
@@ -3820,11 +4808,11 @@ def _voucher_quality_state(voucher: AcctVoucher) -> tuple[bool, list[str]]:
     source_tag = str(payload.get("source_tag") or voucher.source or "").strip().lower()
     source = str(voucher.source or "").strip().lower()
     amount = _safe_float(voucher.amount)
-    if source == "ocr_upload" and status in _INVALID_OCR_STATUSES:
+    if source.startswith("ocr_upload") and status in _INVALID_OCR_STATUSES:
         reasons.append(status)
     if amount <= 0:
         reasons.append("zero_amount")
-    if source == "ocr_upload":
+    if source.startswith("ocr_upload"):
         if _is_undefined_like(voucher.partner_name):
             reasons.append("missing_partner")
         if _is_undefined_like(voucher.date):

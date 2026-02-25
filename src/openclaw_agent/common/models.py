@@ -527,6 +527,23 @@ class AcctVoucher(Base):
     run_id: Mapped[str | None] = mapped_column(sa.String(36), nullable=True, index=True)
 
 
+class AcctVoucherCorrection(Base):
+    """Manual correction log for OCR voucher fields."""
+    __tablename__ = "acct_voucher_corrections"
+
+    id: Mapped[str] = mapped_column(sa.String(36), primary_key=True)
+    voucher_id: Mapped[str] = mapped_column(sa.String(36), nullable=False, index=True)
+    field_name: Mapped[str] = mapped_column(sa.String(64), nullable=False, index=True)
+    old_value: Mapped[dict | str | float | int | None] = mapped_column(sa.JSON, nullable=True)
+    new_value: Mapped[dict | str | float | int | None] = mapped_column(sa.JSON, nullable=True)
+    reason: Mapped[str | None] = mapped_column(sa.Text, nullable=True)
+    corrected_by: Mapped[str | None] = mapped_column(sa.String(64), nullable=True, index=True)
+    created_at: Mapped[sa.DateTime] = mapped_column(
+        sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False, index=True
+    )
+    run_id: Mapped[str | None] = mapped_column(sa.String(36), nullable=True, index=True)
+
+
 class AcctBankTransaction(Base):
     """Bank statement line – READ-ONLY mirror for reconciliation."""
     __tablename__ = "acct_bank_transactions"
