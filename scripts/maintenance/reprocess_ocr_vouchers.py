@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import gzip
 import json
 import mimetypes
 import os
@@ -86,13 +87,22 @@ def _trigger_reprocess(
         "requested_by": requested_by,
         "attachment_id": attachment_id,
     }
+    request_mode = "voucher_endpoint"
     if restore_file is not None:
         content_type = mimetypes.guess_type(str(restore_file))[0] or "application/octet-stream"
+        raw_bytes = restore_file.read_bytes()
+        raw_b64 = base64.b64encode(raw_bytes).decode("ascii")
+        zipped_bytes = gzip.compress(raw_bytes, compresslevel=6)
+        zipped_b64 = base64.b64encode(zipped_bytes).decode("ascii")
+        use_gzip_payload = len(zipped_b64) < len(raw_b64)
+        request_mode = "voucher_endpoint_restore_gzip" if use_gzip_payload else "voucher_endpoint_restore_b64"
         body.update(
             {
                 "filename": restore_file.name,
                 "content_type": content_type,
-                "file_content_b64": base64.b64encode(restore_file.read_bytes()).decode("ascii"),
+                ("file_content_gzip_b64" if use_gzip_payload else "file_content_b64"): (
+                    zipped_b64 if use_gzip_payload else raw_b64
+                ),
             }
         )
 
@@ -102,7 +112,7 @@ def _trigger_reprocess(
         json_body=body,
     )
     if status_code != 404:
-        return status_code, payload, "voucher_endpoint"
+        return status_code, payload, request_mode
 
     # Backward compatibility: older deployments may not expose the wrapper
     # endpoint yet but still support generic /runs with voucher_reprocess.

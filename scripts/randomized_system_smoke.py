@@ -12,7 +12,7 @@ Supports two modes:
   * Default (no flag) — pure mock/rule-based, no network calls.
 
 Usage:
-    cd /root/openclaw-agent-erpx
+    cd /root/accounting-agent-layer
 
     # mock mode (CI-safe, no network)
     .venv/bin/python scripts/randomized_system_smoke.py --iterations 200
@@ -157,8 +157,8 @@ def _setup_env(tmp_dir: Path, *, use_langgraph: bool = False, use_real_llm: bool
 
 def _bootstrap_services(tmp_dir: Path) -> tuple:
     """Start ERPX mock server in-thread, init DB, return (engine, port, erpx_server, erpx_thread)."""
-    from openclaw_agent.common.testutils import get_free_port, run_uvicorn_in_thread
-    from openclaw_agent.erpx_mock import main as erpx_main
+    from accounting_agent.common.testutils import get_free_port, run_uvicorn_in_thread
+    from accounting_agent.erpx_mock import main as erpx_main
 
     port = get_free_port()
     os.environ["ERPX_BASE_URL"] = f"http://127.0.0.1:{port}"
@@ -167,18 +167,18 @@ def _bootstrap_services(tmp_dir: Path) -> tuple:
     erpx_server, erpx_thread = run_uvicorn_in_thread(erpx_main.app, port=port)
 
     # Reload settings + worker tasks so they pick up fresh env
-    from openclaw_agent.common.settings import get_settings
+    from accounting_agent.common.settings import get_settings
     get_settings.cache_clear()
-    from openclaw_agent.agent_worker import tasks as worker_tasks
+    from accounting_agent.agent_worker import tasks as worker_tasks
     importlib.reload(worker_tasks)
 
-    from openclaw_agent.common.db import Base
-    from openclaw_agent.common.storage import S3ObjectRef
+    from accounting_agent.common.db import Base
+    from accounting_agent.common.storage import S3ObjectRef
 
     Base.metadata.create_all(worker_tasks.engine)
 
     # Reset LLM client singleton so it re-reads USE_REAL_LLM from env
-    from openclaw_agent.llm.client import reset_llm_client
+    from accounting_agent.llm.client import reset_llm_client
     reset_llm_client()
 
     # Stub S3 upload (no real MinIO)
@@ -269,9 +269,9 @@ def _exec_run_scenario(
     worker_tasks: Any,
 ) -> dict[str, Any]:
     """Execute a run_type scenario via direct worker dispatch."""
-    from openclaw_agent.common.db import db_session as db_ctx
-    from openclaw_agent.common.models import AgentRun
-    from openclaw_agent.common.utils import make_idempotency_key, new_uuid
+    from accounting_agent.common.db import db_session as db_ctx
+    from accounting_agent.common.models import AgentRun
+    from accounting_agent.common.utils import make_idempotency_key, new_uuid
 
     run_type = scenario["run_type"]
     period = scenario["period"]
@@ -483,9 +483,9 @@ def _check_leaks(text: str) -> list[str]:
 
 def _seed_vouchers(worker_tasks: Any, count: int = 20) -> None:
     """Seed AcctVoucher rows so classify/journal/soft_checks have data."""
-    from openclaw_agent.common.db import db_session as db_ctx
-    from openclaw_agent.common.models import AcctVoucher
-    from openclaw_agent.common.utils import new_uuid
+    from accounting_agent.common.db import db_session as db_ctx
+    from accounting_agent.common.models import AcctVoucher
+    from accounting_agent.common.utils import new_uuid
 
     types = ["sell_invoice", "buy_invoice", "receipt", "payment", "other"]
     with db_ctx(worker_tasks.engine) as s:
@@ -549,7 +549,7 @@ def main() -> None:
     # Create TestClient for API-level tests
     from fastapi.testclient import TestClient
 
-    from openclaw_agent.agent_service.main import app
+    from accounting_agent.agent_service.main import app
     client = TestClient(app, raise_server_exceptions=False)
     headers = {"X-API-Key": "test-key-smoke"}
 
@@ -640,7 +640,7 @@ def main() -> None:
             report_f.flush()
 
     # --- Teardown ---
-    from openclaw_agent.common.testutils import stop_uvicorn
+    from accounting_agent.common.testutils import stop_uvicorn
     stop_uvicorn(erpx_server, erpx_thread)
 
     # --- Summary ---

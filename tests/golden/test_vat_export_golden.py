@@ -4,10 +4,10 @@ from pathlib import Path
 
 import sqlalchemy as sa
 
-from openclaw_agent.common.db import Base, db_session
-from openclaw_agent.common.models import AgentExport, AgentRun
-from openclaw_agent.common.testutils import get_free_port, run_uvicorn_in_thread, stop_uvicorn
-from openclaw_agent.common.utils import make_idempotency_key, new_uuid
+from accounting_agent.common.db import Base, db_session
+from accounting_agent.common.models import AgentExport, AgentRun
+from accounting_agent.common.testutils import get_free_port, run_uvicorn_in_thread, stop_uvicorn
+from accounting_agent.common.utils import make_idempotency_key, new_uuid
 
 
 def test_vat_export_idempotent(tmp_path: Path, monkeypatch):
@@ -38,7 +38,7 @@ def test_vat_export_idempotent(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("CELERY_RESULT_BACKEND", "redis://localhost:6379/1")
 
     # Import ERPX mock app and reset connection, then start server
-    from openclaw_agent.erpx_mock import main as erpx_main
+    from accounting_agent.erpx_mock import main as erpx_main
 
     erpx_main.DbState.conn = None
     server, thread = run_uvicorn_in_thread(erpx_main.app, port=port)
@@ -47,12 +47,12 @@ def test_vat_export_idempotent(tmp_path: Path, monkeypatch):
         # Import tasks after env is set (it reads settings at import time)
         import importlib
 
-        from openclaw_agent.common.settings import get_settings
+        from accounting_agent.common.settings import get_settings
 
         get_settings.cache_clear()
-        from openclaw_agent.agent_worker import tasks as worker_tasks
+        from accounting_agent.agent_worker import tasks as worker_tasks
         importlib.reload(worker_tasks)
-        from openclaw_agent.common.storage import S3ObjectRef
+        from accounting_agent.common.storage import S3ObjectRef
 
         # Initialize agent DB schema
         Base.metadata.create_all(worker_tasks.engine)

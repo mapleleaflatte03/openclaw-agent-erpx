@@ -206,7 +206,7 @@ Result: No matches found ✅
 | `services/ui/public/js/tabs/forecast.js` | Removed `generateSampleData()`, added empty state toast | +5/-35 |
 | `services/ui/public/js/tabs/reports.js` | Removed `renderSamplePreview()`, real validation API | +12/-28 |
 | `services/ui/public/js/tabs/qna.js` | Fixed endpoints, added `lastQnaId` tracking | +8/-4 |
-| `src/openclaw_agent/agent_service/main.py` | Added reports/* and settings/* endpoints | +313/-4 |
+| `src/accounting_agent/agent_service/main.py` | Added reports/* and settings/* endpoints | +313/-4 |
 
 **Commit:** `0265922`  
 **Message:** `Phase 10 QA: Remove mock data, add missing API endpoints for reports/settings tabs`

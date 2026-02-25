@@ -1,4 +1,4 @@
-# QA Full Acceptance Report — OpenClaw ERP-X AI Kế toán
+# QA Full Acceptance Report — Accounting Agent Layer ERP AI Kế toán
 
 **Date:** 2026-02-12  
 **Commit:** `6606337` (HEAD → main)  

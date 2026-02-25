@@ -76,4 +76,4 @@ Thêm `st.session_state` tracking để UI biết action đang pending, tránh d
 
 ## Files changed
 
-- `src/openclaw_agent/ui/app.py` — Command Center tab: removed `disabled=` attributes, added `time.sleep(1)`, error display, session state tracking
+- `src/accounting_agent/ui/app.py` — Command Center tab: removed `disabled=` attributes, added `time.sleep(1)`, error display, session state tracking

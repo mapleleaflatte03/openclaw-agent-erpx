@@ -1,4 +1,4 @@
-# Benchmark Dataset — OpenClaw Agent ERPX
+# Benchmark Dataset — Accounting Agent Layer ERPX
 
 ## Purpose
 

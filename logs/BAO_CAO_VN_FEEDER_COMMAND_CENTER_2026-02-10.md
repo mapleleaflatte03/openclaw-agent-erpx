@@ -39,7 +39,7 @@ giao diện Streamlit để quản lý luồng dữ liệu hoá đơn VN.
 - **Status file:** Ghi ra `feeder_status.json` (running, total, avg_epm, sources)
 
 ### 2.3 TT133/2016/TT-BTC Regulation Index
-- **Module:** `src/openclaw_agent/regulations/tt133_index.py`
+- **Module:** `src/accounting_agent/regulations/tt133_index.py`
 - **55 tài khoản** (Loại 1–9) theo Thông tư 133
 - **13 bút toán mẫu** (mua hàng, bán hàng, lương, khấu hao, thuế...)
 - **Tra cứu:** `lookup_account()`, `search_accounts()`, `suggest_journal_entry()`
@@ -73,10 +73,10 @@ giao diện Streamlit để quản lý luồng dữ liệu hoá đơn VN.
 | `scripts/vn_data_catalog.py` | NEW | ~405 |
 | `scripts/vn_invoice_feeder.py` | NEW | ~310 |
 | `scripts/smoke_vn_feeder.py` | NEW | ~190 |
-| `src/openclaw_agent/regulations/__init__.py` | NEW | 1 |
-| `src/openclaw_agent/regulations/tt133_index.py` | NEW | ~280 |
-| `src/openclaw_agent/agent_service/main.py` | MODIFIED | +55 (2 endpoints) |
-| `src/openclaw_agent/ui/app.py` | MODIFIED | +95 (new tab) |
+| `src/accounting_agent/regulations/__init__.py` | NEW | 1 |
+| `src/accounting_agent/regulations/tt133_index.py` | NEW | ~280 |
+| `src/accounting_agent/agent_service/main.py` | MODIFIED | +55 (2 endpoints) |
+| `src/accounting_agent/ui/app.py` | MODIFIED | +95 (new tab) |
 | `openapi/agent-service.yaml` | AUTO | updated |
 
 ## 4. Gate Results

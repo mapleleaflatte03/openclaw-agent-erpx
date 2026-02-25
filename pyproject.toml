@@ -3,13 +3,13 @@ requires = ["setuptools>=69", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "openclaw-agent-erpx"
+name = "accounting-agent-layer"
 version = "0.1.0"
-description = "OpenClaw Agent for ERPX (auxiliary accounting workflows)"
+description = "Accounting Agent Layer for ERPX (auxiliary accounting workflows)"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "Apache-2.0" }
-authors = [{ name = "OpenClaw Agent Contributors" }]
+authors = [{ name = "Accounting Agent Layer Contributors" }]
 
 dependencies = [
   "fastapi>=0.110",
@@ -80,8 +80,8 @@ ignore = ["E501"]
 
 [tool.ruff.lint.per-file-ignores]
 # FastAPI dependency injection uses `Depends(...)` in default values by design.
-"src/openclaw_agent/agent_service/main.py" = ["B008"]
-"src/openclaw_agent/erpx_mock/main.py" = ["B008"]
+"src/accounting_agent/agent_service/main.py" = ["B008"]
+"src/accounting_agent/erpx_mock/main.py" = ["B008"]
 
 [tool.pytest.ini_options]
 addopts = "-q"

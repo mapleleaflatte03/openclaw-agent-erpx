@@ -21,9 +21,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from fastapi.testclient import TestClient
 
-from openclaw_agent.common.db import Base, db_session, make_engine
-from openclaw_agent.common.models import AgentContractCase, AgentProposal
-from openclaw_agent.common.utils import make_idempotency_key, new_uuid
+from accounting_agent.common.db import Base, db_session, make_engine
+from accounting_agent.common.models import AgentContractCase, AgentProposal
+from accounting_agent.common.utils import make_idempotency_key, new_uuid
 
 
 def main() -> int:
@@ -65,8 +65,8 @@ def main() -> int:
                 evidence_summary_hash=None, proposal_key=pk, run_id=None,
             ))
 
-        from openclaw_agent.agent_service import main as svc_main
-        from openclaw_agent.common.settings import get_settings
+        from accounting_agent.agent_service import main as svc_main
+        from accounting_agent.common.settings import get_settings
         get_settings.cache_clear()
         svc_main.ENGINE = None
         svc_main.ensure_buckets = lambda _: None  # type: ignore[attr-defined]

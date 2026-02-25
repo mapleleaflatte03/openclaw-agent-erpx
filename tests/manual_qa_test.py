@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Manual QA Test Script for OpenClaw Agent ERPX (Kế toán AI)
+Manual QA Test Script for Accounting Agent Layer ERPX (Kế toán AI)
 ===========================================================
 Runs comprehensive API-level checks simulating the UI test checklist.
 Produces a structured test report.
@@ -64,7 +64,7 @@ def wait_run(run_id: str, max_wait: int = 45) -> dict:
 # 0. PREREQUISITES
 # ═══════════════════════════════════════════════
 print("=" * 72)
-print("OpenClaw Agent ERPX — Manual QA Test Report")
+print("Accounting Agent Layer ERPX — Manual QA Test Report")
 print(f"Date: {datetime.utcnow().isoformat()}Z")
 print("=" * 72)
 
@@ -549,7 +549,7 @@ if warn_count > 0:
             print()
 
 # Save report
-report_path = "/root/openclaw-agent-erpx/logs/manual_qa_report.json"
+report_path = "/root/accounting-agent-layer/logs/manual_qa_report.json"
 with open(report_path, "w") as f:
     json.dump({
         "date": datetime.utcnow().isoformat() + "Z",

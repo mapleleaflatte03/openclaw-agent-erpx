@@ -1,4 +1,4 @@
-# Báo cáo ngắn (<= 1 trang) — PO Check ERP-X AI Kế toán (OpenClaw Agent)
+# Báo cáo ngắn (<= 1 trang) — PO Check ERP AI Kế toán (Accounting Agent Layer)
 
 **Ngày:** 2026-02-10  
 **Tester:** QA Senior (blackbox; không sửa code/config; không ghi secret/internal URL)  

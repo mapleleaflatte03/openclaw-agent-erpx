@@ -58,7 +58,7 @@ Set GitHub Environment secrets: `Settings → Environments → staging → Add s
 - `STAGING_MINIO_SECRET_KEY`
 
 Optional:
-- `STAGING_NAMESPACE` (default `openclaw-agent-staging`)
+- `STAGING_NAMESPACE` (default `accounting-agent-staging`)
 - `STAGING_ERPX_TOKEN`, `STAGING_SMTP_*`
 
 ## Docs

@@ -1,15 +1,15 @@
 apiVersion: monitoring.coreos.com/v1
 kind: PrometheusRule
 metadata:
-  name: openclaw-agent-alerts
-  namespace: openclaw-agent
+  name: accounting-agent-alerts
+  namespace: accounting-agent
   labels:
     release: kube-prometheus-stack
 spec:
   groups:
-    - name: openclaw-agent.rules
+    - name: accounting-agent.rules
       rules:
-        - alert: OpenClawAgentQueueBacklogHigh
+        - alert: Accounting Agent LayerAgentQueueBacklogHigh
           expr: agent_queue_backlog{queue=~"ocr|export|io|default"} > 50
           for: 10m
           labels:
@@ -18,7 +18,7 @@ spec:
             summary: "Agent queue backlog high"
             description: "Queue {{ $labels.queue }} backlog is {{ $value }} for >10m."
 
-        - alert: OpenClawAgentOCRTimeoutSpike
+        - alert: Accounting Agent LayerAgentOCRTimeoutSpike
           expr: agent_ocr_timeouts_last_5m > 5
           for: 5m
           labels:
@@ -27,7 +27,7 @@ spec:
             summary: "OCR timeout spike"
             description: "OCR timeouts in last 5m: {{ $value }}."
 
-        - alert: OpenClawAgentMismatchSpike
+        - alert: Accounting Agent LayerAgentMismatchSpike
           expr: agent_attachment_mismatch_last_5m > 5
           for: 10m
           labels:

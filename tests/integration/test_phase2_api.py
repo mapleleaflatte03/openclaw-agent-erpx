@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from fastapi.testclient import TestClient
 
-from openclaw_agent.agent_service.main import app
+from accounting_agent.agent_service.main import app
 
 client = TestClient(app, raise_server_exceptions=False)
 _HEADERS = {"X-API-Key": "test-key-for-ci"}

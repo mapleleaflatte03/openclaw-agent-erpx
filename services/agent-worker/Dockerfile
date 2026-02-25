@@ -20,5 +20,5 @@ COPY config /app/config
 RUN python -m pip install -U pip && \
     python -m pip install -e .
 
-CMD ["celery", "-A", "openclaw_agent.agent_worker.celery_app.celery_app", "worker", "-l", "INFO", "-Q", "default,ocr,export,io,index"]
+CMD ["celery", "-A", "accounting_agent.agent_worker.celery_app.celery_app", "worker", "-l", "INFO", "-Q", "default,ocr,export,io,index"]
 

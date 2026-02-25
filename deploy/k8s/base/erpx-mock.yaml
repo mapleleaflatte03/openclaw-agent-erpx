@@ -30,7 +30,7 @@ spec:
         role: control-ingress
       containers:
         - name: erpx-mock-api
-          image: openclaw-agent-erpx/erpx-mock-api:0.1.0
+          image: accounting-agent-layer/erpx-mock-api:0.1.0
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 8001

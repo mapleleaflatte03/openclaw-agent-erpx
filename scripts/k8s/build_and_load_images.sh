@@ -2,8 +2,8 @@
 set -eu
 
 VERSION="${VERSION:-0.1.0}"
-IMG_PREFIX="${IMG_PREFIX:-openclaw-agent-erpx}"
-TAR="${TAR:-/tmp/openclaw-agent-images.tar}"
+IMG_PREFIX="${IMG_PREFIX:-accounting-agent-layer}"
+TAR="${TAR:-/tmp/accounting-agent-images.tar}"
 
 if ! command -v docker >/dev/null 2>&1; then
   echo "docker is required on the build host" >&2

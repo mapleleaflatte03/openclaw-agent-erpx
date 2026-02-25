@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import pytest
 
-from openclaw_agent.ocr import (
+from accounting_agent.ocr import (
     extract_structured_fields,
     normalize_vn_diacritics,
     ocr_accuracy_score,

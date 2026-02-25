@@ -1,4 +1,4 @@
-# VISION ROADMAP — OpenClaw ERP-X AI Kế toán
+# VISION ROADMAP — Accounting Agent Layer ERP AI Kế toán
 
 > **Nguyên tắc bất biến**: 7 dòng milestone dưới đây là **Acceptance Criteria cấp hệ thống**.
 > Không được sửa wording, không được giảm accuracy, không được bỏ bất kỳ từ khóa nào

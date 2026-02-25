@@ -1,4 +1,4 @@
-# BÁO CÁO KIỂM THỬ THỦ CÔNG — ERP-X AI KẾ TOÁN (OpenClaw Agent ERPX)
+# BÁO CÁO KIỂM THỬ THỦ CÔNG — ERP AI KẾ TOÁN (Accounting Agent Layer ERPX)
 
 **Ngày:** 2026-02-10  
 **Tester:** QA (automated + cross-verified qua API + logs)  
@@ -44,9 +44,9 @@
 
 **Fix đề xuất:**
 ```bash
-kubectl patch configmap agent-config -n openclaw-agent-staging \
+kubectl patch configmap agent-config -n accounting-agent-staging \
   --type merge -p '{"data":{"USE_REAL_LLM":"true"}}'
-kubectl rollout restart deploy/agent-service deploy/agent-worker-standby -n openclaw-agent-staging
+kubectl rollout restart deploy/agent-service deploy/agent-worker-standby -n accounting-agent-staging
 ```
 
 ---
@@ -210,9 +210,9 @@ kubectl rollout restart deploy/agent-service deploy/agent-worker-standby -n open
    - **Nguyên nhân:** `.env` có `USE_REAL_LLM=true` nhưng k3s không inject biến này vào pods
    - **Fix:**  
      ```bash
-     kubectl patch configmap agent-config -n openclaw-agent-staging \
+     kubectl patch configmap agent-config -n accounting-agent-staging \
        --type merge -p '{"data":{"USE_REAL_LLM":"true"}}'
-     kubectl rollout restart deploy -n openclaw-agent-staging
+     kubectl rollout restart deploy -n accounting-agent-staging
      ```
    - **Verify:** Sau restart, gọi `/acct/qna` với câu nghiệp vụ → log phải thấy `POST .../chat/completions`
 
@@ -257,7 +257,7 @@ kubectl rollout restart deploy/agent-service deploy/agent-worker-standby -n open
 
 ## KẾT LUẬN
 
-Hệ thống OpenClaw Agent ERPX staging **hoạt động ổn định** về mặt hạ tầng (210/210 smoke, API responsive, k3s healthy). Nguyên tắc **đọc-ERP-chỉ-đề-xuất** được tuân thủ đúng.
+Hệ thống Accounting Agent Layer ERPX staging **hoạt động ổn định** về mặt hạ tầng (210/210 smoke, API responsive, k3s healthy). Nguyên tắc **đọc-ERP-chỉ-đề-xuất** được tuân thủ đúng.
 
 **Tuy nhiên, có 1 lỗi P0 CRITICAL:** `USE_REAL_LLM` không được inject vào k3s deployment → toàn bộ tính năng AI/LLM chạy ở chế độ rule-based fallback. Cần patch configmap và restart pods trước khi coi hệ thống là "LLM thật đang chạy".
 

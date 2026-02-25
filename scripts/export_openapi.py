@@ -33,8 +33,8 @@ def main() -> None:
     sys.path.insert(0, str(repo_root / "src"))
 
     # Import after adding src/ to sys.path (script can run without editable install).
-    from openclaw_agent.agent_service.main import app as agent_app
-    from openclaw_agent.erpx_mock.main import app as erpx_app
+    from accounting_agent.agent_service.main import app as agent_app
+    from accounting_agent.erpx_mock.main import app as erpx_app
 
     agent_schema = agent_app.openapi()
     erpx_schema = erpx_app.openapi()

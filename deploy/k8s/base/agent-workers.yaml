@@ -16,7 +16,7 @@ spec:
         pool-ocr: "true"
       containers:
         - name: worker
-          image: openclaw-agent-erpx/agent-worker:0.1.0
+          image: accounting-agent-layer/agent-worker:0.1.0
           imagePullPolicy: IfNotPresent
           envFrom:
             - configMapRef:
@@ -27,7 +27,7 @@ spec:
           args:
             [
               "-A",
-              "openclaw_agent.agent_worker.celery_app.celery_app",
+              "accounting_agent.agent_worker.celery_app.celery_app",
               "worker",
               "-l",
               "INFO",
@@ -62,7 +62,7 @@ spec:
         pool-export: "true"
       containers:
         - name: worker
-          image: openclaw-agent-erpx/agent-worker:0.1.0
+          image: accounting-agent-layer/agent-worker:0.1.0
           imagePullPolicy: IfNotPresent
           envFrom:
             - configMapRef:
@@ -73,7 +73,7 @@ spec:
           args:
             [
               "-A",
-              "openclaw_agent.agent_worker.celery_app.celery_app",
+              "accounting_agent.agent_worker.celery_app.celery_app",
               "worker",
               "-l",
               "INFO",
@@ -108,7 +108,7 @@ spec:
         pool-io: "true"
       containers:
         - name: worker
-          image: openclaw-agent-erpx/agent-worker:0.1.0
+          image: accounting-agent-layer/agent-worker:0.1.0
           imagePullPolicy: IfNotPresent
           envFrom:
             - configMapRef:
@@ -119,7 +119,7 @@ spec:
           args:
             [
               "-A",
-              "openclaw_agent.agent_worker.celery_app.celery_app",
+              "accounting_agent.agent_worker.celery_app.celery_app",
               "worker",
               "-l",
               "INFO",
@@ -154,7 +154,7 @@ spec:
         pool-standby: "true"
       containers:
         - name: worker
-          image: openclaw-agent-erpx/agent-worker:0.1.0
+          image: accounting-agent-layer/agent-worker:0.1.0
           imagePullPolicy: IfNotPresent
           envFrom:
             - configMapRef:
@@ -165,7 +165,7 @@ spec:
           args:
             [
               "-A",
-              "openclaw_agent.agent_worker.celery_app.celery_app",
+              "accounting_agent.agent_worker.celery_app.celery_app",
               "worker",
               "-l",
               "INFO",

@@ -1,4 +1,4 @@
-# QA Acceptance Rerun — ERP-X AI Ke toan Agent (2026-02-11)
+# QA Acceptance Rerun — ERP AI Ke toan Agent (2026-02-11)
 
 ## Scope
 - Mode A (UI): `https://app.welliam.codes/`

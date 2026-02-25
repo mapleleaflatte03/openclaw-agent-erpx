@@ -1,7 +1,7 @@
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
-namespace: openclaw-agent-staging
+namespace: accounting-agent-staging
 
 resources:
   - namespace.yaml
@@ -18,18 +18,18 @@ patches:
   - path: services-nodeport-patch.yaml
 
 images:
-  - name: openclaw-agent-erpx/agent-service
-    newName: ghcr.io/mapleleaflatte03/openclaw-agent-erpx/agent-service
+  - name: accounting-agent-layer/agent-service
+    newName: ghcr.io/mapleleaflatte03/accounting-agent-layer/agent-service
     newTag: staging-latest
-  - name: openclaw-agent-erpx/agent-worker
-    newName: ghcr.io/mapleleaflatte03/openclaw-agent-erpx/agent-worker
+  - name: accounting-agent-layer/agent-worker
+    newName: ghcr.io/mapleleaflatte03/accounting-agent-layer/agent-worker
     newTag: staging-latest
-  - name: openclaw-agent-erpx/agent-scheduler
-    newName: ghcr.io/mapleleaflatte03/openclaw-agent-erpx/agent-scheduler
+  - name: accounting-agent-layer/agent-scheduler
+    newName: ghcr.io/mapleleaflatte03/accounting-agent-layer/agent-scheduler
     newTag: staging-latest
-  - name: openclaw-agent-erpx/erpx-mock-api
-    newName: ghcr.io/mapleleaflatte03/openclaw-agent-erpx/erpx-mock-api
+  - name: accounting-agent-layer/erpx-mock-api
+    newName: ghcr.io/mapleleaflatte03/accounting-agent-layer/erpx-mock-api
     newTag: staging-latest
-  - name: openclaw-agent-erpx/ui
-    newName: ghcr.io/mapleleaflatte03/openclaw-agent-erpx/ui
+  - name: accounting-agent-layer/ui
+    newName: ghcr.io/mapleleaflatte03/accounting-agent-layer/ui
     newTag: staging-latest

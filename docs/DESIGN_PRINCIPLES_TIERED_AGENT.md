@@ -1,4 +1,4 @@
-# Nguyên Tắc Thiết Kế Tiered Agent (OpenClaw Agent ERPX)
+# Nguyên Tắc Thiết Kế Tiered Agent (Accounting Agent Layer ERPX)
 
 ## 1. An toàn pháp lý là ưu tiên tuyệt đối
 - Không tự động ghi sổ hoặc sửa số liệu ERPX.

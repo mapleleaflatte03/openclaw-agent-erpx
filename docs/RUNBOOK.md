@@ -1,4 +1,4 @@
-# Runbook — OpenClaw Agent ERPX Operations
+# Runbook — Accounting Agent Layer ERPX Operations
 
 ## 1. Backup & Restore
 
@@ -6,12 +6,12 @@
 
 ```bash
 # Backup (daily cron recommended)
-PGPASSWORD="$POSTGRES_PASSWORD" pg_dump -h postgres -U openclaw -Fc openclaw_agent \
-  > /backups/pg/openclaw_agent_$(date +%Y%m%d_%H%M).dump
+PGPASSWORD="$POSTGRES_PASSWORD" pg_dump -h postgres -U accounting-agent -Fc accounting_agent \
+  > /backups/pg/accounting_agent_$(date +%Y%m%d_%H%M).dump
 
 # Restore to clean DB
-PGPASSWORD="$POSTGRES_PASSWORD" pg_restore -h postgres -U openclaw -d openclaw_agent \
-  --clean --if-exists /backups/pg/openclaw_agent_YYYYMMDD_HHMM.dump
+PGPASSWORD="$POSTGRES_PASSWORD" pg_restore -h postgres -U accounting-agent -d accounting_agent \
+  --clean --if-exists /backups/pg/accounting_agent_YYYYMMDD_HHMM.dump
 ```
 
 - Schedule: daily at 02:00 UTC (k8s CronJob or host cron).
@@ -47,7 +47,7 @@ mc mirror --overwrite /backups/minio/evidence agent/evidence
 **Alert**: Monitor node disk usage; alert at 80%.
 
 **Triage checklist**:
-1. Check which PVC is full: `kubectl get pvc -n openclaw-agent-staging`
+1. Check which PVC is full: `kubectl get pvc -n accounting-agent-staging`
 2. Postgres: run retention cleanup, `VACUUM FULL`.
 3. MinIO: prune old exports/drop buckets.
 4. Reports: delete old benchmark reports.
@@ -59,13 +59,13 @@ mc mirror --overwrite /backups/minio/evidence agent/evidence
 
 ```bash
 # Check queue depth
-kubectl exec -n openclaw-agent-staging deploy/redis -- redis-cli LLEN celery
+kubectl exec -n accounting-agent-staging deploy/redis -- redis-cli LLEN celery
 
 # Check active workers
-kubectl exec -n openclaw-agent-staging deploy/agent-worker -- celery -A openclaw_agent.agent_worker.tasks inspect active
+kubectl exec -n accounting-agent-staging deploy/agent-worker -- celery -A accounting_agent.agent_worker.tasks inspect active
 
 # If stuck: restart workers (rolling)
-kubectl rollout restart deploy/agent-worker -n openclaw-agent-staging
+kubectl rollout restart deploy/agent-worker -n accounting-agent-staging
 ```
 
 **Rate limit**: ERPX API is capped at 10 req/s with token-bucket. If backlog grows due to rate limiting, do NOT increase the limit — wait for natural drain.
@@ -73,7 +73,7 @@ kubectl rollout restart deploy/agent-worker -n openclaw-agent-staging
 ## 5. On-Call Health Checks
 
 ```bash
-NS=openclaw-agent-staging
+NS=accounting-agent-staging
 
 # 1. All pods running?
 kubectl get pods -n $NS
@@ -83,7 +83,7 @@ kubectl exec -n $NS deploy/agent-service -- curl -sf http://localhost:8000/healt
 kubectl exec -n $NS deploy/agent-service -- curl -sf http://localhost:8000/readyz
 
 # 3. Postgres accessible?
-kubectl exec -n $NS deploy/postgres -- pg_isready -U openclaw
+kubectl exec -n $NS deploy/postgres -- pg_isready -U accounting-agent
 
 # 4. Redis accessible?
 kubectl exec -n $NS deploy/redis -- redis-cli ping

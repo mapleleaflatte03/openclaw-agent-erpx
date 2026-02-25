@@ -13,5 +13,5 @@ RUN python -m pip install -U pip && \
 
 EXPOSE 8001
 
-CMD ["uvicorn", "openclaw_agent.erpx_mock.main:app", "--host", "0.0.0.0", "--port", "8001"]
+CMD ["uvicorn", "accounting_agent.erpx_mock.main:app", "--host", "0.0.0.0", "--port", "8001"]
 

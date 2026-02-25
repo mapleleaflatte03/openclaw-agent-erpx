@@ -1,13 +1,13 @@
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: grafana-dashboard-openclaw-agent
-  namespace: openclaw-agent
+  name: grafana-dashboard-accounting-agent
+  namespace: accounting-agent
   labels:
     grafana_dashboard: "1"
     release: kube-prometheus-stack
 data:
-  openclaw-agent.json: |
+  accounting-agent.json: |
     {
       "annotations": {
         "list": [
@@ -248,7 +248,7 @@ data:
       "schemaVersion": 39,
       "style": "dark",
       "tags": [
-        "openclaw",
+        "accounting-agent",
         "agent"
       ],
       "templating": {
@@ -260,8 +260,8 @@ data:
       },
       "timepicker": {},
       "timezone": "",
-      "title": "OpenClaw Agent",
-      "uid": "openclaw-agent",
+      "title": "Accounting Agent Layer",
+      "uid": "accounting-agent",
       "version": 1,
       "weekStart": ""
     }

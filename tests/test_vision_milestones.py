@@ -36,7 +36,7 @@ class TestVisionOcr:
 
     def test_vision_ocr_extract_returns_text_and_confidence(self) -> None:
         """_ocr_extract() returns text + confidence + engine metadata."""
-        from openclaw_agent.flows.voucher_ingest import _ocr_extract
+        from accounting_agent.flows.voucher_ingest import _ocr_extract
 
         result = _ocr_extract("/dev/null")
         assert "text" in result
@@ -59,7 +59,7 @@ class TestVisionOcr:
 
     def test_vision_ocr_vn_diacritics_normalization(self) -> None:
         """Vietnamese diacritics are correctly normalized."""
-        from openclaw_agent.ocr import normalize_vn_diacritics
+        from accounting_agent.ocr import normalize_vn_diacritics
 
         assert normalize_vn_diacritics("hoa don") == "hóa đơn"
         assert normalize_vn_diacritics("chung tu") == "chứng từ"
@@ -67,7 +67,7 @@ class TestVisionOcr:
 
     def test_vision_ocr_ray_batch_parallel(self) -> None:
         """Ray swarm batch OCR processes N files in parallel."""
-        from openclaw_agent.ocr import ocr_batch
+        from accounting_agent.ocr import ocr_batch
 
         assert callable(ocr_batch)
 
@@ -94,7 +94,7 @@ class TestVisionJournal:
 
     def test_vision_journal_classify_returns_debit_credit(self) -> None:
         """Rule-based classifier returns debit/credit account codes."""
-        from openclaw_agent.flows.journal_suggestion import _classify_voucher
+        from accounting_agent.flows.journal_suggestion import _classify_voucher
 
         result = _classify_voucher({"voucher_type": "sell_invoice"})
         assert result["debit_account"] == "131"
@@ -104,14 +104,14 @@ class TestVisionJournal:
     def test_vision_journal_read_only_no_erp_write(self) -> None:
         """Journal proposals are status=pending — no ERP write occurs."""
         # Verified by architecture: AcctJournalProposal.status starts "pending"
-        from openclaw_agent.common.models import AcctJournalProposal
+        from accounting_agent.common.models import AcctJournalProposal
 
         p = AcctJournalProposal()
         assert p.status in (None, "pending")
 
     def test_vision_journal_full_tt200_chart_180_accounts(self) -> None:
         """Account map covers 70+ TT133 accounts (TT200 subset)."""
-        from openclaw_agent.journal import CHART_OF_ACCOUNTS_TT133
+        from accounting_agent.journal import CHART_OF_ACCOUNTS_TT133
 
         assert len(CHART_OF_ACCOUNTS_TT133) >= 60
         assert "131" in CHART_OF_ACCOUNTS_TT133
@@ -119,7 +119,7 @@ class TestVisionJournal:
 
     def test_vision_journal_multi_tier_explanation(self) -> None:
         """Journal suggestion includes TT133 account mapping."""
-        from openclaw_agent.journal import suggest_journal_lines
+        from accounting_agent.journal import suggest_journal_lines
 
         lines = suggest_journal_lines(
             voucher={"amount": 1_000_000},
@@ -133,7 +133,7 @@ class TestVisionJournal:
 
     def test_vision_journal_tax_optimization_read_only(self) -> None:
         """Tax hint is present via VAT rate detection."""
-        from openclaw_agent.journal import detect_vat_rate, suggest_journal_lines
+        from accounting_agent.journal import detect_vat_rate, suggest_journal_lines
 
         rate = detect_vat_rate({"amount": 1_000_000})
         assert rate in (0, 5, 8, 10)
@@ -170,7 +170,7 @@ class TestVisionReconcile:
 
     def test_vision_reconcile_rule_based_matching(self) -> None:
         """Rule-based matcher: ±3d date, ±1% amount tolerance."""
-        from openclaw_agent.flows.bank_reconcile import (
+        from accounting_agent.flows.bank_reconcile import (
             AMOUNT_TOLERANCE_PCT,
             DATE_TOLERANCE_DAYS,
         )
@@ -180,7 +180,7 @@ class TestVisionReconcile:
 
     def test_vision_reconcile_anomaly_flags_created(self) -> None:
         """Anomaly flags are created for mismatches."""
-        from openclaw_agent.common.models import AcctAnomalyFlag
+        from accounting_agent.common.models import AcctAnomalyFlag
 
         flag = AcctAnomalyFlag()
         assert hasattr(flag, "anomaly_type")
@@ -188,7 +188,7 @@ class TestVisionReconcile:
 
     def test_vision_reconcile_e_invoice_xml_parse(self) -> None:
         """Parse thuế điện tử XML e-invoice format."""
-        from openclaw_agent.recon import parse_einvoice_xml
+        from accounting_agent.recon import parse_einvoice_xml
 
         xml = (
             "<HDon><TTChung>"
@@ -208,7 +208,7 @@ class TestVisionReconcile:
 
     def test_vision_reconcile_realtime_multi_source(self) -> None:
         """3-way match: bank + e-invoice + voucher."""
-        from openclaw_agent.recon import reconcile_tax
+        from accounting_agent.recon import reconcile_tax
 
         einvoices = [
             {"invoice_no": "E-001", "tax_code_seller": "0101234567",
@@ -224,7 +224,7 @@ class TestVisionReconcile:
 
     def test_vision_reconcile_fraud_detection_basic(self) -> None:
         """Detect basic fraud patterns: duplicate payment, split invoice."""
-        from openclaw_agent.risk import detect_duplicates, detect_split_transactions
+        from accounting_agent.risk import detect_duplicates, detect_split_transactions
 
         invoices = [
             {"invoice_id": "INV-1", "amount": 100_000, "date": "2026-01-05"},
@@ -242,7 +242,7 @@ class TestVisionReconcile:
 
     def test_vision_reconcile_auto_fix_suggestion(self) -> None:
         """Suggest remediation for every anomaly found."""
-        from openclaw_agent.recon import reconcile_tax
+        from accounting_agent.recon import reconcile_tax
 
         einvoices = [
             {"invoice_no": "E-X", "tax_code_seller": "9999999999",
@@ -273,13 +273,13 @@ class TestVisionSoftCheck:
 
     def test_vision_softcheck_rule_engine_5_rules(self) -> None:
         """At least 5 rule-based checks exist."""
-        from openclaw_agent.flows.soft_checks_acct import _RULES
+        from accounting_agent.flows.soft_checks_acct import _RULES
 
         assert len(_RULES) >= 5
 
     def test_vision_softcheck_creates_result_and_issues(self) -> None:
         """Soft check produces AcctSoftCheckResult + AcctValidationIssue."""
-        from openclaw_agent.common.models import (
+        from accounting_agent.common.models import (
             AcctSoftCheckResult,
             AcctValidationIssue,
         )
@@ -291,7 +291,7 @@ class TestVisionSoftCheck:
 
     def test_vision_softcheck_15_vn_rules(self) -> None:
         """At least 6 risk-engine checks covering Benford, splits, timing."""
-        from openclaw_agent.risk import assess_risk
+        from accounting_agent.risk import assess_risk
 
         result = assess_risk(
             vouchers=[{"amount": 100_000, "date": "2026-01-05"}],
@@ -304,7 +304,7 @@ class TestVisionSoftCheck:
 
     def test_vision_softcheck_vn_regulation_compliance(self) -> None:
         """Accuracy ≥90% on golden dataset of known issues."""
-        from openclaw_agent.risk import assess_risk
+        from accounting_agent.risk import assess_risk
 
         # Golden dataset: known-bad vouchers with issues
         vouchers = [
@@ -341,7 +341,7 @@ class TestVisionForecast:
 
     def test_vision_forecast_30d_cashflow_basic(self) -> None:
         """30-day cashflow forecast produces AcctCashflowForecast rows."""
-        from openclaw_agent.common.models import AcctCashflowForecast
+        from accounting_agent.common.models import AcctCashflowForecast
 
         f = AcctCashflowForecast()
         assert hasattr(f, "forecast_date")
@@ -354,7 +354,7 @@ class TestVisionForecast:
 
     def test_vision_forecast_three_scenarios(self) -> None:
         """Monte Carlo produces P10/P50/P90 percentiles as 3 scenarios."""
-        from openclaw_agent.forecast import monte_carlo_forecast
+        from accounting_agent.forecast import monte_carlo_forecast
 
         result = monte_carlo_forecast(
             invoices=[], bank_txs=[],
@@ -374,7 +374,7 @@ class TestVisionForecast:
 
     def test_vision_forecast_multi_scenario_thousands(self) -> None:
         """Monte Carlo simulation produces 1000+ scenarios per run."""
-        from openclaw_agent.forecast import monte_carlo_forecast
+        from accounting_agent.forecast import monte_carlo_forecast
 
         result = monte_carlo_forecast(
             invoices=[{"status": "unpaid", "due_date": "2026-02-15", "amount": 5_000_000}],
@@ -389,7 +389,7 @@ class TestVisionForecast:
 
     def test_vision_forecast_accuracy_gt_95_percent(self) -> None:
         """Monte Carlo forecast provides confidence metric."""
-        from openclaw_agent.forecast import monte_carlo_forecast
+        from accounting_agent.forecast import monte_carlo_forecast
 
         result = monte_carlo_forecast(
             invoices=[],
@@ -415,13 +415,13 @@ class TestVisionQna:
 
     def test_vision_qna_dispatcher_exists(self) -> None:
         """Q&A dispatcher routes questions to appropriate handlers."""
-        from openclaw_agent.flows.qna_accounting import answer_question
+        from accounting_agent.flows.qna_accounting import answer_question
 
         assert callable(answer_question)
 
     def test_vision_qna_po_benchmark_templates_exist(self) -> None:
         """PO benchmark templates are defined for canonical Q&A."""
-        from openclaw_agent.flows.qna_accounting import _match_po_benchmark
+        from accounting_agent.flows.qna_accounting import _match_po_benchmark
 
         # Template for 131 vs 331
         result = _match_po_benchmark("So sánh TK 131 và TK 331")
@@ -431,7 +431,7 @@ class TestVisionQna:
 
     def test_vision_qna_quality_guardrail_active(self) -> None:
         """Quality guardrail rejects inner monologue and generic fallback."""
-        from openclaw_agent.flows.qna_accounting import _passes_quality_guardrail
+        from accounting_agent.flows.qna_accounting import _passes_quality_guardrail
 
         assert not _passes_quality_guardrail("Better: I think we should...")
         assert not _passes_quality_guardrail("Xin lỗi, tôi cần thêm thông tin để trả lời")
@@ -443,7 +443,7 @@ class TestVisionQna:
 
     def test_vision_qna_regulation_index_exists(self) -> None:
         """TT133 index provides chart of accounts reference."""
-        from openclaw_agent.regulations.tt133_index import TT133_ACCOUNTS
+        from accounting_agent.regulations.tt133_index import TT133_ACCOUNTS
 
         assert len(TT133_ACCOUNTS) > 0
 
@@ -465,7 +465,7 @@ class TestVisionQna:
 
     def test_vision_qna_self_learn_from_feedback(self) -> None:
         """Feedback (thumbs up/down) is stored for learning."""
-        from openclaw_agent.common.models import AcctQnaAudit
+        from accounting_agent.common.models import AcctQnaAudit
 
         audit = AcctQnaAudit()
         assert hasattr(audit, "feedback")
@@ -475,7 +475,7 @@ class TestVisionQna:
 
     def test_vision_qna_vas_ifrs_comparison(self) -> None:
         """Q&A can compare VAS vs IFRS treatment."""
-        from openclaw_agent.reports import vas_to_ifrs_label
+        from accounting_agent.reports import vas_to_ifrs_label
 
         mapping = vas_to_ifrs_label("131")
         assert mapping["ifrs_label"] == "Trade receivables"
@@ -501,7 +501,7 @@ class TestVisionReport:
 
     def test_vision_report_snapshot_model_versioned(self) -> None:
         """AcctReportSnapshot has type + period + version fields."""
-        from openclaw_agent.common.models import AcctReportSnapshot
+        from accounting_agent.common.models import AcctReportSnapshot
 
         s = AcctReportSnapshot()
         assert hasattr(s, "report_type")
@@ -510,13 +510,13 @@ class TestVisionReport:
 
     def test_vision_report_vat_summary_flow(self) -> None:
         """Tax report flow produces VAT summary."""
-        from openclaw_agent.flows.tax_report import flow_tax_report
+        from accounting_agent.flows.tax_report import flow_tax_report
 
         assert callable(flow_tax_report)
 
     def test_vision_report_vas_balance_sheet(self) -> None:
         """Generate Bảng cân đối kế toán B01-DN (VAS format)."""
-        from openclaw_agent.reports import generate_b01_dn
+        from accounting_agent.reports import generate_b01_dn
 
         report = generate_b01_dn(
             journals=[{
@@ -533,7 +533,7 @@ class TestVisionReport:
 
     def test_vision_report_vas_income_statement(self) -> None:
         """Generate Báo cáo KQKD B02-DN (VAS format)."""
-        from openclaw_agent.reports import generate_b02_dn
+        from accounting_agent.reports import generate_b02_dn
 
         report = generate_b02_dn(
             journals=[{
@@ -550,7 +550,7 @@ class TestVisionReport:
 
     def test_vision_report_drill_down(self) -> None:
         """Click account line → see underlying voucher list."""
-        from openclaw_agent.reports import _build_trial_balance
+        from accounting_agent.reports import _build_trial_balance
 
         # Trial balance can be queried per account for drill-down
         journals = [{
@@ -567,7 +567,7 @@ class TestVisionReport:
 
     def test_vision_report_dynamic_vas_ifrs_dual(self) -> None:
         """Generate VAS + IFRS reports simultaneously."""
-        from openclaw_agent.reports import generate_dual_report
+        from accounting_agent.reports import generate_dual_report
 
         journals = [{
             "lines": [
@@ -592,7 +592,7 @@ class TestVisionReport:
 
     def test_vision_report_audit_provision_pack(self) -> None:
         """Auto-generate audit evidence pack for each report."""
-        from openclaw_agent.reports import generate_audit_pack
+        from accounting_agent.reports import generate_audit_pack
 
         pack = generate_audit_pack(
             journals=[{

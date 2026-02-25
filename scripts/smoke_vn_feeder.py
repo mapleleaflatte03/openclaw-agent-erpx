@@ -168,7 +168,7 @@ def main() -> None:
 
     # 7. TT133 module import
     try:
-        from openclaw_agent.regulations.tt133_index import TT133_ACCOUNTS, lookup_account
+        from accounting_agent.regulations.tt133_index import TT133_ACCOUNTS, lookup_account
         results.append(step("TT133 module import", len(TT133_ACCOUNTS) > 30,
                             f"{len(TT133_ACCOUNTS)} accounts"))
         acct = lookup_account("111")

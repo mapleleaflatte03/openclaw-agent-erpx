@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-NS="${NS:-openclaw-agent}"
+NS="${NS:-accounting-agent}"
 
 OCR="${OCR:-}"
 EXPORT="${EXPORT:-}"

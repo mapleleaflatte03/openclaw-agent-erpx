@@ -16,7 +16,7 @@ spec:
         role: control-ingress
       containers:
         - name: scheduler
-          image: openclaw-agent-erpx/agent-scheduler:0.1.0
+          image: accounting-agent-layer/agent-scheduler:0.1.0
           imagePullPolicy: IfNotPresent
           envFrom:
             - configMapRef:

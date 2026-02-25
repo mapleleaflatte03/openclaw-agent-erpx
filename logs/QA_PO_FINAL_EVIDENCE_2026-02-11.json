@@ -2,7 +2,7 @@
   "metadata": {
     "generated_at_utc": "2026-02-11T08:49:20.438272Z",
     "date": "2026-02-11",
-    "repo": "/root/openclaw-agent-erpx",
+    "repo": "/root/accounting-agent-layer",
     "mode_a_ui": "https://app.welliam.codes/",
     "mode_b_api": "http://127.0.0.1:30080",
     "api_key_present": true,

@@ -7,7 +7,7 @@
 Commands:
 
 ```bash
-cd /root/openclaw-agent-erpx
+cd /root/accounting-agent-layer
 git status
 . .venv/bin/activate
 ruff check .
@@ -28,7 +28,7 @@ Result (pass/fail):
 Commands:
 
 ```bash
-cd /root/openclaw-agent-erpx
+cd /root/accounting-agent-layer
 . .venv/bin/activate
 git status -sb
 git log --oneline -n 10

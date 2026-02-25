@@ -32,8 +32,8 @@ def run(argv: list[str] | None = None) -> int:
 
     from sqlalchemy import func, select
 
-    from openclaw_agent.common.db import db_session, make_engine
-    from openclaw_agent.common.models import TierBFeedback
+    from accounting_agent.common.db import db_session, make_engine
+    from accounting_agent.common.models import TierBFeedback
 
     args = _parse_args(argv)
     dsn = args.dsn or os.environ.get("AGENT_DB_DSN", "")

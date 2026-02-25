@@ -28,7 +28,7 @@ spec:
         role: control-ingress
       containers:
         - name: ui
-          image: openclaw-agent-erpx/ui:0.1.0
+          image: accounting-agent-layer/ui:0.1.0
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 8501

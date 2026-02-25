@@ -14,13 +14,13 @@ Lý do đạt gate:
 
 ## 2) Scope và môi trường kiểm thử
 - URL: `https://app.welliam.codes/`
-- Repo: `/root/openclaw-agent-erpx`
+- Repo: `/root/accounting-agent-layer`
 - Commit vá mới nhất vòng này: `82c206c`
 - CI/CD:
   - `ci` run `21956974099`: **success**
   - `deploy-staging` run `21956974107`: **success**
 - K8s rollout:
-  - `kubectl -n openclaw-agent-staging rollout status deployment/agent-service`: **success**
+  - `kubectl -n accounting-agent-staging rollout status deployment/agent-service`: **success**
   - Pod mới: `agent-service-65fb467c6d-8kr5r` (`Running`)
 
 ## 3) Kết quả theo checklist P0/P1

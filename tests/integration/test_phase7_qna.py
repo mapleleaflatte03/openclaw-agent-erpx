@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from fastapi.testclient import TestClient
 
-from openclaw_agent.agent_service.main import app
+from accounting_agent.agent_service.main import app
 
 client = TestClient(app, raise_server_exceptions=False)
 _HEADERS = {"X-API-Key": "test-key-for-ci"}
@@ -43,7 +43,7 @@ def test_qna_voucher_count_handler():
     """Voucher count handler returns expected format."""
     from unittest.mock import MagicMock
 
-    from openclaw_agent.flows.qna_accounting import _answer_voucher_count
+    from accounting_agent.flows.qna_accounting import _answer_voucher_count
 
     mock_session = MagicMock()
     mock_session.execute.return_value.scalar.return_value = 3
@@ -58,7 +58,7 @@ def test_qna_journal_explanation_handler():
     """Journal explanation handler returns account codes."""
     from unittest.mock import MagicMock
 
-    from openclaw_agent.flows.qna_accounting import _answer_journal_explanation
+    from accounting_agent.flows.qna_accounting import _answer_journal_explanation
 
     mock_session = MagicMock()
 
@@ -106,7 +106,7 @@ def test_qna_anomaly_handler():
     """Anomaly handler works correctly."""
     from unittest.mock import MagicMock
 
-    from openclaw_agent.flows.qna_accounting import _answer_anomaly_summary
+    from accounting_agent.flows.qna_accounting import _answer_anomaly_summary
 
     mock_session = MagicMock()
     mock_session.execute.return_value.scalar.side_effect = [5, 2]
@@ -120,7 +120,7 @@ def test_qna_cashflow_handler_no_data():
     """Cashflow handler with no data returns helpful message."""
     from unittest.mock import MagicMock
 
-    from openclaw_agent.flows.qna_accounting import _answer_cashflow_summary
+    from accounting_agent.flows.qna_accounting import _answer_cashflow_summary
 
     mock_session = MagicMock()
     mock_session.execute.return_value.scalars.return_value.all.return_value = []
@@ -134,7 +134,7 @@ def test_qna_fallback_handler():
     """Unknown question returns fallback answer."""
     from unittest.mock import MagicMock
 
-    from openclaw_agent.flows.qna_accounting import answer_question
+    from accounting_agent.flows.qna_accounting import answer_question
 
     mock_session = MagicMock()
     mock_session.execute.return_value.scalar.return_value = 0
@@ -146,7 +146,7 @@ def test_qna_fallback_handler():
 
 def test_qna_period_extraction():
     """Period extraction from Vietnamese text."""
-    from openclaw_agent.flows.qna_accounting import _extract_period
+    from accounting_agent.flows.qna_accounting import _extract_period
 
     assert _extract_period("Tháng 1/2025 có bao nhiêu chứng từ?") == "2025-01"
     assert _extract_period("Tháng 12/2024 như thế nào?") == "2024-12"

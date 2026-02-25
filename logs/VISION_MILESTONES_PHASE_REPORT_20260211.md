@@ -1,8 +1,8 @@
 # Vision Milestones Phase Completion Report
 **Date:** 2026-02-11  
 **Commit:** `9ff782f`  
-**Image:** `openclaw-agent-erpx:vision-20260211095521`  
-**Deployed to:** `openclaw-agent-staging` namespace (k3s)
+**Image:** `accounting-agent-layer:vision-20260211095521`  
+**Deployed to:** `accounting-agent-staging` namespace (k3s)
 
 ---
 
@@ -22,7 +22,7 @@ milestone tests are now active and passing.
 
 ## Modules Created
 
-### 1. OCR Engine (`src/openclaw_agent/ocr/__init__.py` — ~350 lines)
+### 1. OCR Engine (`src/accounting_agent/ocr/__init__.py` — ~350 lines)
 - PaddleOCR integration with lazy singleton (`use_angle_cls=True, lang="vi"`)
 - Vietnamese diacritics correction (30+ Kaggle-derived patterns)
 - Regex-based field extraction: MST, invoice_no, amount, date, VAT, seller, buyer
@@ -30,14 +30,14 @@ milestone tests are now active and passing.
 - `ocr_batch()` with Ray swarm support
 - `ocr_accuracy_score()` for benchmarking
 
-### 2. TT133 Journal Module (`src/openclaw_agent/journal/__init__.py` — ~215 lines)
+### 2. TT133 Journal Module (`src/accounting_agent/journal/__init__.py` — ~215 lines)
 - Full TT133 chart of accounts (65 accounts with group/nature/name)
 - VAT rate optimizer (0/5/8/10%)
 - `suggest_journal_lines()` for 7 doc types with multi-line VAT splitting:
   sell_invoice, buy_invoice, receipt, payment, salary, depreciation, generic
 - `validate_journal_balance()` checker
 
-### 3. Risk Engine (`src/openclaw_agent/risk/__init__.py` — ~314 lines)
+### 3. Risk Engine (`src/accounting_agent/risk/__init__.py` — ~314 lines)
 - Benford's Law first-digit chi-squared analysis
 - Round number detection
 - Split transaction detection (just below approval threshold)
@@ -46,7 +46,7 @@ milestone tests are now active and passing.
 - Missing tax code flagging
 - `assess_risk()` aggregate function
 
-### 4. Monte Carlo Forecast (`src/openclaw_agent/forecast/__init__.py` — ~220 lines)
+### 4. Monte Carlo Forecast (`src/accounting_agent/forecast/__init__.py` — ~220 lines)
 - Monte Carlo simulation (1000+ scenarios default)
 - P10/P50/P90 percentile confidence intervals
 - Recurring transaction pattern detection
@@ -54,7 +54,7 @@ milestone tests are now active and passing.
 - Random walk component for unexpected flows
 - Confidence score and negative-cash probability
 
-### 5. VAS/IFRS Reports (`src/openclaw_agent/reports/__init__.py` — ~330 lines)
+### 5. VAS/IFRS Reports (`src/accounting_agent/reports/__init__.py` — ~330 lines)
 - **B01-DN:** Bảng cân đối kế toán (Balance Sheet) — TT200 groupings
 - **B02-DN:** Báo cáo kết quả HĐKD (Income Statement)
 - **B03-DN:** Báo cáo lưu chuyển tiền tệ (Cash Flow, indirect method per VAS 24)
@@ -117,21 +117,21 @@ milestone tests are now active and passing.
 ## Files Changed (22 files, +3731 / -999 lines)
 
 ### New Files (7)
-- `src/openclaw_agent/ocr/__init__.py`
-- `src/openclaw_agent/journal/__init__.py`
-- `src/openclaw_agent/risk/__init__.py`
-- `src/openclaw_agent/forecast/__init__.py`
-- `src/openclaw_agent/reports/__init__.py`
+- `src/accounting_agent/ocr/__init__.py`
+- `src/accounting_agent/journal/__init__.py`
+- `src/accounting_agent/risk/__init__.py`
+- `src/accounting_agent/forecast/__init__.py`
+- `src/accounting_agent/reports/__init__.py`
 - `scripts/generate_kaggle_seed.py`
 - `logs/DATA_CLEANUP_MOCK_REMOVAL_20260211.md`
 
 ### Modified Files (15)
-- `src/openclaw_agent/flows/voucher_ingest.py` — Kaggle fixtures + OCR module
-- `src/openclaw_agent/flows/cashflow_forecast.py` — Monte Carlo
-- `src/openclaw_agent/flows/journal_suggestion.py` — TT133 integration
-- `src/openclaw_agent/flows/soft_checks_acct.py` — Risk engine
-- `src/openclaw_agent/flows/tax_report.py` — VAS reports
-- `src/openclaw_agent/erpx_mock/db.py` — Kaggle seed loading
+- `src/accounting_agent/flows/voucher_ingest.py` — Kaggle fixtures + OCR module
+- `src/accounting_agent/flows/cashflow_forecast.py` — Monte Carlo
+- `src/accounting_agent/flows/journal_suggestion.py` — TT133 integration
+- `src/accounting_agent/flows/soft_checks_acct.py` — Risk engine
+- `src/accounting_agent/flows/tax_report.py` — VAS reports
+- `src/accounting_agent/erpx_mock/db.py` — Kaggle seed loading
 - `tests/test_vision_milestones.py` — 30 tests unskipped
 - `tests/integration/test_phase4_ray.py` — TT133 account compatibility
 - `tests/integration/test_phase5_voucher_ingest.py` — Structural assertions

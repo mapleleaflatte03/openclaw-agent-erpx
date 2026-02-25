@@ -30,7 +30,7 @@ spec:
         role: control-ingress
       containers:
         - name: agent-service
-          image: openclaw-agent-erpx/agent-service:0.1.0
+          image: accounting-agent-layer/agent-service:0.1.0
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 8000

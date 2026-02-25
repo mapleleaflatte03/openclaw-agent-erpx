@@ -11,16 +11,16 @@ import pytest
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
-from openclaw_agent.common.db import Base
-from openclaw_agent.common.models import (
+from accounting_agent.common.db import Base
+from accounting_agent.common.models import (
     AcctAnomalyFlag,
     AcctBankTransaction,
     AcctJournalLine,
     AcctJournalProposal,
     AcctVoucher,
 )
-from openclaw_agent.flows.bank_reconcile import flow_bank_reconcile
-from openclaw_agent.flows.journal_suggestion import flow_journal_suggestion
+from accounting_agent.flows.bank_reconcile import flow_bank_reconcile
+from accounting_agent.flows.journal_suggestion import flow_journal_suggestion
 
 
 @pytest.fixture

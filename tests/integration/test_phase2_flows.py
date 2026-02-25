@@ -8,16 +8,16 @@ import pytest
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session, sessionmaker
 
-from openclaw_agent.common.models import (
+from accounting_agent.common.models import (
     AcctCashflowForecast,
     AcctReportSnapshot,
     AcctSoftCheckResult,
     AcctValidationIssue,
     Base,
 )
-from openclaw_agent.flows.cashflow_forecast import flow_cashflow_forecast
-from openclaw_agent.flows.soft_checks_acct import flow_soft_checks_acct
-from openclaw_agent.flows.tax_report import flow_tax_report
+from accounting_agent.flows.cashflow_forecast import flow_cashflow_forecast
+from accounting_agent.flows.soft_checks_acct import flow_soft_checks_acct
+from accounting_agent.flows.tax_report import flow_tax_report
 
 
 @pytest.fixture()

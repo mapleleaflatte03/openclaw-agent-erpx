@@ -12,7 +12,7 @@ Assumptions:
 
 ### Commands (run from this repo root)
 ```bash
-cd openclaw-agent-erpx
+cd accounting-agent-layer
 
 # Replace with your SSH targets (can be IPs or hostnames).
 ./scripts/k8s/build_and_load_images.sh node-01 node-02 node-03 node-04 node-05 node-06
@@ -20,14 +20,14 @@ cd openclaw-agent-erpx
 
 ### Verify (on node-01)
 ```bash
-sudo k3s ctr images ls | grep openclaw-agent-erpx
+sudo k3s ctr images ls | grep accounting-agent-layer
 ```
 
 ## 2) Create Namespace + Secrets + TLS
 
 ### Commands (on node-01)
 ```bash
-cd openclaw-agent-erpx
+cd accounting-agent-layer
 
 kubectl apply -f deploy/k8s/overlays/prod/namespace.yaml
 
@@ -41,7 +41,7 @@ kubectl apply -f deploy/k8s/base/tls-secret.yaml
 
 ### Verify
 ```bash
-kubectl -n openclaw-agent get secret agent-secrets
+kubectl -n accounting-agent get secret agent-secrets
 ```
 
 ## 3) Deploy Data Core (Postgres/Redis/MinIO) on node-02
@@ -51,25 +51,25 @@ kubectl -n openclaw-agent get secret agent-secrets
 kubectl apply -k deploy/k8s/overlays/prod
 
 # Initialize MinIO buckets
-kubectl -n openclaw-agent wait --for=condition=complete job/minio-init --timeout=300s
+kubectl -n accounting-agent wait --for=condition=complete job/minio-init --timeout=300s
 ```
 
 ### Verify
 ```bash
-kubectl -n openclaw-agent get pods -o wide
-kubectl -n openclaw-agent get svc
+kubectl -n accounting-agent get pods -o wide
+kubectl -n accounting-agent get svc
 ```
 
 ## 4) Run DB Migrations
 
 ### Commands
 ```bash
-kubectl -n openclaw-agent wait --for=condition=complete job/agent-migrate --timeout=300s
+kubectl -n accounting-agent wait --for=condition=complete job/agent-migrate --timeout=300s
 ```
 
 ### Verify
 ```bash
-kubectl -n openclaw-agent logs job/agent-migrate
+kubectl -n accounting-agent logs job/agent-migrate
 ```
 
 ## 5) Deploy Apps + Workers
@@ -81,8 +81,8 @@ kubectl apply -k deploy/k8s/overlays/prod
 
 ### Verify
 ```bash
-kubectl -n openclaw-agent get pods -o wide
-kubectl -n openclaw-agent port-forward svc/agent-service 8000:8000
+kubectl -n accounting-agent get pods -o wide
+kubectl -n accounting-agent port-forward svc/agent-service 8000:8000
 ```
 In another terminal:
 ```bash

@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import pytest
 
-from openclaw_agent.journal import (
+from accounting_agent.journal import (
     CHART_OF_ACCOUNTS_TT133,
     detect_vat_rate,
     suggest_journal_lines,

@@ -1,9 +1,9 @@
 # BÁO CÁO SỬA LỖI QA — 2026-02-11
 
 **Commit:** `5f10efd` (main)  
-**Người thực hiện:** Dev chính OpenClaw ERP-X AI Kế toán  
+**Người thực hiện:** Dev chính Accounting Agent Layer ERP AI Kế toán  
 **Cơ sở:** QA Report `logs/QA_REPORT_20260210.md`  
-**Hình ảnh deploy:** `openclaw-agent-erpx/agent-service:5f10efd`, `openclaw-agent-erpx/ui:b9b135a`
+**Hình ảnh deploy:** `accounting-agent-layer/agent-service:5f10efd`, `accounting-agent-layer/ui:b9b135a`
 
 ---
 
@@ -24,7 +24,7 @@
 **Nguyên nhân gốc:** Trước đây feeder là script ngoài (`vn_invoice_feeder.py`) không chạy trong container. Endpoint `/vn_feeder/control` chỉ ghi file control JSON mà không khởi tạo tiến trình nào.
 
 **Giải pháp:**
-- Tạo file mới `src/openclaw_agent/agent_service/vn_feeder_engine.py` — background thread engine chạy trong process agent-service
+- Tạo file mới `src/accounting_agent/agent_service/vn_feeder_engine.py` — background thread engine chạy trong process agent-service
 - Tải catalog dữ liệu VN (3 nguồn Kaggle) hoặc sinh 500 bản ghi tổng hợp nếu không có dữ liệu trên đĩa
 - Thread-safe: `start_feeder()`, `stop_feeder()`, `inject_now()`, `is_running()`
 - Ghi `feeder_status.json` với thống kê: running, total_events_today, sources, pct_consumed
@@ -34,8 +34,8 @@
 - **Bug phụ phát hiện khi test:** Port mặc định sai (30080 NodePort → 8000 in-container) — đã sửa
 
 **Files thay đổi:**
-- `src/openclaw_agent/agent_service/vn_feeder_engine.py` (MỚI, ~270 dòng)
-- `src/openclaw_agent/agent_service/main.py` (endpoint rewrite)
+- `src/accounting_agent/agent_service/vn_feeder_engine.py` (MỚI, ~270 dòng)
+- `src/accounting_agent/agent_service/main.py` (endpoint rewrite)
 
 ### ISSUE 2 — UI Period Input
 
@@ -47,7 +47,7 @@
 - Default: tháng hiện tại, đánh dấu `*` (bắt buộc)
 
 **Files thay đổi:**
-- `src/openclaw_agent/ui/app.py`
+- `src/accounting_agent/ui/app.py`
 
 ### ISSUE 3 — Q&A Routing + Prompt + reasoning_chain
 
@@ -66,10 +66,10 @@
 7. **reasoning_chain:** Xóa khỏi `meta` trong API response + xóa expander hiển thị trong UI Q&A tab
 
 **Files thay đổi:**
-- `src/openclaw_agent/flows/qna_accounting.py`
-- `src/openclaw_agent/llm/client.py`
-- `src/openclaw_agent/agent_service/main.py`
-- `src/openclaw_agent/ui/app.py`
+- `src/accounting_agent/flows/qna_accounting.py`
+- `src/accounting_agent/llm/client.py`
+- `src/accounting_agent/agent_service/main.py`
+- `src/accounting_agent/ui/app.py`
 
 ---
 
@@ -138,7 +138,7 @@ Tests cập nhật:
 - **4/4 acceptance criteria PASS**
 - **107 tests pass, 0 failures**
 - **Ruff lint: sạch**
-- **Deploy:** agent-service + UI rebuilt và rollout thành công trên k3s namespace `openclaw-agent-staging`
+- **Deploy:** agent-service + UI rebuilt và rollout thành công trên k3s namespace `accounting-agent-staging`
 - **Commits:** `b9b135a` (fix chính), `5f10efd` (fix port feeder)
 
 ---

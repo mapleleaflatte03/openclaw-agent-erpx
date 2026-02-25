@@ -13,7 +13,7 @@ def test_erpx_mock_endpoints(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("ERPX_MOCK_SEED_PATH", str(seed_path))
     monkeypatch.setenv("ERPX_MOCK_TOKEN", "testtoken")
 
-    from openclaw_agent.erpx_mock import main as erpx_main
+    from accounting_agent.erpx_mock import main as erpx_main
 
     erpx_main.DbState.conn = None  # force re-init with env above
     client = TestClient(erpx_main.app)

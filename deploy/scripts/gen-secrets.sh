@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-NAMESPACE="${NAMESPACE:-openclaw-agent}"
+NAMESPACE="${NAMESPACE:-accounting-agent}"
 OUT="${OUT:-deploy/k8s/base/secret.yaml}"
 
 rand() {

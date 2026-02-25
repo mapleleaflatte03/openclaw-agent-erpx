@@ -27,8 +27,8 @@ if str(REPO_ROOT) not in sys.path:
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from openclaw_agent.flows.voucher_classify import _classify_with_confidence  # noqa: E402
-from openclaw_agent.flows.voucher_ingest import _normalize_vn_fixture  # noqa: E402
+from accounting_agent.flows.voucher_classify import _classify_with_confidence  # noqa: E402
+from accounting_agent.flows.voucher_ingest import _normalize_vn_fixture  # noqa: E402
 from scripts.prepare_real_vn_data import _ALL_EXTS, _convert_image_to_doc_json  # noqa: E402
 
 

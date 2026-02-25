@@ -1,4 +1,4 @@
-# BÁO CÁO ACCEPTANCE (Blackbox) — OpenClaw ERP-X AI Kế toán
+# BÁO CÁO ACCEPTANCE (Blackbox) — Accounting Agent Layer ERP AI Kế toán
 
 **Ngày kiểm thử:** 2026-02-10  
 **Vai trò:** QA Tester / Acceptance Engineer (blackbox)  

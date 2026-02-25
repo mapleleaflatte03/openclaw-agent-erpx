@@ -2,8 +2,8 @@
 set -eu
 
 NAMESPACE="${NAMESPACE:-ingress-nginx}"
-DEFAULT_CERT_NS="${DEFAULT_CERT_NS:-openclaw-agent}"
-DEFAULT_CERT_NAME="${DEFAULT_CERT_NAME:-openclaw-agent-tls}"
+DEFAULT_CERT_NS="${DEFAULT_CERT_NS:-accounting-agent}"
+DEFAULT_CERT_NAME="${DEFAULT_CERT_NAME:-accounting-agent-tls}"
 
 if ! command -v helm >/dev/null 2>&1; then
   curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash

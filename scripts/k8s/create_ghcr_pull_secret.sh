@@ -8,20 +8,20 @@
 # Environment:
 #   GHCR_USERNAME  – GitHub username or org (required)
 #   GHCR_TOKEN     – GitHub PAT with read:packages scope (required)
-#   GHCR_EMAIL     – email for docker-registry (default: ci@openclaw.local)
+#   GHCR_EMAIL     – email for docker-registry (default: ci@accounting-agent.local)
 #
 # The secret is named "ghcr-pull" to match imagePullSecrets in ServiceAccount.
 
 set -euo pipefail
 
-NAMESPACE="${1:-openclaw-agent-staging}"
+NAMESPACE="${1:-accounting-agent-staging}"
 SECRET_NAME="ghcr-pull"
 REGISTRY="ghcr.io"
 
 # --- Fail-fast: require env vars ---
 : "${GHCR_USERNAME:?ERROR: GHCR_USERNAME is not set}"
 : "${GHCR_TOKEN:?ERROR: GHCR_TOKEN is not set}"
-GHCR_EMAIL="${GHCR_EMAIL:-ci@openclaw.local}"
+GHCR_EMAIL="${GHCR_EMAIL:-ci@accounting-agent.local}"
 
 echo "[INFO] Creating namespace '$NAMESPACE' if not exists..."
 kubectl create namespace "$NAMESPACE" --dry-run=client -o yaml | kubectl apply -f -

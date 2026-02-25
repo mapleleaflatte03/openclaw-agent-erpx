@@ -1,6 +1,6 @@
 # Deploy Staging to k3s (production-lite, auto-deploy)
 
-This repo ships a minimal k3s staging deployment for **OpenClaw Agent ERPX (5C)**.
+This repo ships a minimal k3s staging deployment for **Accounting Agent Layer ERPX (5C)**.
 
 Non-negotiable safety invariant:
 - **ERPX core is read-only** from the agent POV.
@@ -37,7 +37,7 @@ Image build contexts (repo root):
 
 Kustomize:
 - Base: `deploy/k8s/base/`
-- Staging overlay: `deploy/k8s/overlays/staging/` (namespace: `openclaw-agent-staging`)
+- Staging overlay: `deploy/k8s/overlays/staging/` (namespace: `accounting-agent-staging`)
 
 Key resources:
 - Data core: `postgres`, `redis`, `minio` (StatefulSets + PVCs)
@@ -65,11 +65,11 @@ Workflow: `.github/workflows/deploy-staging.yml`
 - Triggers: `push` to `main`, and `workflow_dispatch`.
 - Runs: lint/tests/openapi export, builds & pushes images, deploys to k3s, then runs smoke.
 - Images are pushed to **GHCR** tagged by commit SHA and deployed by SHA:
-  - `ghcr.io/mapleleaflatte03/openclaw-agent-erpx/agent-service:<sha>`
-  - `ghcr.io/mapleleaflatte03/openclaw-agent-erpx/agent-worker:<sha>`
-  - `ghcr.io/mapleleaflatte03/openclaw-agent-erpx/agent-scheduler:<sha>`
-  - `ghcr.io/mapleleaflatte03/openclaw-agent-erpx/erpx-mock-api:<sha>`
-  - `ghcr.io/mapleleaflatte03/openclaw-agent-erpx/ui:<sha>`
+  - `ghcr.io/mapleleaflatte03/accounting-agent-layer/agent-service:<sha>`
+  - `ghcr.io/mapleleaflatte03/accounting-agent-layer/agent-worker:<sha>`
+  - `ghcr.io/mapleleaflatte03/accounting-agent-layer/agent-scheduler:<sha>`
+  - `ghcr.io/mapleleaflatte03/accounting-agent-layer/erpx-mock-api:<sha>`
+  - `ghcr.io/mapleleaflatte03/accounting-agent-layer/ui:<sha>`
 
 Smoke gate:
 - Script: `scripts/smoke_contract_obligation_demo.py` (no UI clicks)
@@ -80,7 +80,7 @@ Smoke gate:
 
 Kubernetes access:
 - `STAGING_KUBECONFIG_B64`: base64 of a kubeconfig that can reach the staging cluster API.
-- `STAGING_NAMESPACE`: optional override (default `openclaw-agent-staging`).
+- `STAGING_NAMESPACE`: optional override (default `accounting-agent-staging`).
 
 Runtime secrets (used to create `agent-secrets` in-cluster):
 - `STAGING_POSTGRES_PASSWORD`

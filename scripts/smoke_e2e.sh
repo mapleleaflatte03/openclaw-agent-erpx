@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# scripts/smoke_e2e.sh — quick end-to-end smoke test for OpenClaw Agent ERPX.
+# scripts/smoke_e2e.sh — quick end-to-end smoke test for Accounting Agent Layer ERPX.
 # Verifies that docker-compose services boot up, healthz/readyz respond,
 # and at least 2 workflow run_types execute successfully.
 #

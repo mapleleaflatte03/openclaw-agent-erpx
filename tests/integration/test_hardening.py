@@ -6,7 +6,7 @@ import time
 
 def test_rate_limiter_enforces_qps():
     """_RateLimiter should enforce the configured QPS limit."""
-    from openclaw_agent.common.erpx_client import _RateLimiter
+    from accounting_agent.common.erpx_client import _RateLimiter
 
     qps = 10.0
     limiter = _RateLimiter.create(qps)
@@ -24,7 +24,7 @@ def test_rate_limiter_enforces_qps():
 
 def test_rate_limiter_zero_qps_no_delay():
     """QPS=0 should disable rate limiting (no delay)."""
-    from openclaw_agent.common.erpx_client import _RateLimiter
+    from accounting_agent.common.erpx_client import _RateLimiter
 
     limiter = _RateLimiter.create(0.0)
     start = time.monotonic()
@@ -36,7 +36,7 @@ def test_rate_limiter_zero_qps_no_delay():
 
 def test_audit_log_model_has_no_update_method():
     """AgentAuditLog should not expose update helpers that could bypass append-only."""
-    from openclaw_agent.common.models import AgentAuditLog
+    from accounting_agent.common.models import AgentAuditLog
 
     # The model class should not have custom update/delete methods
     assert not hasattr(AgentAuditLog, "update"), "AgentAuditLog must not have an update() method"
@@ -45,7 +45,7 @@ def test_audit_log_model_has_no_update_method():
 
 def test_audit_table_name():
     """Confirm the audit table name used by the Postgres trigger migration."""
-    from openclaw_agent.common.models import AgentAuditLog
+    from accounting_agent.common.models import AgentAuditLog
 
     assert AgentAuditLog.__tablename__ == "agent_audit_log"
 
@@ -54,7 +54,7 @@ def test_erpx_client_retry_max_3():
     """Default retry max attempts should be <= 3."""
     import os
 
-    from openclaw_agent.common.settings import Settings
+    from accounting_agent.common.settings import Settings
 
     # Create settings with minimal required env
     env = {

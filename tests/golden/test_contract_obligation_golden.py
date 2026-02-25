@@ -7,16 +7,16 @@ import sqlalchemy as sa
 from fastapi.testclient import TestClient
 from reportlab.pdfgen import canvas
 
-from openclaw_agent.common.db import Base, db_session, make_engine
-from openclaw_agent.common.models import (
+from accounting_agent.common.db import Base, db_session, make_engine
+from accounting_agent.common.models import (
     AgentContractCase,
     AgentErpXLink,
     AgentObligation,
     AgentProposal,
     AgentRun,
 )
-from openclaw_agent.common.testutils import get_free_port, run_uvicorn_in_thread, stop_uvicorn
-from openclaw_agent.common.utils import make_idempotency_key, new_uuid
+from accounting_agent.common.testutils import get_free_port, run_uvicorn_in_thread, stop_uvicorn
+from accounting_agent.common.utils import make_idempotency_key, new_uuid
 
 
 def _make_contract_pdf(path: Path, lines: list[str]) -> None:
@@ -74,7 +74,7 @@ def test_contract_obligation_idempotent_high_confidence(tmp_path: Path, monkeypa
     email_eml = tmp_path / "thread.eml"
     _make_email_eml(email_eml, "Re: HD-ACME-2026-0001", "Early payment discount: 2% if paid within 5 days.")
 
-    from openclaw_agent.erpx_mock import main as erpx_main
+    from accounting_agent.erpx_mock import main as erpx_main
 
     erpx_main.DbState.conn = None
     server, thread = run_uvicorn_in_thread(erpx_main.app, port=port)
@@ -82,13 +82,13 @@ def test_contract_obligation_idempotent_high_confidence(tmp_path: Path, monkeypa
     try:
         import importlib
 
-        from openclaw_agent.common.settings import get_settings
+        from accounting_agent.common.settings import get_settings
 
         get_settings.cache_clear()
-        from openclaw_agent.agent_worker import tasks as worker_tasks
+        from accounting_agent.agent_worker import tasks as worker_tasks
 
         importlib.reload(worker_tasks)
-        from openclaw_agent.common.storage import S3ObjectRef
+        from accounting_agent.common.storage import S3ObjectRef
 
         Base.metadata.create_all(worker_tasks.engine)
 
@@ -194,7 +194,7 @@ def test_contract_obligation_gating_low_confidence(tmp_path: Path, monkeypatch):
     contract_pdf = tmp_path / "contract_low_conf.pdf"
     _make_contract_pdf(contract_pdf, ["Payment terms: to be discussed."])
 
-    from openclaw_agent.erpx_mock import main as erpx_main
+    from accounting_agent.erpx_mock import main as erpx_main
 
     erpx_main.DbState.conn = None
     server, thread = run_uvicorn_in_thread(erpx_main.app, port=port)
@@ -202,13 +202,13 @@ def test_contract_obligation_gating_low_confidence(tmp_path: Path, monkeypatch):
     try:
         import importlib
 
-        from openclaw_agent.common.settings import get_settings
+        from accounting_agent.common.settings import get_settings
 
         get_settings.cache_clear()
-        from openclaw_agent.agent_worker import tasks as worker_tasks
+        from accounting_agent.agent_worker import tasks as worker_tasks
 
         importlib.reload(worker_tasks)
-        from openclaw_agent.common.storage import S3ObjectRef
+        from accounting_agent.common.storage import S3ObjectRef
 
         Base.metadata.create_all(worker_tasks.engine)
 
@@ -273,7 +273,7 @@ def test_contract_obligation_conflict_drops_to_tier2(tmp_path: Path, monkeypatch
     email_eml = tmp_path / "thread_conflict.eml"
     _make_email_eml(email_eml, "Re: HD-ACME-2026-0001", "Milestone payment: 30% within 12 days.")
 
-    from openclaw_agent.erpx_mock import main as erpx_main
+    from accounting_agent.erpx_mock import main as erpx_main
 
     erpx_main.DbState.conn = None
     server, thread = run_uvicorn_in_thread(erpx_main.app, port=port)
@@ -281,13 +281,13 @@ def test_contract_obligation_conflict_drops_to_tier2(tmp_path: Path, monkeypatch
     try:
         import importlib
 
-        from openclaw_agent.common.settings import get_settings
+        from accounting_agent.common.settings import get_settings
 
         get_settings.cache_clear()
-        from openclaw_agent.agent_worker import tasks as worker_tasks
+        from accounting_agent.agent_worker import tasks as worker_tasks
 
         importlib.reload(worker_tasks)
-        from openclaw_agent.common.storage import S3ObjectRef
+        from accounting_agent.common.storage import S3ObjectRef
 
         Base.metadata.create_all(worker_tasks.engine)
 
@@ -384,8 +384,8 @@ def test_contract_approvals_high_risk_two_step_maker_checker(tmp_path: Path, mon
         )
 
     # Agent service API: maker-checker + evidence_ack + 2-step for high-risk
-    from openclaw_agent.agent_service import main as svc_main
-    from openclaw_agent.common.settings import get_settings
+    from accounting_agent.agent_service import main as svc_main
+    from accounting_agent.common.settings import get_settings
 
     get_settings.cache_clear()
     monkeypatch.setattr(svc_main, "ensure_buckets", lambda _settings: None)

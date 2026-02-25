@@ -100,8 +100,8 @@ _VN_SELLERS = [
 ]
 
 _VN_BUYERS = [
-    ("Công ty TNHH Kế toán OpenClaw", "0109999888"),
-    ("Doanh nghiệp TN Demo ERP-X", "0301112233"),
+    ("Công ty TNHH Kế toán Accounting Agent Layer", "0109999888"),
+    ("Doanh nghiệp TN Demo ERP", "0301112233"),
     ("Công ty CP Công nghệ AI Việt", "0108765432"),
 ]
 

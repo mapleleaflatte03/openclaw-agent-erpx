@@ -37,7 +37,7 @@ def test_drift_report_not_enough_data(tmp_path):
     db_file = tmp_path / "test.sqlite"
     dsn = f"sqlite+pysqlite:///{db_file}"
 
-    from openclaw_agent.common.db import Base, make_engine
+    from accounting_agent.common.db import Base, make_engine
 
     engine = make_engine(dsn)
     Base.metadata.create_all(engine)
@@ -50,9 +50,9 @@ def test_drift_report_ok(tmp_path):
     db_file = tmp_path / "test.sqlite"
     dsn = f"sqlite+pysqlite:///{db_file}"
 
-    from openclaw_agent.common.db import Base, db_session, make_engine
-    from openclaw_agent.common.models import TierBFeedback
-    from openclaw_agent.common.utils import new_uuid
+    from accounting_agent.common.db import Base, db_session, make_engine
+    from accounting_agent.common.models import TierBFeedback
+    from accounting_agent.common.utils import new_uuid
 
     engine = make_engine(dsn)
     Base.metadata.create_all(engine)
@@ -76,9 +76,9 @@ def test_drift_report_drift(tmp_path):
     db_file = tmp_path / "test.sqlite"
     dsn = f"sqlite+pysqlite:///{db_file}"
 
-    from openclaw_agent.common.db import Base, db_session, make_engine
-    from openclaw_agent.common.models import TierBFeedback
-    from openclaw_agent.common.utils import new_uuid
+    from accounting_agent.common.db import Base, db_session, make_engine
+    from accounting_agent.common.models import TierBFeedback
+    from accounting_agent.common.utils import new_uuid
 
     engine = make_engine(dsn)
     Base.metadata.create_all(engine)

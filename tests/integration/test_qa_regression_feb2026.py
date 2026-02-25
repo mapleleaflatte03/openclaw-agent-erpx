@@ -1,14 +1,15 @@
 from __future__ import annotations
 
 import base64
+import gzip
 from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 
-from openclaw_agent.common.db import Base, db_session, make_engine
-from openclaw_agent.common.models import (
+from accounting_agent.common.db import Base, db_session, make_engine
+from accounting_agent.common.models import (
     AcctBankTransaction,
     AcctCashflowForecast,
     AcctJournalLine,
@@ -20,8 +21,8 @@ from openclaw_agent.common.models import (
     AgentAttachment,
     AgentRun,
 )
-from openclaw_agent.common.settings import get_settings
-from openclaw_agent.common.utils import new_uuid
+from accounting_agent.common.settings import get_settings
+from accounting_agent.common.utils import new_uuid
 
 _HEADERS = {"X-API-Key": "test-key"}
 
@@ -45,7 +46,7 @@ def client_and_engine(tmp_path: Path, monkeypatch):
     engine = make_engine()
     Base.metadata.create_all(engine)
 
-    from openclaw_agent.agent_service import main as svc_main
+    from accounting_agent.agent_service import main as svc_main
 
     get_settings.cache_clear()
     monkeypatch.setattr(svc_main, "ensure_buckets", lambda _settings: None)
@@ -270,7 +271,7 @@ def test_reports_endpoints_no_500_for_valid_payload(client_and_engine):
 def test_create_run_local_executor_not_stuck_queued(client_and_engine, monkeypatch):
     client, engine = client_and_engine
     monkeypatch.setenv("RUN_EXECUTOR_MODE", "local")
-    from openclaw_agent.agent_service import main as svc_main
+    from accounting_agent.agent_service import main as svc_main
 
     def _run_local_stub(run_id: str) -> None:
         with db_session(engine) as s:
@@ -303,7 +304,7 @@ def test_create_run_local_executor_not_stuck_queued(client_and_engine, monkeypat
 def test_voucher_reprocess_run_type_accepted(client_and_engine, monkeypatch):
     client, engine = client_and_engine
     monkeypatch.setenv("RUN_EXECUTOR_MODE", "local")
-    from openclaw_agent.agent_service import main as svc_main
+    from accounting_agent.agent_service import main as svc_main
 
     voucher_id = new_uuid()
     with db_session(engine) as s:
@@ -349,7 +350,7 @@ def test_voucher_reprocess_run_type_accepted(client_and_engine, monkeypatch):
 def test_voucher_reprocess_wrapper_endpoint(client_and_engine, monkeypatch):
     client, engine = client_and_engine
     monkeypatch.setenv("RUN_EXECUTOR_MODE", "local")
-    from openclaw_agent.agent_service import main as svc_main
+    from accounting_agent.agent_service import main as svc_main
 
     uploaded = client.post(
         "/agent/v1/attachments",
@@ -384,7 +385,7 @@ def test_voucher_reprocess_wrapper_endpoint(client_and_engine, monkeypatch):
 def test_voucher_reprocess_allows_zero_amount_review(client_and_engine, monkeypatch):
     client, engine = client_and_engine
     monkeypatch.setenv("RUN_EXECUTOR_MODE", "local")
-    from openclaw_agent.agent_service import main as svc_main
+    from accounting_agent.agent_service import main as svc_main
 
     zero_xml = b"""
     <invoice>
@@ -430,7 +431,7 @@ def test_voucher_reprocess_allows_zero_amount_review(client_and_engine, monkeypa
 def test_voucher_reprocess_can_restore_missing_attachment(client_and_engine, monkeypatch, tmp_path: Path):
     client, engine = client_and_engine
     monkeypatch.setenv("RUN_EXECUTOR_MODE", "local")
-    from openclaw_agent.agent_service import main as svc_main
+    from accounting_agent.agent_service import main as svc_main
 
     source_xml = b"<invoice><meta>MST 0101234567</meta><summary>Tong tien: 350000</summary></invoice>"
     uploaded = client.post(
@@ -474,6 +475,57 @@ def test_voucher_reprocess_can_restore_missing_attachment(client_and_engine, mon
             "filename": "invoice-restore.xml",
             "content_type": "application/xml",
             "file_content_b64": base64.b64encode(source_xml).decode("ascii"),
+        },
+        headers=_HEADERS,
+    )
+    assert restored.status_code == 200, restored.text
+    assert restored.json().get("run_type") == "voucher_reprocess"
+
+    with db_session(engine) as s:
+        att = s.get(AgentAttachment, attachment_id)
+        assert att is not None
+        assert Path(str(att.file_uri)).exists()
+
+
+def test_voucher_reprocess_can_restore_missing_attachment_with_gzip_payload(client_and_engine, monkeypatch, tmp_path: Path):
+    client, engine = client_and_engine
+    monkeypatch.setenv("RUN_EXECUTOR_MODE", "local")
+    from accounting_agent.agent_service import main as svc_main
+
+    source_xml = b"<invoice><meta>MST 0101234567</meta><summary>Tong tien: 910000</summary></invoice>"
+    uploaded = client.post(
+        "/agent/v1/attachments",
+        files={"file": ("invoice-restore-gzip.xml", source_xml, "application/xml")},
+        data={"source_tag": "ocr_upload"},
+        headers=_HEADERS,
+    )
+    assert uploaded.status_code == 200, uploaded.text
+    voucher_id = uploaded.json()["voucher_id"]
+    attachment_id = uploaded.json()["attachment_id"]
+
+    with db_session(engine) as s:
+        att = s.get(AgentAttachment, attachment_id)
+        assert att is not None
+        att.file_uri = str(tmp_path / "missing-source-gzip.xml")
+
+    def _run_local_stub(run_id: str) -> None:
+        with db_session(engine) as s:
+            run = s.get(AgentRun, run_id)
+            assert run is not None
+            run.status = "success"
+            run.started_at = run.created_at
+            run.finished_at = run.created_at
+
+    monkeypatch.setattr(svc_main, "_dispatch_run_local", _run_local_stub)
+
+    gzip_payload = base64.b64encode(gzip.compress(source_xml, compresslevel=6)).decode("ascii")
+    restored = client.post(
+        f"/agent/v1/acct/vouchers/{voucher_id}/reprocess",
+        json={
+            "reason": "restore_attachment_gzip",
+            "filename": "invoice-restore-gzip.xml",
+            "content_type": "application/xml",
+            "file_content_gzip_b64": gzip_payload,
         },
         headers=_HEADERS,
     )
@@ -1237,7 +1289,7 @@ def test_settings_profile_rejects_invalid_email(client_and_engine):
 
 def test_vn_feeder_control_update_config_and_status(client_and_engine, monkeypatch):
     client, _engine = client_and_engine
-    import openclaw_agent.agent_service.vn_feeder_engine as feeder_engine
+    import accounting_agent.agent_service.vn_feeder_engine as feeder_engine
 
     state = {"running": False, "epm": 3}
 

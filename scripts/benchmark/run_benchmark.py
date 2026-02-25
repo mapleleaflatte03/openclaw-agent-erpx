@@ -322,7 +322,7 @@ def run_benchmark(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Run benchmark against OpenClaw Agent ERPX")
+    parser = argparse.ArgumentParser(description="Run benchmark against Accounting Agent Layer ERPX")
     parser.add_argument("--cases", type=int, default=50)
     parser.add_argument("--target", choices=["docker", "staging"], default="docker")
     parser.add_argument("--out", type=str, default="reports/benchmark/latest.json")

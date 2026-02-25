@@ -12,5 +12,5 @@ COPY config /app/config
 RUN python -m pip install -U pip && \
     python -m pip install -e .
 
-CMD ["python", "-m", "openclaw_agent.agent_scheduler.main"]
+CMD ["python", "-m", "accounting_agent.agent_scheduler.main"]
 

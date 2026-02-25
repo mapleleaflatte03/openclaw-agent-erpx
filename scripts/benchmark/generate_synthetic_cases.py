@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate synthetic benchmark cases for OpenClaw Agent ERPX.
+"""Generate synthetic benchmark cases for Accounting Agent Layer ERPX.
 
 Creates Vietnamese-language contract PDFs, amendment EML files, and
 ground-truth JSON for each case.  Output is compatible with the benchmark
@@ -256,9 +256,9 @@ def _generate_eml(case_dir: Path, partner: str, contract_code: str,
     msg = EmailMessage()
     msg["Subject"] = f"Bo sung dieu khoan - {contract_code}"
     msg["From"] = f"kd@{partner.lower().replace(' ', '').replace(',', '')[:15]}.vn"
-    msg["To"] = "ke.toan@openclaw.vn"
+    msg["To"] = "ke.toan@accounting-agent.vn"
     msg["Date"] = (datetime.datetime.now(tz=datetime.timezone.utc)).strftime("%a, %d %b %Y %H:%M:%S %z")
-    msg["Message-ID"] = f"<{uuid.uuid4()}@openclaw.vn>"
+    msg["Message-ID"] = f"<{uuid.uuid4()}@accounting-agent.vn>"
 
     body_lines = [
         "Kinh gui Phong Ke toan,",

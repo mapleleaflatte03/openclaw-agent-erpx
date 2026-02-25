@@ -23,7 +23,7 @@ from score import score  # noqa: E402
 def _render_md(results: dict, scores: dict) -> str:
     """Render benchmark report as Markdown."""
     lines = [
-        "# Benchmark Report — OpenClaw Agent ERPX",
+        "# Benchmark Report — Accounting Agent Layer ERPX",
         "",
         f"**Timestamp**: {results.get('timestamp', 'N/A')}",
         f"**Target**: {results.get('target', 'N/A')}",

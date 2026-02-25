@@ -9,7 +9,7 @@ spec:
       restartPolicy: OnFailure
       containers:
         - name: migrate
-          image: openclaw-agent-erpx/agent-service:0.1.0
+          image: accounting-agent-layer/agent-service:0.1.0
           imagePullPolicy: IfNotPresent
           envFrom:
             - configMapRef:

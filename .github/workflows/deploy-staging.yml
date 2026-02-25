@@ -20,7 +20,7 @@ permissions:
   packages: write
 
 concurrency:
-  group: openclaw-staging
+  group: accounting-agent-staging
   cancel-in-progress: true
 
 jobs:
@@ -63,8 +63,8 @@ jobs:
           file: services/agent-service/Dockerfile
           push: true
           tags: |
-            ghcr.io/${{ github.repository }}/agent-service:${{ github.sha }}
-            ghcr.io/${{ github.repository }}/agent-service:staging-latest
+            ghcr.io/${{ github.repository_owner }}/accounting-agent-layer/agent-service:${{ github.sha }}
+            ghcr.io/${{ github.repository_owner }}/accounting-agent-layer/agent-service:staging-latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -75,8 +75,8 @@ jobs:
           file: services/agent-worker/Dockerfile
           push: true
           tags: |
-            ghcr.io/${{ github.repository }}/agent-worker:${{ github.sha }}
-            ghcr.io/${{ github.repository }}/agent-worker:staging-latest
+            ghcr.io/${{ github.repository_owner }}/accounting-agent-layer/agent-worker:${{ github.sha }}
+            ghcr.io/${{ github.repository_owner }}/accounting-agent-layer/agent-worker:staging-latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -87,8 +87,8 @@ jobs:
           file: services/agent-scheduler/Dockerfile
           push: true
           tags: |
-            ghcr.io/${{ github.repository }}/agent-scheduler:${{ github.sha }}
-            ghcr.io/${{ github.repository }}/agent-scheduler:staging-latest
+            ghcr.io/${{ github.repository_owner }}/accounting-agent-layer/agent-scheduler:${{ github.sha }}
+            ghcr.io/${{ github.repository_owner }}/accounting-agent-layer/agent-scheduler:staging-latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -99,8 +99,8 @@ jobs:
           file: services/erpx-mock-api/Dockerfile
           push: true
           tags: |
-            ghcr.io/${{ github.repository }}/erpx-mock-api:${{ github.sha }}
-            ghcr.io/${{ github.repository }}/erpx-mock-api:staging-latest
+            ghcr.io/${{ github.repository_owner }}/accounting-agent-layer/erpx-mock-api:${{ github.sha }}
+            ghcr.io/${{ github.repository_owner }}/accounting-agent-layer/erpx-mock-api:staging-latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -111,8 +111,8 @@ jobs:
           file: services/ui/Dockerfile
           push: true
           tags: |
-            ghcr.io/${{ github.repository }}/ui:${{ github.sha }}
-            ghcr.io/${{ github.repository }}/ui:staging-latest
+            ghcr.io/${{ github.repository_owner }}/accounting-agent-layer/ui:${{ github.sha }}
+            ghcr.io/${{ github.repository_owner }}/accounting-agent-layer/ui:staging-latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -148,7 +148,7 @@ jobs:
           OVERLAY: ${{ github.event.inputs.overlay || 'staging' }}
         run: |
           set -euo pipefail
-          NS="${NS:-openclaw-agent-staging}"
+          NS="${NS:-accounting-agent-staging}"
           OVERLAY_DIR="deploy/k8s/overlays/${OVERLAY}"
 
           # Namespace must exist before creating secrets.
@@ -170,7 +170,7 @@ jobs:
           MINIO_SECRET_KEY: ${{ secrets.STAGING_MINIO_SECRET_KEY }}
         run: |
           set -euo pipefail
-          NS="${NS:-openclaw-agent-staging}"
+          NS="${NS:-accounting-agent-staging}"
 
           # If secret doesn't exist yet, allow creation
           if ! kubectl -n "$NS" get secret agent-secrets >/dev/null 2>&1; then
@@ -221,7 +221,7 @@ jobs:
           SMTP_PASSWORD: ${{ secrets.STAGING_SMTP_PASSWORD }}
         run: |
           set -euo pipefail
-          NS="${NS:-openclaw-agent-staging}"
+          NS="${NS:-accounting-agent-staging}"
 
           if [ -z "${POSTGRES_PASSWORD:-}" ]; then echo "Missing secret: STAGING_POSTGRES_PASSWORD" >&2; exit 1; fi
           if [ -z "${AGENT_API_KEY:-}" ]; then echo "Missing secret: STAGING_AGENT_API_KEY" >&2; exit 1; fi
@@ -254,7 +254,7 @@ jobs:
           NS: ${{ secrets.STAGING_NAMESPACE }}
         run: |
           set -euxo pipefail
-          NS="${NS:-openclaw-agent-staging}"
+          NS="${NS:-accounting-agent-staging}"
           kubectl -n "$NS" rollout restart statefulset/postgres statefulset/redis statefulset/minio
           kubectl -n "$NS" rollout status statefulset/postgres --timeout=300s
           kubectl -n "$NS" rollout status statefulset/redis   --timeout=300s
@@ -275,7 +275,7 @@ jobs:
           NS: ${{ secrets.STAGING_NAMESPACE }}
         run: |
           set -euxo pipefail
-          NS="${NS:-openclaw-agent-staging}"
+          NS="${NS:-accounting-agent-staging}"
           kubectl -n "$NS" delete job minio-init --ignore-not-found
           kubectl -n "$NS" delete job agent-migrate --ignore-not-found
 
@@ -293,7 +293,7 @@ jobs:
           NS: ${{ secrets.STAGING_NAMESPACE }}
         run: |
           set -euxo pipefail
-          NS="${NS:-openclaw-agent-staging}"
+          NS="${NS:-accounting-agent-staging}"
           kubectl -n "$NS" wait --for=condition=complete job/minio-init --timeout=300s
           # Migration might fail if DB schema already up-to-date; log and continue
           if ! kubectl -n "$NS" wait --for=condition=complete job/agent-migrate --timeout=300s; then
@@ -306,7 +306,7 @@ jobs:
           NS: ${{ secrets.STAGING_NAMESPACE }}
         run: |
           set -euxo pipefail
-          NS="${NS:-openclaw-agent-staging}"
+          NS="${NS:-accounting-agent-staging}"
           kubectl -n "$NS" rollout status deployment/erpx-mock-api --timeout=300s
           kubectl -n "$NS" rollout status deployment/agent-service --timeout=300s
           kubectl -n "$NS" rollout status deployment/agent-worker-io --timeout=300s || true
@@ -323,7 +323,7 @@ jobs:
           MINIO_SECRET_KEY: ${{ secrets.STAGING_MINIO_SECRET_KEY }}
         run: |
           set -euo pipefail
-          NS="${NS:-openclaw-agent-staging}"
+          NS="${NS:-accounting-agent-staging}"
 
           kubectl -n "$NS" port-forward svc/agent-service 8000:8000 >/tmp/pf-agent.log 2>&1 &
           PF_AGENT=$!

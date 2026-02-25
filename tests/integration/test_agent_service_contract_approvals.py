@@ -4,9 +4,9 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-from openclaw_agent.common.db import Base, db_session, make_engine
-from openclaw_agent.common.models import AgentContractCase, AgentProposal
-from openclaw_agent.common.utils import make_idempotency_key, new_uuid
+from accounting_agent.common.db import Base, db_session, make_engine
+from accounting_agent.common.models import AgentContractCase, AgentProposal
+from accounting_agent.common.utils import make_idempotency_key, new_uuid
 
 
 def test_agent_service_contract_approvals_high_risk(tmp_path: Path, monkeypatch):
@@ -62,8 +62,8 @@ def test_agent_service_contract_approvals_high_risk(tmp_path: Path, monkeypatch)
             )
         )
 
-    from openclaw_agent.agent_service import main as svc_main
-    from openclaw_agent.common.settings import get_settings
+    from accounting_agent.agent_service import main as svc_main
+    from accounting_agent.common.settings import get_settings
 
     get_settings.cache_clear()
     monkeypatch.setattr(svc_main, "ensure_buckets", lambda _settings: None)
@@ -180,8 +180,8 @@ def test_agent_service_contract_reject_finalizes(tmp_path: Path, monkeypatch):
             evidence_summary_hash=None, proposal_key=proposal_key, run_id=None,
         ))
 
-    from openclaw_agent.agent_service import main as svc_main
-    from openclaw_agent.common.settings import get_settings
+    from accounting_agent.agent_service import main as svc_main
+    from accounting_agent.common.settings import get_settings
 
     get_settings.cache_clear()
     monkeypatch.setattr(svc_main, "ensure_buckets", lambda _settings: None)

@@ -1,5 +1,5 @@
 /**
- * ERP-X AI Kế toán — Main Application Module
+ * ERP AI Kế toán — Main Application Module
  * ============================================
  * Vanilla ES6 modules, no build step required.
  */

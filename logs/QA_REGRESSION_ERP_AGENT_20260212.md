@@ -12,8 +12,8 @@
 - `ci` workflow: **success** (run `21939975983`)
 - `deploy-staging` workflow: **success** (run `21939975971`)
 - K8s rollout:
-  - `kubectl -n openclaw-agent-staging rollout status deployment/agent-service` => success
-  - Running image: `ghcr.io/mapleleaflatte03/openclaw-agent-erpx/agent-service:2019efda94cd23eb7ebab16b03362f9458590408`
+  - `kubectl -n accounting-agent-staging rollout status deployment/agent-service` => success
+  - Running image: `ghcr.io/mapleleaflatte03/accounting-agent-layer/agent-service:2019efda94cd23eb7ebab16b03362f9458590408`
 
 ## 3) Overall Result
 - PASS: **27**

@@ -15,7 +15,7 @@ All gaps were addressed in this phase.
 ### New Modules
 | Module | File | Lines | Purpose |
 |--------|------|-------|---------|
-| Tax Reconciliation | `src/openclaw_agent/recon/__init__.py` | ~240 | e-invoice XML parser (NĐ123/TT78), 3-way match engine, fraud detection |
+| Tax Reconciliation | `src/accounting_agent/recon/__init__.py` | ~240 | e-invoice XML parser (NĐ123/TT78), 3-way match engine, fraud detection |
 
 ### Extended Modules
 | Module | Change | Purpose |

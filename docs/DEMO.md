@@ -13,7 +13,7 @@ You can run the demo either:
 ### A) Start Local Stack (Docker Compose)
 
 ```bash
-cd /root/openclaw-agent-erpx
+cd /root/accounting-agent-layer
 cp -n .env.example .env
 docker compose up -d --build
 ```
@@ -27,12 +27,12 @@ curl -fsS http://localhost:8501 >/dev/null && echo "ui ok"
 
 ### B) k3s/staging (port-forward)
 
-Adjust namespace if needed (example: `openclaw`):
+Adjust namespace if needed (example: `accounting-agent`):
 ```bash
-kubectl -n openclaw get pods
-kubectl -n openclaw port-forward svc/agent-service 8000:8000
-kubectl -n openclaw port-forward svc/ui 8501:8501
-kubectl -n openclaw port-forward svc/minio 9000:9000
+kubectl -n accounting-agent get pods
+kubectl -n accounting-agent port-forward svc/agent-service 8000:8000
+kubectl -n accounting-agent port-forward svc/ui 8501:8501
+kubectl -n accounting-agent port-forward svc/minio 9000:9000
 ```
 
 Then use the same demo flow but with:
@@ -53,7 +53,7 @@ from email.message import EmailMessage
 from pathlib import Path
 from reportlab.pdfgen import canvas
 
-out = Path("/tmp/openclaw-demo")
+out = Path("/tmp/accounting-agent-demo")
 out.mkdir(parents=True, exist_ok=True)
 
 def make_pdf(path: Path, lines: list[str]) -> None:
@@ -95,8 +95,8 @@ PY
 Open UI: `http://localhost:8501`
 
 In **Upload Drop File (Event Trigger)**:
-- upload `/tmp/openclaw-demo/contract_A.pdf` (any drop_type is OK)
-- upload `/tmp/openclaw-demo/thread_A.eml`
+- upload `/tmp/accounting-agent-demo/contract_A.pdf` (any drop_type is OK)
+- upload `/tmp/accounting-agent-demo/thread_A.eml`
 - copy returned `file_uri` (looks like `s3://agent-drop/drop/...`)
 
 ## 3) Trigger Run (Maker)
@@ -144,7 +144,7 @@ In UI (right side):
   - show response: `proposal_status=approved`, approvals `2/2`
 
 Optional (Tier 3):
-- upload `/tmp/openclaw-demo/contract_B_low_conf.pdf`
+- upload `/tmp/accounting-agent-demo/contract_B_low_conf.pdf`
 - trigger another run (requested_by can be `maker-001`)
 - show Tier3 output: `proposal_type=missing_data`, `tier=3`
 

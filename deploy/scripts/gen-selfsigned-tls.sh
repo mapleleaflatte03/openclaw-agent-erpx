@@ -1,8 +1,8 @@
 #!/bin/sh
 set -eu
 
-NAMESPACE="${NAMESPACE:-openclaw-agent}"
-SECRET_NAME="${SECRET_NAME:-openclaw-agent-tls}"
+NAMESPACE="${NAMESPACE:-accounting-agent}"
+SECRET_NAME="${SECRET_NAME:-accounting-agent-tls}"
 OUT="${OUT:-deploy/k8s/base/tls-secret.yaml}"
 
 tmpdir="$(mktemp -d)"
@@ -12,7 +12,7 @@ openssl req -x509 -nodes -newkey rsa:2048 \
   -keyout "$tmpdir/tls.key" \
   -out "$tmpdir/tls.crt" \
   -days 3650 \
-  -subj "/CN=openclaw-agent/O=OpenClaw"
+  -subj "/CN=accounting-agent/O=Accounting Agent Layer"
 
 kubectl -n "$NAMESPACE" create secret tls "$SECRET_NAME" \
   --cert="$tmpdir/tls.crt" \

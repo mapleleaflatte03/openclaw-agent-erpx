@@ -109,9 +109,9 @@ Cải thiện feedback sau tạo tác vụ thành công:
 
 | File | Lines changed | Mô tả |
 |---|---|---|
-| `src/openclaw_agent/flows/qna_accounting.py` | +200 | PO templates, guardrail, monologue patterns, benchmark matcher |
-| `src/openclaw_agent/llm/client.py` | +60 | System prompt cứng với rules + few-shot |
-| `src/openclaw_agent/ui/app.py` | +80 -10 | CC buttons fix, downstream trace, task feedback |
+| `src/accounting_agent/flows/qna_accounting.py` | +200 | PO templates, guardrail, monologue patterns, benchmark matcher |
+| `src/accounting_agent/llm/client.py` | +60 | System prompt cứng với rules + few-shot |
+| `src/accounting_agent/ui/app.py` | +80 -10 | CC buttons fix, downstream trace, task feedback |
 | `tests/integration/test_p3_llm_wiring.py` | +70 | 6 new tests |
 | `logs/QA_PO_FINAL_2026-02-11.md` | (existing) | Previous PO report |
 | `logs/QA_PO_FINAL_EVIDENCE_2026-02-11.json` | (existing) | QA evidence |
@@ -119,7 +119,7 @@ Cải thiện feedback sau tạo tác vụ thành công:
 ## Deployment
 
 - Image: `agent-service:po-20260211073054`
-- k3s namespace: `openclaw-agent-staging`
+- k3s namespace: `accounting-agent-staging`
 - Rollout: ✅ successful
 - Pod verified: `grep "_passes_quality_guardrail"` confirmed new code running
 

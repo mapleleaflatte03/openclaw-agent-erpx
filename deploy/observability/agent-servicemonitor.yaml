@@ -2,7 +2,7 @@ apiVersion: monitoring.coreos.com/v1
 kind: ServiceMonitor
 metadata:
   name: agent-service
-  namespace: openclaw-agent
+  namespace: accounting-agent
   labels:
     release: kube-prometheus-stack
 spec:
@@ -11,7 +11,7 @@ spec:
       app: agent-service
   namespaceSelector:
     matchNames:
-      - openclaw-agent
+      - accounting-agent
   endpoints:
     - port: http
       path: /metrics

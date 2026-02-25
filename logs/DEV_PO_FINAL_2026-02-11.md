@@ -1,7 +1,7 @@
 # PO Final Acceptance Report — 2026-02-11
 
 **Commit:** `4db91d4` (main)
-**Deploy:** k3s `openclaw-agent-staging`, image `ghcr.io/mapleleaflatte03/openclaw-agent-erpx:po-20260211044856`
+**Deploy:** k3s `accounting-agent-staging`, image `ghcr.io/mapleleaflatte03/accounting-agent-layer:po-20260211044856`
 **Tests:** 111 passed, 5 skipped, 0 failures
 **Ruff:** clean (0 errors)
 
@@ -83,10 +83,10 @@ Không thay đổi từ commit trước (`d724eb7`). Period validation đã ổn
 
 | File | Changes |
 |------|---------|
-| `src/openclaw_agent/flows/qna_accounting.py` | Strip reasoning_chain, remove regulation handler, widen cleaning |
-| `src/openclaw_agent/llm/client.py` | Few-shot prompt example |
-| `src/openclaw_agent/agent_service/main.py` | POST/GET /runs enhanced, func import |
-| `src/openclaw_agent/ui/app.py` | Chain trace UI, auto-refresh, recent runs |
+| `src/accounting_agent/flows/qna_accounting.py` | Strip reasoning_chain, remove regulation handler, widen cleaning |
+| `src/accounting_agent/llm/client.py` | Few-shot prompt example |
+| `src/accounting_agent/agent_service/main.py` | POST/GET /runs enhanced, func import |
+| `src/accounting_agent/ui/app.py` | Chain trace UI, auto-refresh, recent runs |
 | `tests/integration/test_p3_llm_wiring.py` | 4 new tests (3 golden + no_reasoning_chain) |
 
 ---

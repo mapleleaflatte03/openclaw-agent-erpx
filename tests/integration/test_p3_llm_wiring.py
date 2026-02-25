@@ -23,7 +23,7 @@ class TestLLMClientConfig:
         monkeypatch.delenv("DO_AGENT_BASE_URL", raising=False)
         monkeypatch.delenv("DO_AGENT_API_KEY", raising=False)
 
-        from openclaw_agent.llm.client import LLMClientConfig
+        from accounting_agent.llm.client import LLMClientConfig
         cfg = LLMClientConfig.from_env()
         assert cfg.enabled is False
 
@@ -34,7 +34,7 @@ class TestLLMClientConfig:
         monkeypatch.setenv("DO_AGENT_API_KEY", "secret-key")
         monkeypatch.setenv("DO_AGENT_MODEL", "test-model")
 
-        from openclaw_agent.llm.client import LLMClientConfig
+        from accounting_agent.llm.client import LLMClientConfig
         cfg = LLMClientConfig.from_env()
         assert cfg.enabled is True
         assert cfg.base_url == "https://example.com"
@@ -46,7 +46,7 @@ class TestLLMClientConfig:
         monkeypatch.setenv("DO_AGENT_BASE_URL", "https://example.com")
         monkeypatch.delenv("DO_AGENT_API_KEY", raising=False)
 
-        from openclaw_agent.llm.client import LLMClientConfig
+        from accounting_agent.llm.client import LLMClientConfig
         cfg = LLMClientConfig.from_env()
         assert cfg.enabled is False
 
@@ -56,7 +56,7 @@ class TestLLMClientConfig:
         monkeypatch.delenv("DO_AGENT_BASE_URL", raising=False)
         monkeypatch.setenv("DO_AGENT_API_KEY", "secret-key")
 
-        from openclaw_agent.llm.client import LLMClientConfig
+        from accounting_agent.llm.client import LLMClientConfig
         cfg = LLMClientConfig.from_env()
         assert cfg.enabled is False
 
@@ -69,7 +69,7 @@ class TestLLMClientConfig:
         monkeypatch.setenv("LLM_MAX_TOKENS", "1024")
         monkeypatch.setenv("LLM_TEMPERATURE", "0.5")
 
-        from openclaw_agent.llm.client import LLMClientConfig
+        from accounting_agent.llm.client import LLMClientConfig
         cfg = LLMClientConfig.from_env()
         assert cfg.timeout == 42.0
         assert cfg.max_tokens == 1024
@@ -86,7 +86,7 @@ class TestLLMClientMethods:
     @pytest.fixture
     def _stub_client(self):
         """Return an LLMClient whose _chat is patched."""
-        from openclaw_agent.llm.client import LLMClient, LLMClientConfig
+        from accounting_agent.llm.client import LLMClient, LLMClientConfig
 
         cfg = LLMClientConfig(
             enabled=True,
@@ -111,7 +111,7 @@ class TestLLMClientMethods:
 
     def test_generate_qna_answer_disabled(self, monkeypatch):
         """When config.enabled=False → returns None."""
-        from openclaw_agent.llm.client import LLMClient, LLMClientConfig
+        from accounting_agent.llm.client import LLMClient, LLMClientConfig
 
         cfg = LLMClientConfig(enabled=False)
         client = LLMClient(config=cfg)
@@ -176,7 +176,7 @@ class TestQnaLLMWiring:
         Fallback now provides TT133 context when available, or 'Xin lỗi' otherwise.
         """
         monkeypatch.setenv("USE_REAL_LLM", "false")
-        import openclaw_agent.flows.qna_accounting as qna_mod
+        import accounting_agent.flows.qna_accounting as qna_mod
 
         mock_session = MagicMock()
         result = qna_mod.answer_question(mock_session, "Câu hỏi ngẫu nhiên không khớp handler nào?")
@@ -187,7 +187,7 @@ class TestQnaLLMWiring:
     def test_qna_llm_active_path(self, monkeypatch):
         """When LLM is active and no handler matches → LLM branch fires."""
         monkeypatch.setenv("USE_REAL_LLM", "true")
-        import openclaw_agent.flows.qna_accounting as qna_mod
+        import accounting_agent.flows.qna_accounting as qna_mod
 
         fake_llm_result = {
             "answer": "Theo TT200 điều 42...",
@@ -204,7 +204,7 @@ class TestQnaLLMWiring:
     def test_qna_llm_error_falls_through(self, monkeypatch):
         """LLM error → falls through to default help text (TT133 context or Xin lỗi)."""
         monkeypatch.setenv("USE_REAL_LLM", "true")
-        import openclaw_agent.flows.qna_accounting as qna_mod
+        import accounting_agent.flows.qna_accounting as qna_mod
 
         with patch.object(qna_mod, "_try_llm_answer", return_value=None):
             mock_session = MagicMock()
@@ -215,7 +215,7 @@ class TestQnaLLMWiring:
     def test_qna_no_reasoning_chain_in_result(self, monkeypatch):
         """Handler results must NOT contain reasoning_chain (stripped for UI/API)."""
         monkeypatch.setenv("USE_REAL_LLM", "false")
-        import openclaw_agent.flows.qna_accounting as qna_mod
+        import accounting_agent.flows.qna_accounting as qna_mod
 
         mock_session = MagicMock()
         result = qna_mod.answer_question(mock_session, "Bất kỳ câu hỏi nào")
@@ -224,7 +224,7 @@ class TestQnaLLMWiring:
     def test_po_benchmark_matcher_q1(self, monkeypatch):
         """PO benchmark Q1 (131 vs 331) matches template."""
         monkeypatch.setenv("USE_REAL_LLM", "false")
-        import openclaw_agent.flows.qna_accounting as qna_mod
+        import accounting_agent.flows.qna_accounting as qna_mod
 
         mock_session = MagicMock()
         result = qna_mod.answer_question(mock_session, "So sánh TK 131 vs 331")
@@ -236,7 +236,7 @@ class TestQnaLLMWiring:
     def test_po_benchmark_matcher_q2(self, monkeypatch):
         """PO benchmark Q2 (642 vs 641) matches template."""
         monkeypatch.setenv("USE_REAL_LLM", "false")
-        import openclaw_agent.flows.qna_accounting as qna_mod
+        import accounting_agent.flows.qna_accounting as qna_mod
 
         mock_session = MagicMock()
         result = qna_mod.answer_question(mock_session, "Khi nào dùng TK 642 thay vì TK 641")
@@ -247,7 +247,7 @@ class TestQnaLLMWiring:
     def test_po_benchmark_matcher_q3(self, monkeypatch):
         """PO benchmark Q3 (khấu hao TSCĐ) matches template."""
         monkeypatch.setenv("USE_REAL_LLM", "false")
-        import openclaw_agent.flows.qna_accounting as qna_mod
+        import accounting_agent.flows.qna_accounting as qna_mod
 
         mock_session = MagicMock()
         result = qna_mod.answer_question(mock_session, "Khấu hao TSCĐ hữu hình 30 triệu VND trong 3 năm theo phương pháp đường thẳng")
@@ -257,7 +257,7 @@ class TestQnaLLMWiring:
 
     def test_quality_guardrail_rejects_inner_monologue(self):
         """Quality guardrail rejects answers containing inner monologue."""
-        from openclaw_agent.flows.qna_accounting import _passes_quality_guardrail
+        from accounting_agent.flows.qna_accounting import _passes_quality_guardrail
 
         assert _passes_quality_guardrail("Better: Use TK 214 for depreciation") is False
         assert _passes_quality_guardrail("I think we should use account 131") is False
@@ -266,7 +266,7 @@ class TestQnaLLMWiring:
 
     def test_quality_guardrail_accepts_good_answer(self):
         """Quality guardrail accepts well-formed Vietnamese answers."""
-        from openclaw_agent.flows.qna_accounting import _passes_quality_guardrail
+        from accounting_agent.flows.qna_accounting import _passes_quality_guardrail
 
         good = (
             "TK 131 – Phải thu của khách hàng: phản ánh số tiền khách hàng còn nợ DN. "
@@ -276,7 +276,7 @@ class TestQnaLLMWiring:
 
     def test_quality_guardrail_rejects_generic_fallback(self):
         """Quality guardrail rejects generic apology responses."""
-        from openclaw_agent.flows.qna_accounting import _passes_quality_guardrail
+        from accounting_agent.flows.qna_accounting import _passes_quality_guardrail
 
         assert _passes_quality_guardrail("Xin lỗi, tôi cần thêm thông tin ngữ cảnh") is False
         assert _passes_quality_guardrail("Xin lỗi, hệ thống chưa thể đưa ra câu trả lời") is False
@@ -294,7 +294,7 @@ class TestQnaGoldenBenchmark:
         monkeypatch.setenv("USE_REAL_LLM", "true")
 
     def _run_with_stub(self, question: str, stub_answer: str) -> dict:
-        import openclaw_agent.flows.qna_accounting as qna_mod
+        import accounting_agent.flows.qna_accounting as qna_mod
 
         fake_result = {
             "answer": stub_answer,
@@ -371,7 +371,7 @@ class TestJournalLLMWiring:
     def test_classify_without_llm(self, monkeypatch):
         """Default (USE_REAL_LLM=false) → rule-based, llm_used=False."""
         monkeypatch.setenv("USE_REAL_LLM", "false")
-        import openclaw_agent.flows.journal_suggestion as js_mod
+        import accounting_agent.flows.journal_suggestion as js_mod
 
         result = js_mod._classify_voucher({
             "voucher_type": "sell_invoice",
@@ -384,7 +384,7 @@ class TestJournalLLMWiring:
     def test_classify_with_llm_refinement(self, monkeypatch):
         """When LLM is enabled + returns valid JSON → merged."""
         monkeypatch.setenv("USE_REAL_LLM", "true")
-        import openclaw_agent.flows.journal_suggestion as js_mod
+        import accounting_agent.flows.journal_suggestion as js_mod
 
         refined = {
             "debit_account": "131",
@@ -399,7 +399,7 @@ class TestJournalLLMWiring:
         fake_client = MagicMock()
         fake_client.refine_journal_suggestion.return_value = refined
 
-        with patch("openclaw_agent.llm.client.get_llm_client", return_value=fake_client):
+        with patch("accounting_agent.llm.client.get_llm_client", return_value=fake_client):
             result = js_mod._classify_voucher({
                 "voucher_type": "sell_invoice",
                 "amount": 10_000_000,

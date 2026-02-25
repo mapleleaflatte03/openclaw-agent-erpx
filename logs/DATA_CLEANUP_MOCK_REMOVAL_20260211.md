@@ -19,12 +19,12 @@ Data now sourced exclusively from 3 verified Kaggle datasets.
 
 ## Mock Data Removed
 
-### 1. `src/openclaw_agent/flows/voucher_ingest.py` — VN_FIXTURES
+### 1. `src/accounting_agent/flows/voucher_ingest.py` — VN_FIXTURES
 - **Before:** 3 hardcoded Vietnamese invoice/voucher dicts (lines 135-174)
 - **After:** `_load_kaggle_fixtures()` loads from `data/kaggle/seed/vn_kaggle_subset.json`
 - **47 records** from real Kaggle OCR data with varied doc_types
 
-### 2. `src/openclaw_agent/erpx_mock/db.py` — `seed_if_empty()` inline data
+### 2. `src/accounting_agent/erpx_mock/db.py` — `seed_if_empty()` inline data
 - **Before:** 100+ inline fabricated records (partners, contracts, invoices, vouchers, bank_txs, journals, assets, calendar)
 - **After:** Loads from `data/kaggle/seed/erpx_seed_kaggle.json` (197 records from 47 Kaggle sources)
 - Fallback: empty structural seed (no fabricated values)

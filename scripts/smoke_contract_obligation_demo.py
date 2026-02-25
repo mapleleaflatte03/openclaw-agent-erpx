@@ -142,7 +142,7 @@ def main() -> int:
     _wait_http_ok(f"{env.minio_endpoint}/minio/health/ready", timeout_s=60)
 
     # Generate sources
-    tmp = Path("/tmp/openclaw-smoke")
+    tmp = Path("/tmp/accounting-agent-smoke")
     tmp.mkdir(parents=True, exist_ok=True)
     contract_pdf = tmp / "contract_A.pdf"
     email_eml = tmp / "thread_A.eml"

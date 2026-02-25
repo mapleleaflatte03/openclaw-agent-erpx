@@ -85,6 +85,6 @@ Full test suite: **117 passed, 5 skipped, 0 failures**.
 
 ## Files changed
 
-- `src/openclaw_agent/flows/qna_accounting.py` — PO templates, guardrail, monologue patterns, benchmark matcher
-- `src/openclaw_agent/llm/client.py` — strengthened system prompt with rules + examples
+- `src/accounting_agent/flows/qna_accounting.py` — PO templates, guardrail, monologue patterns, benchmark matcher
+- `src/accounting_agent/llm/client.py` — strengthened system prompt with rules + examples
 - `tests/integration/test_p3_llm_wiring.py` — 6 new tests

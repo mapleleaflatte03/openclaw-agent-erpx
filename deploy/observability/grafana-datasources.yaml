@@ -1,7 +1,7 @@
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: grafana-datasources-openclaw
+  name: grafana-datasources-accounting-agent
   namespace: observability
   labels:
     grafana_datasource: "1"

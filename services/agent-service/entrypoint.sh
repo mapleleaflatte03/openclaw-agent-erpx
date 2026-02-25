@@ -7,5 +7,5 @@ if [ "${AUTO_MIGRATE:-1}" = "1" ]; then
 fi
 
 echo "[agent-service] starting api..."
-exec uvicorn openclaw_agent.agent_service.main:app --host 0.0.0.0 --port 8000
+exec uvicorn accounting_agent.agent_service.main:app --host 0.0.0.0 --port 8000
 

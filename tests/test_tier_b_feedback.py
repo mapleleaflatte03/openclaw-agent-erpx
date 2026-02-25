@@ -7,8 +7,8 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from openclaw_agent.common.db import Base, make_engine
-from openclaw_agent.common.settings import get_settings
+from accounting_agent.common.db import Base, make_engine
+from accounting_agent.common.settings import get_settings
 
 
 @pytest.fixture()
@@ -29,7 +29,7 @@ def client(tmp_path: Path, monkeypatch):
     engine = make_engine()
     Base.metadata.create_all(engine)
 
-    from openclaw_agent.agent_service import main as svc_main
+    from accounting_agent.agent_service import main as svc_main
 
     get_settings.cache_clear()
     monkeypatch.setattr(svc_main, "ensure_buckets", lambda _settings: None)

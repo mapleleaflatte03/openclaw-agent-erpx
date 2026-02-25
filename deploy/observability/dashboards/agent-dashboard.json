@@ -238,7 +238,7 @@
   "schemaVersion": 39,
   "style": "dark",
   "tags": [
-    "openclaw",
+    "accounting-agent",
     "agent"
   ],
   "templating": {
@@ -250,8 +250,8 @@
   },
   "timepicker": {},
   "timezone": "",
-  "title": "OpenClaw Agent",
-  "uid": "openclaw-agent",
+  "title": "Accounting Agent Layer",
+  "uid": "accounting-agent",
   "version": 1,
   "weekStart": ""
 }

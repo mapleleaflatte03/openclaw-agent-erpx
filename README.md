@@ -1,4 +1,4 @@
-# OpenClaw Agent for ERPX (Auxiliary Accounting Workflows)
+# Accounting Agent Layer for ERPX (Auxiliary Accounting Workflows)
 
 This repo implements the design doc:
 `/root/tai_liệu_thiết_kế_open_claw_agent_hỗ_trợ_nghiệp_vụ_kế_toan_ngoai_luồng_ghi_sổ_trong_erpx.md`
@@ -15,7 +15,7 @@ Key constraints (enforced by design):
 
 ### 2) Commands
 ```bash
-cd openclaw-agent-erpx
+cd accounting-agent-layer
 cp .env.example .env
 docker compose up -d --build
 ```

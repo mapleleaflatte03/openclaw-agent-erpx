@@ -5,7 +5,7 @@
 
 ## 1. Tier B hiện tại đang ở đâu?
 
-### Backend — Agent Service (`src/openclaw_agent/agent_service/main.py`)
+### Backend — Agent Service (`src/accounting_agent/agent_service/main.py`)
 
 | Endpoint | Chức năng |
 |----------|-----------|
@@ -13,13 +13,13 @@
 | `GET /agent/v1/contract/cases/{case_id}/proposals` | Trả proposals kèm `tier` (int), `confidence`, `risk_level`, `status`, `approvals_required/approved`. |
 | `POST /agent/v1/contract/proposals/{id}/approvals` | Duyệt/từ chối proposals — maker-checker đã có (so sánh `created_by` vs `approver_id`). |
 
-### Worker — Pipeline (`src/openclaw_agent/agent_worker/tasks.py`)
+### Worker — Pipeline (`src/accounting_agent/agent_worker/tasks.py`)
 
 - `contract_obligation` run type: trích xuất nghĩa vụ từ PDF/email, gán `confidence` theo rule/pattern.
 - Kết quả lưu vào `agent_obligations` với `confidence`, `risk_level`, `signature`.
 - Evidence (đoạn trích dẫn) lưu vào `agent_obligation_evidence`.
 
-### UI — Streamlit (`src/openclaw_agent/ui/app.py`)
+### UI — Streamlit (`src/accounting_agent/ui/app.py`)
 
 | Khu vực | Hiện trạng |
 |---------|------------|
@@ -28,7 +28,7 @@
 | Disclaimer | **Chưa có.** |
 | Feedback | **Chưa có** (không có nút Đúng/Sai, không ghi implicit feedback). |
 
-### Database / Models (`src/openclaw_agent/common/models.py`)
+### Database / Models (`src/accounting_agent/common/models.py`)
 
 - `AgentObligation`: có `confidence`, `risk_level`, `obligation_type` — đủ để phân nhóm.
 - `AgentFeedback`: tồn tại nhưng generic (cho mọi task type), chưa có bảng riêng cho Tier B feedback.
@@ -44,7 +44,7 @@
 
 ## 3. Chỗ nào sẽ chỉnh UI để tách high-confidence vs candidate
 
-### File: `src/openclaw_agent/ui/app.py`
+### File: `src/accounting_agent/ui/app.py`
 
 **Vị trí:** Section "Obligations" (hiện tại line ~160-190).
 
@@ -55,7 +55,7 @@
    - **Candidate:** `confidence < 0.75` — hiển thị tối đa 5 mục, sort theo ưu tiên (payment > penalty > discount > khác). Có nút "Xem thêm (n)" nếu còn nhiều hơn.
 3. Thêm disclaimer rõ ở đầu section Tier B.
 
-### File: `src/openclaw_agent/agent_service/main.py`
+### File: `src/accounting_agent/agent_service/main.py`
 
 **Không cần sửa endpoint**, UI tự phân nhóm dựa trên field `confidence` đã có.
 

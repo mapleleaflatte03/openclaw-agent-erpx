@@ -18,7 +18,7 @@ langgraph = pytest.importorskip("langgraph", reason="langgraph not installed")
 
 def test_registry_list_graphs():
     """list_graphs() must return all 5 accounting graph names."""
-    from openclaw_agent.graphs.registry import list_graphs
+    from accounting_agent.graphs.registry import list_graphs
     names = list_graphs()
     assert isinstance(names, list)
     expected = {"bank_reconcile", "cashflow_forecast", "journal_suggestion", "soft_checks", "tax_report"}
@@ -27,13 +27,13 @@ def test_registry_list_graphs():
 
 def test_registry_is_available():
     """is_available() must return True when langgraph is installed."""
-    from openclaw_agent.graphs.registry import is_available
+    from accounting_agent.graphs.registry import is_available
     assert is_available() is True
 
 
 def test_registry_get_graph_compiles():
     """get_graph() should compile each graph without error."""
-    from openclaw_agent.graphs.registry import get_graph, list_graphs
+    from accounting_agent.graphs.registry import get_graph, list_graphs
     for name in list_graphs():
         graph = get_graph(name)
         assert graph is not None, f"graph {name!r} returned None"
@@ -43,14 +43,14 @@ def test_registry_get_graph_compiles():
 
 def test_registry_get_graph_unknown_raises():
     """get_graph() should raise KeyError for unknown names."""
-    from openclaw_agent.graphs.registry import get_graph
+    from accounting_agent.graphs.registry import get_graph
     with pytest.raises(KeyError):
         get_graph("nonexistent_workflow_xyz")
 
 
 def test_state_has_expected_keys():
     """AcctGraphState TypedDict should have critical keys."""
-    from openclaw_agent.graphs.state import AcctGraphState
+    from accounting_agent.graphs.state import AcctGraphState
     # TypedDict annotations
     annotations = AcctGraphState.__annotations__
     for key in ("run_id", "period", "vouchers", "journals", "invoices", "bank_txs",
@@ -62,7 +62,7 @@ def test_api_list_graphs():
     """GET /agent/v1/graphs should return langgraph_available + graphs list."""
     from fastapi.testclient import TestClient
 
-    from openclaw_agent.agent_service.main import app
+    from accounting_agent.agent_service.main import app
 
     client = TestClient(app, raise_server_exceptions=False)
     headers = {"X-API-Key": "test-key-for-ci"}
@@ -79,7 +79,7 @@ def test_api_get_graph_info():
     """GET /agent/v1/graphs/journal_suggestion should return graph info."""
     from fastapi.testclient import TestClient
 
-    from openclaw_agent.agent_service.main import app
+    from accounting_agent.agent_service.main import app
 
     client = TestClient(app, raise_server_exceptions=False)
     headers = {"X-API-Key": "test-key-for-ci"}
@@ -95,7 +95,7 @@ def test_api_get_graph_not_found():
     """GET /agent/v1/graphs/nonexistent should return 404."""
     from fastapi.testclient import TestClient
 
-    from openclaw_agent.agent_service.main import app
+    from accounting_agent.agent_service.main import app
 
     client = TestClient(app, raise_server_exceptions=False)
     headers = {"X-API-Key": "test-key-for-ci"}

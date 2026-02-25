@@ -1,4 +1,4 @@
-# QA Acceptance Report — ERP-X AI Kế toán (Staging)
+# QA Acceptance Report — ERP AI Kế toán (Staging)
 
 **Ngày test:** 2026-02-11  
 **Vai trò:** QA Tester (blackbox)  

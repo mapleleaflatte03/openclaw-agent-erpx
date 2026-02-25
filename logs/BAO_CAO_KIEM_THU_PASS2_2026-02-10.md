@@ -2,7 +2,7 @@
 **Ngày:** 2026-02-10 10:30 UTC  
 **Tester:** QA-Agent (automated)  
 **Phiên bản:** `f5a378301896b65179b490f8890c5e9be3e69267`  
-**Môi trường:** k3s staging — namespace `openclaw-agent-staging`  
+**Môi trường:** k3s staging — namespace `accounting-agent-staging`  
 **Đối tượng:** Sửa lỗi B1 (USE_REAL_LLM) + B6 (reasoning_content) và kiểm tra lại các bug còn mở
 
 ---
@@ -135,11 +135,11 @@ Commit: f5a378301896b65179b490f8890c5e9be3e69267
 Message: fix(llm): handle reasoning_content from reasoning models (GPT-oss-120b)
 
 Files changed:
-  src/openclaw_agent/llm/client.py
+  src/accounting_agent/llm/client.py
     - _chat(): fallback reasoning_content khi content rỗng
     - generate_qna_answer(): thêm used_models list
 
-Image: ghcr.io/mapleleaflatte03/openclaw-agent-erpx/agent-service:f5a3783...
+Image: ghcr.io/mapleleaflatte03/accounting-agent-layer/agent-service:f5a3783...
 Deployed: agent-service + agent-worker-standby
 ```
 

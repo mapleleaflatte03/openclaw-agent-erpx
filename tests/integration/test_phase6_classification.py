@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from fastapi.testclient import TestClient
 
-from openclaw_agent.agent_service.main import app
+from accounting_agent.agent_service.main import app
 
 client = TestClient(app, raise_server_exceptions=False)
 _HEADERS = {"X-API-Key": "test-key-for-ci"}
@@ -36,7 +36,7 @@ def test_acct_classify_tags_vn_invoice():
     """Hóa đơn bán hàng VAT → SALES_INVOICE tag."""
     from unittest.mock import MagicMock
 
-    from openclaw_agent.flows.voucher_classify import _classify_tag
+    from accounting_agent.flows.voucher_classify import _classify_tag
 
     voucher = MagicMock()
     voucher.voucher_type = "sell_invoice"
@@ -51,7 +51,7 @@ def test_acct_classify_tags_vn_cash_voucher():
     """Phiếu chi → CASH_DISBURSEMENT tag."""
     from unittest.mock import MagicMock
 
-    from openclaw_agent.flows.voucher_classify import _classify_tag
+    from accounting_agent.flows.voucher_classify import _classify_tag
 
     voucher = MagicMock()
     voucher.voucher_type = "payment"
@@ -66,7 +66,7 @@ def test_acct_classify_tags_vn_receipt():
     """Phiếu thu → CASH_RECEIPT tag."""
     from unittest.mock import MagicMock
 
-    from openclaw_agent.flows.voucher_classify import _classify_tag
+    from accounting_agent.flows.voucher_classify import _classify_tag
 
     voucher = MagicMock()
     voucher.voucher_type = "receipt"
@@ -81,7 +81,7 @@ def test_acct_classify_tags_buy_invoice():
     """Hóa đơn mua hàng → PURCHASE_INVOICE tag."""
     from unittest.mock import MagicMock
 
-    from openclaw_agent.flows.voucher_classify import _classify_tag
+    from accounting_agent.flows.voucher_classify import _classify_tag
 
     voucher = MagicMock()
     voucher.voucher_type = "buy_invoice"
@@ -96,7 +96,7 @@ def test_acct_classify_tags_payroll():
     """Description chứa 'lương' → PAYROLL tag."""
     from unittest.mock import MagicMock
 
-    from openclaw_agent.flows.voucher_classify import _classify_tag
+    from accounting_agent.flows.voucher_classify import _classify_tag
 
     voucher = MagicMock()
     voucher.voucher_type = "other"
@@ -111,7 +111,7 @@ def test_acct_classify_tags_unknown():
     """Unknown voucher → OTHER tag."""
     from unittest.mock import MagicMock
 
-    from openclaw_agent.flows.voucher_classify import _classify_tag
+    from accounting_agent.flows.voucher_classify import _classify_tag
 
     voucher = MagicMock()
     voucher.voucher_type = "other"
@@ -124,7 +124,7 @@ def test_acct_classify_tags_unknown():
 
 def test_classify_single_dict():
     """Test dict-based classification for Ray batch."""
-    from openclaw_agent.flows.voucher_classify import _classify_single_dict
+    from accounting_agent.flows.voucher_classify import _classify_single_dict
 
     result = _classify_single_dict({
         "id": "test-1",

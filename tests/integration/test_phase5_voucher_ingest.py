@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from fastapi.testclient import TestClient
 
-from openclaw_agent.agent_service.main import app
+from accounting_agent.agent_service.main import app
 
 client = TestClient(app, raise_server_exceptions=False)
 _HEADERS = {"X-API-Key": "test-key-for-ci"}
@@ -41,7 +41,7 @@ _REQUIRED_KEYS = {
 
 def test_voucher_ingest_creates_vn_invoice_voucher():
     """Any VN invoice fixture must normalize to AcctVoucher-compatible dict."""
-    from openclaw_agent.flows.voucher_ingest import VN_FIXTURES, _normalize_vn_fixture
+    from accounting_agent.flows.voucher_ingest import VN_FIXTURES, _normalize_vn_fixture
 
     invoices = [f for f in VN_FIXTURES if f.get("doc_type") == "invoice_vat"]
     assert len(invoices) >= 1, "Kaggle seed must contain at least one invoice_vat"
@@ -59,7 +59,7 @@ def test_voucher_ingest_creates_vn_invoice_voucher():
 
 def test_voucher_ingest_creates_vn_cash_voucher():
     """Any VN cash disbursement fixture must normalize correctly."""
-    from openclaw_agent.flows.voucher_ingest import VN_FIXTURES, _normalize_vn_fixture
+    from accounting_agent.flows.voucher_ingest import VN_FIXTURES, _normalize_vn_fixture
 
     cash_vouchers = [f for f in VN_FIXTURES if f.get("doc_type") == "cash_disbursement"]
     assert len(cash_vouchers) >= 1, "Kaggle seed must contain at least one cash_disbursement"
@@ -74,7 +74,7 @@ def test_voucher_ingest_creates_vn_cash_voucher():
 
 def test_voucher_ingest_vn_receipt_voucher():
     """Any VN cash receipt fixture must normalize correctly."""
-    from openclaw_agent.flows.voucher_ingest import VN_FIXTURES, _normalize_vn_fixture
+    from accounting_agent.flows.voucher_ingest import VN_FIXTURES, _normalize_vn_fixture
 
     receipts = [f for f in VN_FIXTURES if f.get("doc_type") == "cash_receipt"]
     assert len(receipts) >= 1, "Kaggle seed must contain at least one cash_receipt"
@@ -88,7 +88,7 @@ def test_voucher_ingest_vn_receipt_voucher():
 
 def test_voucher_ingest_flow_produces_stats():
     """_load_documents returns Kaggle-sourced records with required fields."""
-    from openclaw_agent.flows.voucher_ingest import _load_documents
+    from accounting_agent.flows.voucher_ingest import _load_documents
 
     docs = _load_documents("vn_fixtures", {})
     assert len(docs) >= 1, "Kaggle seed must produce at least 1 document"

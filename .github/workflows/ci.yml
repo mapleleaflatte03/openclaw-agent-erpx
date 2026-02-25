@@ -66,8 +66,8 @@ jobs:
 
       - name: Build images
         run: |
-          docker build -t openclaw-agent-erpx/agent-service:ci -f services/agent-service/Dockerfile .
-          docker build -t openclaw-agent-erpx/agent-worker:ci -f services/agent-worker/Dockerfile .
-          docker build -t openclaw-agent-erpx/agent-scheduler:ci -f services/agent-scheduler/Dockerfile .
-          docker build -t openclaw-agent-erpx/erpx-mock-api:ci -f services/erpx-mock-api/Dockerfile .
-          docker build -t openclaw-agent-erpx/ui:ci -f services/ui/Dockerfile .
+          docker build -t accounting-agent-layer/agent-service:ci -f services/agent-service/Dockerfile .
+          docker build -t accounting-agent-layer/agent-worker:ci -f services/agent-worker/Dockerfile .
+          docker build -t accounting-agent-layer/agent-scheduler:ci -f services/agent-scheduler/Dockerfile .
+          docker build -t accounting-agent-layer/erpx-mock-api:ci -f services/erpx-mock-api/Dockerfile .
+          docker build -t accounting-agent-layer/ui:ci -f services/ui/Dockerfile .

@@ -1,7 +1,7 @@
 """Add accounting domain tables: vouchers, bank_transactions, journal_proposals,
 journal_lines, anomaly_flags.
 
-OpenClaw ERP-X AI Kế toán – READ-ONLY principles:
+Accounting Agent Layer ERP AI Kế toán – READ-ONLY principles:
   - acct_vouchers & acct_bank_transactions are mirrors of ERP data
   - acct_journal_proposals/lines are AI suggestions awaiting human review
   - acct_anomaly_flags capture reconciliation/audit anomalies

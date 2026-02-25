@@ -10,7 +10,7 @@ Tests Monte Carlo forecast against known patterns.  Measures:
 """
 from __future__ import annotations
 
-from openclaw_agent.forecast import (
+from accounting_agent.forecast import (
     ForecastResult,
     ForecastScenario,
     monte_carlo_forecast,
