@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import csv
 import mimetypes
 import os
@@ -1475,20 +1476,29 @@ def _wf_contract_obligation(run_id: str) -> dict[str, Any]:
     payload = _run_payload(run_id)
     contract_files = list(payload.get("contract_files") or [])
     email_files = list(payload.get("email_files") or [])
+    contract_files_inline = list(payload.get("contract_files_inline") or [])
+    email_files_inline = list(payload.get("email_files_inline") or [])
 
     # Convenience for one-file demos (backward-ish compatible with attachment payloads).
     if not contract_files and payload.get("file_uri"):
         contract_files = [payload["file_uri"]]
 
-    if not contract_files and not email_files:
-        raise RuntimeError("payload.contract_files or payload.email_files is required")
+    if not contract_files and not email_files and not contract_files_inline and not email_files_inline:
+        raise RuntimeError(
+            "payload.contract_files/email_files or contract_files_inline/email_files_inline is required"
+        )
 
     workdir = Path(tempfile.mkdtemp(prefix=f"agent-{run_id}-"))
     try:
         t_id = _task_start(
             run_id,
             "ingest_sources",
-            {"contract_files": len(contract_files), "email_files": len(email_files)},
+            {
+                "contract_files": len(contract_files),
+                "email_files": len(email_files),
+                "contract_files_inline": len(contract_files_inline),
+                "email_files_inline": len(email_files_inline),
+            },
         )
 
         staged: list[dict[str, Any]] = []
@@ -1517,10 +1527,45 @@ def _wf_contract_obligation(run_id: str) -> dict[str, Any]:
                 "stored_uri": uri if str(uri).startswith("s3://") else None,
             }
 
+        def _stage_inline(item: Any, source_type: str, idx: int) -> dict[str, Any]:
+            if not isinstance(item, dict):
+                raise RuntimeError(f"{source_type}_files_inline[{idx}] must be object")
+            filename = str(item.get("filename") or item.get("name") or f"{source_type}-{idx}.bin").strip()
+            content_b64 = str(item.get("content_b64") or "").strip()
+            if not content_b64:
+                raise RuntimeError(f"{source_type}_files_inline[{idx}] missing content_b64")
+            try:
+                blob = base64.b64decode(content_b64, validate=True)
+            except Exception as e:
+                raise RuntimeError(f"{source_type}_files_inline[{idx}] invalid base64") from e
+            if not blob:
+                raise RuntimeError(f"{source_type}_files_inline[{idx}] empty content")
+
+            suffix = Path(filename).suffix or (".pdf" if source_type == "contract" else ".eml")
+            local_path = str(workdir / f"{source_type}-inline-{idx}{suffix}")
+            Path(local_path).write_bytes(blob)
+
+            file_hash = sha256_file(local_path)
+            content_type, _ = mimetypes.guess_type(filename)
+            return {
+                "source_type": source_type,
+                "source_uri": f"inline://{source_type}/{idx}/{filename}",
+                "local_path": local_path,
+                "ext": Path(local_path).suffix.lower(),
+                "file_hash": file_hash,
+                "size_bytes": int(Path(local_path).stat().st_size),
+                "content_type": content_type,
+                "stored_uri": None,
+            }
+
         for i, uri in enumerate(contract_files):
             staged.append(_stage_uri(str(uri), "contract", i))
         for i, uri in enumerate(email_files):
             staged.append(_stage_uri(str(uri), "email", i))
+        for i, item in enumerate(contract_files_inline):
+            staged.append(_stage_inline(item, "contract", i))
+        for i, item in enumerate(email_files_inline):
+            staged.append(_stage_inline(item, "email", i))
 
         contract_hashes = sorted([x["file_hash"] for x in staged if x["source_type"] == "contract"])
         email_hashes = sorted([x["file_hash"] for x in staged if x["source_type"] == "email"])

@@ -11,6 +11,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import os
 import sys
@@ -142,6 +143,8 @@ def _run_case(base_url: str, case_dir: Path, case_id: str) -> dict:
         "payload": {
             "contract_files": [],
             "email_files": [],
+            "contract_files_inline": [],
+            "email_files_inline": [],
             "partner_name": f"Benchmark Partner {case_id}",
             "partner_tax_id": f"BM{case_id[-4:]}",
             "contract_code": f"BM-{case_id}",
@@ -149,14 +152,20 @@ def _run_case(base_url: str, case_dir: Path, case_id: str) -> dict:
         },
     }
 
+    def _to_inline(path: Path) -> dict[str, str]:
+        return {
+            "filename": path.name,
+            "content_b64": base64.b64encode(path.read_bytes()).decode("ascii"),
+        }
+
     # Check for source files
     sources_dir = case_dir / "sources"
     if sources_dir.exists():
         for f in sources_dir.iterdir():
             if f.suffix.lower() == ".pdf":
-                run_payload["payload"]["contract_files"].append(str(f))
+                run_payload["payload"]["contract_files_inline"].append(_to_inline(f))
             elif f.suffix.lower() == ".eml":
-                run_payload["payload"]["email_files"].append(str(f))
+                run_payload["payload"]["email_files_inline"].append(_to_inline(f))
 
     try:
         resp = _http_post(base_url, "/agent/v1/runs", run_payload)
