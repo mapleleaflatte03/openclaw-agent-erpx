@@ -105,6 +105,10 @@ jobs:
           sed -i "s|newTag: latest|newTag: ${TAG}|g" "$OVERLAY_DIR/kustomization.yaml"
           sed -i "s|newTag: staging-latest|newTag: ${TAG}|g" "$OVERLAY_DIR/kustomization.yaml"
           kustomize build "$OVERLAY_DIR" | kubectl apply -f -
+          # Avoid rollout deadlocks on 1-replica deployments in constrained clusters.
+          for dep in erpx-mock-api agent-service agent-scheduler ui; do
+            kubectl -n "$NS" patch deployment "$dep" --type merge -p '{"spec":{"strategy":{"type":"RollingUpdate","rollingUpdate":{"maxSurge":0,"maxUnavailable":1}}}}' || true
+          done
           if ! kubectl -n "$NS" rollout status deployment/erpx-mock-api --timeout=300s; then
             echo "::warning::erpx-mock-api rollout did not complete in time; continuing with core services"
             kubectl -n "$NS" get pods -l app=erpx-mock-api -o wide || true
