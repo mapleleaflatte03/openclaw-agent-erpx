@@ -1291,6 +1291,34 @@ def _parse_percent(s: str) -> float | None:
         return None
 
 
+def _parse_amount_value(s: str) -> float | None:
+    m = re.search(r"([0-9][0-9.,]{0,24})\s*(VND|USD|EUR)\b", s, re.I)
+    if not m:
+        return None
+    raw = str(m.group(1)).strip()
+    if "," in raw and "." in raw:
+        if raw.rfind(".") > raw.rfind(","):
+            # 12,345.67
+            raw = raw.replace(",", "")
+        else:
+            # 12.345,67
+            raw = raw.replace(".", "").replace(",", ".")
+    elif "," in raw:
+        parts = raw.split(",")
+        if len(parts) > 1 and all(len(p) == 3 for p in parts[1:]):
+            raw = "".join(parts)  # thousands separators
+        else:
+            raw = raw.replace(",", ".")
+    elif "." in raw:
+        parts = raw.split(".")
+        if len(parts) > 1 and all(len(p) == 3 for p in parts[1:]):
+            raw = "".join(parts)  # thousands separators
+    try:
+        return float(raw)
+    except Exception:
+        return None
+
+
 def _extract_obligation_candidates(text: str) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     for raw_line in text.splitlines():
@@ -1300,6 +1328,8 @@ def _extract_obligation_candidates(text: str) -> list[dict[str, Any]]:
         lower = line.lower()
         is_discount = "discount" in lower or "chiết khấu" in lower or "chiet khau" in lower
         is_penalty = "penalty" in lower or "phạt" in lower or "phat" in lower
+        is_delivery = any(k in lower for k in ["giao hang", "delivery", "installation", "commissioning"])
+        is_warranty = any(k in lower for k in ["bao hanh", "warranty", "retain"])
 
         currency = None
         m_cur = re.search(r"\b(VND|USD|EUR)\b", line)
@@ -1310,76 +1340,179 @@ def _extract_obligation_candidates(text: str) -> list[dict[str, Any]]:
         due_date = _try_parse_date_any(m_due.group(1)) if m_due else None
         m_within = re.search(r"(?:within|trong\s*v[oò]ng)\s*(\d{1,3})\s*(?:days|ng[aà]y)", line, re.I)
         within_days = int(m_within.group(1)) if m_within else None
+        amount_value = _parse_amount_value(line)
+        m_condition_key = re.search(r"\b(?:early_discount|penalty|retain)_[a-z0-9_.]+", lower)
+        condition_key = m_condition_key.group(0) if m_condition_key else None
+        m_milestone = re.search(r"(?:dot|đợt)\s*:\s*([a-z0-9_/-]+)", lower)
+        milestone_key = m_milestone.group(1) if m_milestone else None
 
         # 1) Milestone payment
         if (not is_discount) and (not is_penalty) and re.search(
             r"\b(milestone|đ[oợ]t|thanh\s*to[aá]n|payment|pay)\b", line, re.I
         ):
             pct = _parse_percent(line)
+            if pct is None and amount_value is None and due_date is None and within_days is None and not milestone_key:
+                continue
             conf = 0.4
             if pct is not None:
                 conf += 0.3
+            if amount_value is not None:
+                conf += 0.2
             if due_date or within_days is not None:
                 conf += 0.2
             conf = min(conf + 0.1, 1.0)
+            meta: dict[str, Any] = {}
+            if within_days is not None:
+                meta["within_days"] = within_days
+            if condition_key:
+                meta["condition_key"] = condition_key
+            if milestone_key:
+                meta["milestone_key"] = milestone_key
             out.append(
                 {
                     "obligation_type": "milestone_payment",
                     "currency": currency or "VND",
-                    "amount_value": None,
+                    "amount_value": amount_value,
                     "amount_percent": pct,
                     "due_date": due_date,
                     "condition_text": line,
                     "confidence": conf,
-                    "meta": {"within_days": within_days} if within_days is not None else None,
+                    "meta": meta or None,
                 }
             )
 
         # 2) Early payment discount
         if is_discount:
             pct = _parse_percent(line)
+            if pct is None and amount_value is None and due_date is None and within_days is None and not condition_key:
+                continue
             conf = 0.4
             if pct is not None:
                 conf += 0.3
+            if amount_value is not None:
+                conf += 0.2
             if due_date or within_days is not None:
                 conf += 0.2
             if "early" in lower or "sớm" in lower or "som" in lower:
                 conf += 0.1
             conf = min(conf, 1.0)
+            meta = {}
+            if within_days is not None:
+                meta["within_days"] = within_days
+            if condition_key:
+                meta["condition_key"] = condition_key
+            if milestone_key:
+                meta["milestone_key"] = milestone_key
             out.append(
                 {
                     "obligation_type": "early_payment_discount",
                     "currency": currency or "VND",
-                    "amount_value": None,
+                    "amount_value": amount_value,
                     "amount_percent": pct,
                     "due_date": due_date,
                     "condition_text": line,
                     "confidence": conf,
-                    "meta": {"within_days": within_days} if within_days is not None else None,
+                    "meta": meta or None,
                 }
             )
 
         # 3) Late payment penalty
         if is_penalty:
             pct = _parse_percent(line)
+            if pct is None and amount_value is None and due_date is None and within_days is None and not condition_key:
+                continue
             conf = 0.4
             if pct is not None:
                 conf += 0.3
+            if amount_value is not None:
+                conf += 0.2
             if "per day" in lower or "/ngày" in lower or "/ngay" in lower:
                 conf += 0.2
             if "late" in lower or "chậm" in lower or "cham" in lower:
                 conf += 0.1
             conf = min(conf, 1.0)
+            meta = {}
+            if within_days is not None:
+                meta["within_days"] = within_days
+            if condition_key:
+                meta["condition_key"] = condition_key
+            if milestone_key:
+                meta["milestone_key"] = milestone_key
             out.append(
                 {
                     "obligation_type": "late_payment_penalty",
                     "currency": currency or "VND",
-                    "amount_value": None,
+                    "amount_value": amount_value,
                     "amount_percent": pct,
                     "due_date": due_date,
                     "condition_text": line,
                     "confidence": conf,
-                    "meta": {"within_days": within_days} if within_days is not None else None,
+                    "meta": meta or None,
+                }
+            )
+
+        # 4) Delivery commitments
+        if (not is_discount) and (not is_penalty) and is_delivery:
+            if amount_value is None and due_date is None and within_days is None and not milestone_key:
+                continue
+            conf = 0.45
+            if amount_value is not None:
+                conf += 0.25
+            if due_date or within_days is not None:
+                conf += 0.2
+            if milestone_key:
+                conf += 0.1
+            conf = min(conf, 1.0)
+            meta = {}
+            if within_days is not None:
+                meta["within_days"] = within_days
+            if condition_key:
+                meta["condition_key"] = condition_key
+            if milestone_key:
+                meta["milestone_key"] = milestone_key
+            out.append(
+                {
+                    "obligation_type": "delivery_commitment",
+                    "currency": currency or "VND",
+                    "amount_value": amount_value,
+                    "amount_percent": _parse_percent(line),
+                    "due_date": due_date,
+                    "condition_text": line,
+                    "confidence": conf,
+                    "meta": meta or None,
+                }
+            )
+
+        # 5) Warranty retentions
+        if (not is_discount) and (not is_penalty) and is_warranty:
+            pct = _parse_percent(line)
+            if pct is None and amount_value is None and due_date is None and within_days is None and not condition_key:
+                continue
+            conf = 0.45
+            if pct is not None:
+                conf += 0.25
+            if due_date or within_days is not None:
+                conf += 0.2
+            if condition_key:
+                conf += 0.1
+            conf = min(conf, 1.0)
+            meta = {}
+            if within_days is not None:
+                meta["within_days"] = within_days
+            if condition_key:
+                meta["condition_key"] = condition_key
+            if milestone_key:
+                meta["milestone_key"] = milestone_key
+            out.append(
+                {
+                    "obligation_type": "warranty_retention",
+                    "currency": currency or "VND",
+                    "amount_value": amount_value,
+                    "amount_percent": pct,
+                    "due_date": due_date,
+                    "condition_text": line,
+                    "confidence": conf,
+                    "meta": meta or None,
                 }
             )
 
@@ -1388,10 +1521,21 @@ def _extract_obligation_candidates(text: str) -> list[dict[str, Any]]:
 
 def _normalize_trigger_key(text: str) -> str:
     t = " ".join(text.lower().split())
-    # Strip volatile numbers so cross-source comparisons can detect conflicts.
+    # Strip volatile numbers only for conflict grouping; keep condition/milestone keys elsewhere.
     t = re.sub(r"[0-9]+", "#", t)
     t = re.sub(r"#+", "#", t)
     return t[:160]
+
+
+def _candidate_group_discriminator(cand: dict[str, Any]) -> str:
+    meta = cand.get("meta") if isinstance(cand.get("meta"), dict) else {}
+    cond = str(meta.get("condition_key") or "").strip().lower()
+    if cond:
+        return f"cond:{cond[:120]}"
+    milestone = str(meta.get("milestone_key") or "").strip().lower()
+    if milestone:
+        return f"milestone:{milestone[:80]}"
+    return ""
 
 
 def _evidence_strength(
@@ -1802,8 +1946,12 @@ def _wf_contract_obligation(run_id: str) -> dict[str, Any]:
                         for cand in _extract_obligation_candidates(raw_line):
                             within_days = (cand.get("meta") or {}).get("within_days")
                             due_date = cand.get("due_date")
-                            trigger_key = _normalize_trigger_key(str(cand.get("condition_text") or ""))
-                            group_key = f"{cand['obligation_type']}:{trigger_key}"
+                            discriminator = _candidate_group_discriminator(cand)
+                            if discriminator:
+                                group_key = f"{cand['obligation_type']}:{discriminator}"
+                            else:
+                                trigger_key = _normalize_trigger_key(str(cand.get("condition_text") or ""))
+                                group_key = f"{cand['obligation_type']}:{trigger_key}"
 
                             amount_present = (cand.get("amount_value") is not None) or (
                                 cand.get("amount_percent") is not None
@@ -1845,8 +1993,12 @@ def _wf_contract_obligation(run_id: str) -> dict[str, Any]:
                     for cand in _extract_obligation_candidates(raw_line):
                         within_days = (cand.get("meta") or {}).get("within_days")
                         due_date = cand.get("due_date")
-                        trigger_key = _normalize_trigger_key(str(cand.get("condition_text") or ""))
-                        group_key = f"{cand['obligation_type']}:{trigger_key}"
+                        discriminator = _candidate_group_discriminator(cand)
+                        if discriminator:
+                            group_key = f"{cand['obligation_type']}:{discriminator}"
+                        else:
+                            trigger_key = _normalize_trigger_key(str(cand.get("condition_text") or ""))
+                            group_key = f"{cand['obligation_type']}:{trigger_key}"
 
                         amount_present = (cand.get("amount_value") is not None) or (cand.get("amount_percent") is not None)
                         timepoint_present = (due_date is not None) or (within_days is not None)
